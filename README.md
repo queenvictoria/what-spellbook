@@ -49,6 +49,17 @@ Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
 rendered as `Key: value` lines for the prompt, and list values are joined with
 commas.
 
+Tests:
+
+```bash
+pip install -r requirements-dev.txt
+pytest
+```
+
+The suite covers `/slash` command parsing and TAB completion, character sheet
+loading, and prompt assembly. It imports `main` but never builds a vector index,
+contacts a model, or touches `data/chroma_db`.
+
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
 - Add /help command
