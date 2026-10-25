@@ -1,3 +1,7 @@
 data
 node_modules/
 package-lock.json
+.env
+.venv
+_retired/
+__pycache__/

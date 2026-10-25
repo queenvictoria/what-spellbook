@@ -18,3 +18,28 @@ https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
 https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
 https://5e24srd.com/spells/spell-descriptions.html
 https://toolsandtaverns.com/spells
+
+
+## Versions
+
+### Front end
+
+Framework: React + Vite
+Status: not started. Planned in ARCHITECTURE and ROADMAP
+
+
+### Backend
+
+None as yet
+
+### CLI
+
+Framework: Python and langchain
+Status: Testing in ornith-gemini-5.py
+
+- Watch for CTRL+C/D and exit
+- Switch to /slash+TAB style commands like Claude CLI and Discord
+- Add /test command
+- Add /help command
+- Move character/s to JSON/YAML file in `data/characters`
+- Move config to .env file
