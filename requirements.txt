@@ -6,6 +6,7 @@ langchain-community==0.4.2
 langchain-core==1.7.0
 langchain-ollama==1.1.0
 langchain-openrouter==*
+langchain-openai==1.7.2
 langchain-protocol==0.0.20
 langchain-text-splitters==1.1.3
 langgraph==1.2.17

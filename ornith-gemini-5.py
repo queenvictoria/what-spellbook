@@ -2,6 +2,7 @@ import os
 import cmd
 import re
 import shutil
+import signal
 import time
 import sys
 from pathlib import Path
@@ -21,7 +22,7 @@ from chromadb.api.shared_system_client import SharedSystemClient
 import logging
 
 # Set up basic configuration for logging
-logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Pull OPENROUTER_API_KEY (and friends) out of the untracked .env file next to this script.
 ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -146,21 +147,40 @@ class ChangeHandler(FileSystemEventHandler):
         logging.info(f"File {event.src_path} has been modified.")
         # Trigger rebuild logic here
 
-def start_watching(path):
-    event_handler = ChangeHandler()
-    observer = Observer()
-    observer.schedule(event_handler, path, recursive=True)
-    observer.start()
+def _stop_observer(observer):
+    """Stop the watchdog thread, tolerating an observer that never started."""
+    if observer is None:
+        return
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
         observer.stop()
-    observer.join()
+        observer.join(timeout=5)
+    except Exception as e:
+        logging.warning(f"Could not stop the file watcher cleanly: {e}")
 
-# Start watching the DOCS_DIR
-watch_thread = threading.Thread(target=start_watching, args=(DOCS_DIR,))
-watch_thread.start()
+
+def start_watching(path, observer):
+    """Run the filesystem watcher until the process is interrupted.
+
+    Exceptions are swallowed here so a failure in this background thread never
+    tears down the REPL running on the main thread.
+    """
+    try:
+        event_handler = ChangeHandler()
+        observer.schedule(event_handler, path, recursive=True)
+        observer.start()
+
+        # A plain sleep loop keeps the thread responsive to stop() without busy-waiting.
+        while observer.is_alive():
+            time.sleep(1)
+    except Exception as e:
+        logging.error(f"File watcher stopped unexpectedly: {e}")
+    finally:
+        _stop_observer(observer)
+
+
+# The watcher starts only when main() runs, so importing this module has no side effects.
+observer = Observer()
+watch_thread = None
 
 # --- LLM BACKEND SELECTION ---
 def build_llm():
@@ -241,7 +261,7 @@ class SpellbookShell(cmd.Cmd):
         retriever = self.db.as_retriever(search_kwargs={"k": 30})
         relevant_spells = retriever.invoke(self.current_scenario)
 
-        logging.info(f"Retried {len(relevant_spells)} from the grimoire.")
+        logging.info(f"Retrieved {len(relevant_spells)} spells from the grimoire.")
 
         # If there are no spells then print a message and exit.
         if not relevant_spells:
@@ -323,13 +343,20 @@ class SpellbookShell(cmd.Cmd):
 
     def do_exit(self, arg):
         """Exit the script cleanly."""
-        logging.info("Goodbye, Warlock.")
         return True
 
     def default(self, line):
         logging.error(f"Unknown command: '{line}'. Use 'scenario <text>', 'ask <text>', or 'exit'.")
 
-if __name__ == "__main__":
+def _exit_on_sigterm(signum, frame):
+    """Translate SIGTERM into Ctrl+C so both stop the shell the same way."""
+    raise KeyboardInterrupt
+
+
+def main():
+    """Start the watcher and REPL, shutting both down cleanly on Ctrl+C."""
+    global watch_thread
+
     my_character = """
     Class: Warlock (Pact of the Tome)
     Subclass: Fiend Patron
@@ -338,5 +365,24 @@ if __name__ == "__main__":
     Known/Prepared Base Spells: Eldritch Blast, Minor Illusion, Hex, Scorching Ray, Fireball, Hypnotic Pattern
     """
 
-    # Start the continuous loop interface
-    SpellbookShell(db, my_character).cmdloop()
+    # SIGTERM has no default KeyboardInterrupt, so map it explicitly (e.g. for a container stop).
+    signal.signal(signal.SIGTERM, _exit_on_sigterm)
+
+    observer.start()
+    watch_thread = threading.Thread(target=start_watching, args=(DOCS_DIR, observer), daemon=True)
+    watch_thread.start()
+
+    shell = SpellbookShell(db, my_character)
+    try:
+        shell.cmdloop()
+    except KeyboardInterrupt:
+        # Ctrl+C escapes cmdloop's internal input() loop, so unwind here instead.
+        print()
+        logging.info("Interrupted by user.")
+    finally:
+        _stop_observer(observer)
+        logging.info("Goodbye, Warlock.")
+
+
+if __name__ == "__main__":
+    main()

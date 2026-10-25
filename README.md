@@ -37,9 +37,10 @@ None as yet
 Framework: Python and langchain
 Status: Testing in ornith-gemini-5.py
 
-- Watch for CTRL+C/D and exit
 - Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
 - Add /help command
 - Move character/s to JSON/YAML file in `data/characters`
-- Move config to .env file
+- Move remaining config to .env file
+
+LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
