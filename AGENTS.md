@@ -2,7 +2,29 @@
 
 ## AI Agent Configuration for Spellbook Recommendations
 
-This document defines the AI agents that power the spell recommendation system.
+This document defines the AI agents that power the spell recommendation system, and
+records development learnings for anyone (human or agent) working on the repository.
+
+### What this project actually is
+
+A **Python CLI** (`main.py`, `cmd.Cmd`-based REPL) that recommends D&D 5.5e (2024)
+spells for a scenario. Retrieval is a local **Chroma** vector store of spell markdown
+files; the model is reached through **LangChain** with OpenRouter or Ollama backends.
+
+The TypeScript interfaces later in this file describe the **intended web app shape**
+(see `ARCHITECTURE.md` / `ROADMAP.md`, both aspirational - no front end exists yet).
+Treat them as the target interface, not as the current implementation.
+
+### Separation of concerns - two different kinds of document
+
+| Location | Contains | Does **not** contain |
+| --- | --- | --- |
+| `context/**/*.md` | Rules text injected into the **model prompt** | Code, architecture, sprint notes |
+| `AGENTS.md` (this file) | **Development learnings** for building the scripts | Prompting context for the model |
+| `data/characters/*.yaml` | A single character's actual values | Rules that apply to a whole class |
+
+Keep these apart. A context file that knows a character's level, or an `AGENTS.md` that
+carries spell rules, will both go stale in the wrong direction.
 
 ## Agent: Spell Recommender
 
@@ -211,10 +233,128 @@ interface Character {
 
 For developers working on this project:
 
-1. **Feature Development**: Update relevant agent config in this file
+1. **Feature Development**: Update the relevant agent config in this file
 2. **Testing**: Use the provided interfaces as test fixtures
 3. **Documentation**: Keep agent prompts in sync with actual implementation
 4. **Iteration**: Modify system prompts based on user feedback
+
+## Context files
+
+Prompting context lives in `context/`, laid out as `context/[class]/[pact|subclass]/`:
+
+```
+context/
+  spells.md                       # class-agnostic casting economy
+  warlock/
+    base.md                       # class-wide: progression, Pact Magic, invocations
+    pact/tome.md                  # Pact of the Tome / Book of Shadows
+    subclass/celestial.md         # Celestial Patron
+```
+
+Rules for context files:
+
+- **`base.md` holds class-wide rules; pact and patron files hold only their own.**
+  Do not repeat the progression table in a pact file.
+- **Never write a level or a character name into a context file.** Context files
+  describe rules; `data/characters/*.yaml` describes a character. A context file that
+  says "at level 5 you have 2 slots" is wrong the moment the character levels up.
+- A pact file must not assume the character's pact. State what the file covers, then
+  tell the reader to check the character sheet.
+- Cross-reference sibling files by path instead of duplicating their content.
+
+## Development learnings
+
+Hard-won facts about this codebase. Each of these cost real debugging time.
+
+### `main.py` must stay import-safe
+
+No side effects may run at import time - tests and tooling import the module. Anything
+expensive or destructive belongs inside a function called from `main()`:
+
+- `ensure_db()` rebuilds the Chroma index. It must **not** run on import.
+- `get_embeddings()` creates embeddings lazily.
+- `get_observer()` is a **factory**. A second `Observer().start()` raises
+  `RuntimeError: threads can only be started once`, so the watcher cannot be a
+  module-level singleton.
+
+The rebuild path deletes the index directory. When it ran at import scope, merely
+importing `main` in a test could destroy the user's index. Refreshing the Chroma client
+cache (`SharedSystemClient.clear_system_cache()`) is required before removing the
+directory, or the rebuild reuses a stale handle and fails with
+`attempt to write a readonly database`.
+
+### `cmd.Cmd` + readline completion quirks
+
+The `/slash` command completion is fragile. Three separate traps:
+
+1. **`cmdloop()` rebinds the completer after `__init__`**, discarding any completer set
+   there. Completion must be injected through the `completenames()` hook.
+2. **`/` must be removed from `readline.get_completer_delims()`**, not added. While `/`
+   is a delimiter, TAB on `/s` yields `text='s'` at `begidx=1`, which routes to argument
+   completion and bypasses `completenames` entirely. Removing it yields `text='/s'` at
+   `begidx=0`.
+3. `cmd.Cmd.completenames("")` also returns cmd's own built-ins (`help`, `EOF`, ...).
+   Assert a **superset**, never equality.
+
+`cmd.complete()` reads readline's terminal-global `get_begidx()` / `get_line_buffer()`,
+which are meaningless outside a TTY. Unit tests that call `complete()` directly only
+appear to pass because `begin`/`end` are 0 and `lstrip('')` fails. **Only a PTY test
+actually validates completion** - run one when touching this code.
+
+### Tests
+
+- Run `.venv/bin/python -m pytest` from the repo root.
+- `tests/conftest.py` fakes LangChain's LLM, retriever and vector store, so no model
+  call or network access is needed.
+- Fakes must match real signatures. The retriever fake takes
+  `as_retriever(search_kwargs=None)` because that is what LangChain's real method
+  accepts; a narrower fake lets broken calls pass.
+- Opening a Chroma store rewrites metadata, so the sqlite mtime changes on every
+  launch. That is normal, not corruption - do not assert on it.
+
+### Sources: 2014 vs 2024 SRD
+
+The editions disagree in ways that silently corrupt recommendations:
+
+| Source | Edition | Note |
+| --- | --- | --- |
+| `5e24srd.com/classes/warlock.html` | **2024** | Correct. The `.html` extension is required - the extension-less URL 403s |
+| `5thsrd.org` | **2014** | Its own banner points at 5e24SRD.com |
+| `dndbeyond.com` | both | Subclass text is behind a subscription |
+
+Concrete divergence at level 5: 2014 gives **3 invocations and Pact of the Tome free**;
+2024 gives **5 invocations with Pact of the Tome costing one**. The progression shape
+differs too - 2014 grants **0 invocations at level 1** and uses "Spells Known", while
+2024 grants **1 invocation at level 1** and uses "Prepared Spells". Cite the edition
+whenever a rule is written into a context file.
+
+The 2024 SRD contains **only the Fiend Patron**. Other 2024 subclasses (Celestial,
+Archfey, Great Old One) have no free SRD page; use the 2024 class data (`XPHB` source)
+rather than a wiki. Note that patron features do move between editions - the 2014
+Celestial lists Healing Light at level 1 and Searing Vengeance as self-only, whereas
+2024 moves Healing Light to level 3 and lets Searing Vengeance rescue an ally.
+
+### Verify rule numbers programmatically
+
+Do not transcribe a rules table by hand. Pull the source, parse it, and diff it against
+the markdown - every progression row, every level gate. Manual transcription errors in
+these tables are invisible on review and fatal in play.
+
+Watch for checker bugs too: a prerequisite parser that skips dict-valued `level` fields
+silently reports wrong level gates. When a check fails, confirm the checker is right
+before "fixing" the document.
+
+### Working in this repo
+
+- **Files may change between turns.** Re-read a file before concluding a failure is a
+  bug in your code; the user edits during the session.
+- `data/` is gitignored, so the character sheet and the Chroma index are untracked.
+- `context/` is currently **not loaded into any prompt** by `main.py`. The files are
+  inert until retrieval/loading is wired up. Do not assume editing them changes output.
+- Spell corpus: 544 markdown files, indexed as ~1280 chunks.
+- `markdown-it-py` needs `MarkdownIt("commonmark").enable("table")` to validate GFM
+  tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
+  not installed`.
 
 ## Future Enhancements
 

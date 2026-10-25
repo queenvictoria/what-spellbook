@@ -18,7 +18,8 @@ https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
 https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
 https://5e24srd.com/spells/spell-descriptions.html
 https://toolsandtaverns.com/spells
-
+https://dungeonmister.com/guides/classes-in-dungeons-dragons/celestial-warlock-dnd-2024-guide/
+https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
 
 ## Versions
 
