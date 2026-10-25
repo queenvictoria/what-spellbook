@@ -5,12 +5,14 @@ import shutil
 import signal
 import time
 import sys
+import argparse
 from pathlib import Path
 import threading
 try:
     import readline
 except ImportError:  # Windows has no readline; cmd merely loses TAB completion there.
     readline = None
+import yaml
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -36,28 +38,30 @@ load_dotenv(ENV_FILE)
 DOCS_DIR = "./data/reddit-spence_post/Spells"
 DB_DIR = "./data/chroma_db"
 
+# Character sheets live as YAML files in this directory; CHARACTER env var picks one.
+CHARACTERS_DIR = "./data/characters"
+DEFAULT_CHARACTER = "lois"
+
 # Primary reasoning model: DeepSeek V4.1 Flash over OpenRouter's OpenAI-compatible API.
 # Local Ollama (same model the embeddings use) remains the offline fallback.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 OLLAMA_MODEL = "qwen3.5:4b"
+EMBEDDING_MODEL = "nomic-embed-text"
 
-embeddings = OllamaEmbeddings(model="nomic-embed-text")
+# The embeddings client is built lazily so importing this module never talks to Ollama.
+_embeddings = None
+
+
+def get_embeddings():
+    """Return the process-wide embeddings client, creating it on first use."""
+    global _embeddings
+    if _embeddings is None:
+        _embeddings = OllamaEmbeddings(model=EMBEDDING_MODEL)
+    return _embeddings
+
 
 # --- DIRECTORY SANITY CHECK & DB RESET ---
-docs_path = Path(DOCS_DIR)
-if not docs_path.exists():
-    logging.critical(f"The directory '{DOCS_DIR}' does not exist. Check your path layout.")
-    exit(1)
-
-logging.debug("Scanning for markdown files in DOCS_DIR...")
-all_md_files = list(docs_path.rglob("*.md"))
-logging.info(f"Discovered {len(all_md_files)} spell markdown files across subdirectories.")
-
-logging.debug(f"Number of markdown files: {len(all_md_files)}")
-logging.debug(f"Database directory path: {DB_DIR}")
-
-
 def _db_is_valid(db_dir: str) -> bool:
     """Load the persisted Chroma index and confirm it actually contains data.
 
@@ -70,7 +74,7 @@ def _db_is_valid(db_dir: str) -> bool:
         return False
 
     try:
-        db = Chroma(persist_directory=db_dir, embedding_function=embeddings)
+        db = Chroma(persist_directory=db_dir, embedding_function=get_embeddings())
         payload = db.get(include=["embeddings", "documents"])
         return payload is not None and len(payload["embeddings"]) > 0
     except Exception:
@@ -91,17 +95,15 @@ def _reset_db(db_dir: str) -> None:
         shutil.rmtree(db_dir)
 
 
-# If we have a healthy file count but the persisted index is missing or unreadable, rebuild from scratch.
-# NOTE: This no longer wipes a merely-existing directory. We only rebuild when the index is genuinely absent
-# or fails to load (e.g. a corrupt sqlite / truncated vector files).
-if len(all_md_files) > 10 and not _db_is_valid(DB_DIR):
-    logging.warning("Database reset triggered. Wiping corrupt/missing/unreadable index...")
-    _reset_db(DB_DIR)
+def _build_index(docs_path: Path, db_dir: str):
+    """Read every spell markdown file, chunk it, and persist a fresh Chroma index."""
+    md_files = list(docs_path.rglob("*.md"))
+    logging.info(f"Discovered {len(md_files)} spell markdown files across subdirectories.")
 
-    logging.info(f"Processing and vectorizing all {len(all_md_files)} files. This will take a moment...")
+    logging.info(f"Processing and vectorizing all {len(md_files)} files. This will take a moment...")
     documents = []
 
-    for p in all_md_files:
+    for p in md_files:
         try:
             content = p.read_text(encoding="utf-8")
             logging.debug(f"Read file: {p}")
@@ -137,11 +139,37 @@ if len(all_md_files) > 10 and not _db_is_valid(DB_DIR):
             chunk.metadata.update(doc.metadata)
         final_docs.extend(chunks)
 
-    db = Chroma.from_documents(final_docs, embeddings, persist_directory=DB_DIR)
+    db = Chroma.from_documents(final_docs, get_embeddings(), persist_directory=db_dir)
     logging.info(f"Rebuild Complete: Indexed {len(final_docs)} total text chunks into ChromaDB.")
-else:
+    return db
+
+
+def ensure_db(docs_path=None, db_dir=None):
+    """Return the vector index, rebuilding from source only when it is unusable.
+
+    If the spell source directory is missing the persisted index is loaded as-is.
+    A rebuild happens only when there are enough source files AND the index is
+    absent or unreadable, so a merely-existing directory is never wiped.
+
+    This runs from main() rather than at import time: importing this module must
+    never scan, embed, or delete anything.
+    """
+    docs_path = Path(docs_path or DOCS_DIR)
+    db_dir = db_dir or DB_DIR
+
+    if not docs_path.exists():
+        logging.critical(f"The directory '{docs_path}' does not exist. Check your path layout.")
+        exit(1)
+
+    md_files = list(docs_path.rglob("*.md"))
+    if len(md_files) > 10 and not _db_is_valid(db_dir):
+        logging.warning("Database reset triggered. Wiping corrupt/missing/unreadable index...")
+        _reset_db(db_dir)
+        return _build_index(docs_path, db_dir)
+
     logging.debug("Loading existing vector index from DB_DIR...")
-    db = Chroma(persist_directory=DB_DIR, embedding_function=embeddings)
+    return Chroma(persist_directory=db_dir, embedding_function=get_embeddings())
+
 
 # --- FILE WATCHING ---
 class ChangeHandler(FileSystemEventHandler):
@@ -183,8 +211,16 @@ def start_watching(path, observer):
 
 
 # The watcher starts only when main() runs, so importing this module has no side effects.
-observer = Observer()
 watch_thread = None
+
+
+def get_observer():
+    """Create a fresh watchdog Observer.
+
+    Observer instances are single-use: watchdog raises RuntimeError on a second
+    start(), so one is built per run rather than module import.
+    """
+    return Observer()
 
 # --- LLM BACKEND SELECTION ---
 def build_llm():
@@ -212,6 +248,63 @@ def build_llm():
 
     logging.info(f"LLM backend: Ollama ({OLLAMA_MODEL})")
     return OllamaLLM(model=OLLAMA_MODEL)
+
+
+# --- CHARACTER SHEETS ---
+def _format_character(data: dict) -> str:
+    """Render a parsed character sheet as the plain-text block the prompt expects."""
+    lines = []
+    for key, value in data.items():
+        if isinstance(value, (list, tuple)):
+            value = ", ".join(str(item) for item in value)
+        lines.append(f"{str(key).replace('_', ' ').title()}: {value}")
+    return "\n".join(lines)
+
+
+def load_character(name: str) -> str:
+    """Load data/characters/<name>.yaml and return it as prompt-ready text.
+
+    Name can be a bare stem (or 'data/characters/x.yaml') supplied by --character
+    or the CHARACTER env var. Exits with a clear message rather than a traceback.
+    """
+    stem = Path(name).stem
+    path = Path(CHARACTERS_DIR) / f"{stem}.yaml"
+    if not path.exists():
+        available = sorted(p.stem for p in Path(CHARACTERS_DIR).glob("*.yaml"))
+        logging.critical(
+            f"Character sheet '{path}' not found. Available: {', '.join(available) or 'none'}."
+        )
+        exit(1)
+
+    try:
+        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        logging.critical(f"Could not parse '{path}': {e}")
+        exit(1)
+
+    if not isinstance(data, dict) or not data:
+        logging.critical(f"'{path}' did not contain a character mapping.")
+        exit(1)
+
+    logging.info(f"Character sheet: {path}")
+    return _format_character(data)
+
+
+def _parse_args(argv=None):
+    """Parse CLI flags for choosing the character sheet."""
+    parser = argparse.ArgumentParser(
+        prog="what-spellbook",
+        description="Tome Warlock spellbook generator.",
+    )
+    parser.add_argument(
+        "--character",
+        metavar="NAME",
+        help=(
+            f"Character sheet stem in {CHARACTERS_DIR} "
+            f"(default: ${'CHARACTER'} or '{DEFAULT_CHARACTER}')."
+        ),
+    )
+    return parser.parse_args(argv)
 
 
 # --- REPL INTERFACE ---
@@ -393,27 +486,25 @@ def _exit_on_sigterm(signum, frame):
     raise KeyboardInterrupt
 
 
-def main():
+def main(argv=None):
     """Start the watcher and REPL, shutting both down cleanly on Ctrl+C."""
     global watch_thread
 
-    my_character = """
-    Class: Warlock (Pact of the Tome)
-    Subclass: Fiend Patron
-    Current Level: 5
-    Pact Slots: Two 3rd-level slots
-    Known/Prepared Base Spells: Eldritch Blast, Minor Illusion, Hex, Scorching Ray, Fireball, Hypnotic Pattern
-    """
+    args = _parse_args(argv)
+    # Precedence: --character flag, then the CHARACTER env var, then the default sheet.
+    character_name = args.character or os.getenv("CHARACTER", DEFAULT_CHARACTER)
+    my_character = load_character(character_name)
 
     # SIGTERM has no default KeyboardInterrupt, so map it explicitly (e.g. for a container stop).
     signal.signal(signal.SIGTERM, _exit_on_sigterm)
 
+    observer = get_observer()
     observer.start()
     watch_thread = threading.Thread(target=start_watching, args=(DOCS_DIR, observer), daemon=True)
     watch_thread.start()
 
-    shell = SpellbookShell(db, my_character)
     try:
+        shell = SpellbookShell(ensure_db(), my_character)
         shell.cmdloop()
     except KeyboardInterrupt:
         # Ctrl+C escapes cmdloop's internal input() loop, so unwind here instead.

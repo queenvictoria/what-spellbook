@@ -17,3 +17,5 @@ langsmith==0.14.12
 markdown-it-py==4.2.0
 ollama==0.6.3
 python-dotenv==*
+PyYAML==6.0.3
+watchdog==*

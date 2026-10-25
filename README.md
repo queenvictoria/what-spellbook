@@ -37,10 +37,22 @@ None as yet
 Framework: Python and langchain
 Status: Testing in main.py
 
+Run it with:
+
+```bash
+python main.py                      # loads data/characters/lois.yaml
+python main.py --character vax      # loads data/characters/vax.yaml
+CHARACTER=vax python main.py        # same, via environment variable
+```
+
+Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
+rendered as `Key: value` lines for the prompt, and list values are joined with
+commas.
+
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
 - Add /help command
-- Move character/s to JSON/YAML file in `data/characters`
+- [x] Move character/s to JSON/YAML file in `data/characters`
 - Move remaining config to .env file
 
 LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
