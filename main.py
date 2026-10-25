@@ -7,6 +7,10 @@ import time
 import sys
 from pathlib import Path
 import threading
+try:
+    import readline
+except ImportError:  # Windows has no readline; cmd merely loses TAB completion there.
+    readline = None
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
@@ -212,12 +216,16 @@ def build_llm():
 
 # --- REPL INTERFACE ---
 class SpellbookShell(cmd.Cmd):
+    # Bare command names; the '/' prefix is added by the REPL and TAB completion.
+    COMMANDS = ("scenario", "ask", "exit")
+
     intro = (
         "\n🔮 Tome Warlock Spellbook Generator Initialised.\n"
         "Commands:\n"
-        "  scenario <text> - Set a new tactical scenario and generate 3 books.\n"
-        "  ask <text>      - Ask a follow-up or refining question about the current books.\n"
-        "  exit            - Close the session.\n"
+        "  /scenario <text> - Set a new tactical scenario and generate 3 books.\n"
+        "  /ask <text>      - Ask a follow-up or refining question about the current books.\n"
+        "  /exit            - Close the session.\n"
+        "Type '/' and press TAB to complete a command.\n"
     )
     prompt = "TomeWarlock> "
 
@@ -228,6 +236,33 @@ class SpellbookShell(cmd.Cmd):
         self.llm = build_llm()
         self.last_response = ""
         self.current_scenario = ""
+        # readline must treat '/' as word text, not a separator, or TAB on '/s'
+        # would report text 's' at begidx 1 and skip completenames entirely.
+        if readline is not None:
+            delims = readline.get_completer_delims()
+            if "/" in delims:
+                readline.set_completer_delims(delims.replace("/", ""))
+
+    def completenames(self, text, *ignored):
+        """Offer '/<command>' for a leading-slash token, the bare command otherwise.
+
+        cmd's cmdloop rebinds readline's completer to self.complete after __init__,
+        so this hook is the reliable place to inject slash completion.
+        """
+        if text.startswith("/"):
+            return [f"/{name} " for name in self.COMMANDS if f"/{name}".startswith(text)]
+        return super().completenames(text, *ignored)
+
+    def parseline(self, line):
+        """Accept the '/command' form by dropping one leading slash.
+
+        cmd only recognises identchars as the command token, so '/scenario ruin'
+        would otherwise parse as an empty command and land in default().
+        """
+        stripped = line.lstrip()
+        if stripped.startswith("/"):
+            line = stripped[1:]
+        return super().parseline(line)
 
     @staticmethod
     def _extract_text(response):
@@ -249,7 +284,7 @@ class SpellbookShell(cmd.Cmd):
             return None
 
     def do_scenario(self, arg):
-        """Submit a brand new tactical scenario: scenario <description>"""
+        """Submit a brand new tactical scenario: /scenario <description>"""
         if not arg.strip():
             logging.error("Please provide a scenario description.")
             return
@@ -311,9 +346,9 @@ class SpellbookShell(cmd.Cmd):
         logging.info("="*50)
 
     def do_ask(self, arg):
-        """Ask a refining question about the last generated output: ask <your question>"""
+        """Ask a refining question about the last generated output: /ask <your question>"""
         if not self.last_response:
-            logging.error("No books have been generated yet. Please set a scenario first using 'scenario <text>'.")
+            logging.error("No books have been generated yet. Please set a scenario first using '/scenario <text>'.")
             return
         if not arg.strip():
             logging.error("Please provide a question.")
@@ -345,8 +380,13 @@ class SpellbookShell(cmd.Cmd):
         """Exit the script cleanly."""
         return True
 
+    def do_EOF(self, arg):
+        """Exit on Ctrl+D, same as /exit."""
+        print()
+        return True
+
     def default(self, line):
-        logging.error(f"Unknown command: '{line}'. Use 'scenario <text>', 'ask <text>', or 'exit'.")
+        logging.error(f"Unknown command: '{line}'. Use '/scenario <text>', '/ask <text>', or '/exit'.")
 
 def _exit_on_sigterm(signum, frame):
     """Translate SIGTERM into Ctrl+C so both stop the shell the same way."""

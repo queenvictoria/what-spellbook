@@ -35,9 +35,9 @@ None as yet
 ### CLI
 
 Framework: Python and langchain
-Status: Testing in ornith-gemini-5.py
+Status: Testing in main.py
 
-- Switch to /slash+TAB style commands like Claude CLI and Discord
+- [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
 - Add /help command
 - Move character/s to JSON/YAML file in `data/characters`
