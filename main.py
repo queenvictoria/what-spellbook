@@ -1,5 +1,6 @@
 import os
 import cmd
+import json
 import re
 import shutil
 import signal
@@ -29,6 +30,8 @@ import logging
 
 import prompts
 import spells
+from cache import key_parts, save_books
+import cache as cache_store
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -50,6 +53,8 @@ INDEX_VERSION = 3
 RETRIEVAL_K = 60
 FULL_TEXT_SPELLS = 12
 CONTEXT_DIR = "context"
+# Generated books are cached here, keyed by character/level/party/DB version/scenario.
+CACHE_DIR = cache_store.DEFAULT_CACHE_DIR
 
 # Character sheets live as YAML files in this directory; CHARACTER env var picks one.
 CHARACTERS_DIR = "./data/characters"
@@ -366,30 +371,79 @@ def character_level(data: dict) -> int | None:
 
 
 def _split_names(value) -> list[str]:
-    """Split a sheet field like 'Eldritch Blast, Minor Illusion' into names."""
+    """Split a sheet field like 'Eldritch Blast, Minor Illusion' into names.
+
+    A trailing parenthetical is dropped, because sheets record the source there
+    ('Light (Aasimar)') and it is not part of the spell's name. Typographic
+    apostrophes are folded to ASCII so a hand-written sheet still matches the corpus.
+    """
     if value is None:
         return []
     if isinstance(value, (list, tuple)):
         items = value
     else:
         items = re.split(r"[,;]", str(value))
-    return [str(i).strip() for i in items if str(i).strip()]
+    names = []
+    for item in items:
+        name = re.sub(r"\s*\([^)]*\)\s*$", "", str(item)).strip()
+        name = name.translate(APOSTROPHES)
+        if name:
+            names.append(name)
+    return names
+
+
+# Typographic apostrophes mapped to ASCII. Models and hand-written sheets emit '’'
+# where the indexed corpus uses "'", and an unmatched name is silently dropped from
+# the pool or falsely reported as an illegal pick.
+APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u00b4": "'"})
+
+
+# Every sheet field that means "the character permanently has this spell". The Book
+# of Shadows explicitly cannot duplicate what is already prepared, and the model will
+# suggest them anyway if they are left in the pool, so they are all excluded.
+KNOWN_SPELL_FIELDS = (
+    "Known/Prepared Base Spells",
+    "Known Prepared Base Spells",
+    "Prepared Spells",
+    "Known Spells",
+    "Always Prepared Spells",
+    "Cantrips From Other Sources",
+    "Free Casts Per Long Rest",
+)
+
+# The book's *current* loadout. Deliberately NOT excluded: the book is conjured
+# freshly each rest and its picks are not permanent, so re-picking the same spell is
+# legal. Treating it as known would also let this tool's own previous answer
+# permanently constrain the next one.
+CURRENT_BOOK_FIELDS = (
+    "Book of Shadows Cantrips",
+    "Book of Shadows Rituals",
+)
 
 
 def known_spells(data: dict) -> list[str]:
-    """Names the character already has prepared.
+    """Spells the character permanently has, from every field that grants one.
 
-    Book of Shadows picks must exclude these, and the model will happily suggest
-    them anyway if it is not told.
+    This is deliberately a union rather than a single lookup. A real sheet spreads
+    its spells across several fields: Warlock picks under 'Known/Prepared Base
+    Spells', patron and Aasimar grants under 'Always Prepared Spells', and racial or
+    feat cantrips under 'Cantrips From Other Sources'. Reading only the first field
+    leaves 'Light' and 'Sacred Flame' in the pool for a Celestial Warlock who always
+    has both, so the model is invited to spend a book pick on a spell it already has.
     """
-    raw = _first_present(
-        data,
-        "Known/Prepared Base Spells",
-        "Known Prepared Base Spells",
-        "Prepared Spells",
-        "Known Spells",
-    )
-    return _split_names(raw)
+    names: list[str] = []
+    for field in KNOWN_SPELL_FIELDS:
+        names.extend(_split_names(data.get(field)))
+    # Order-preserving dedupe; the sheet repeats these across fields.
+    return list(dict.fromkeys(names))
+
+
+def current_book_spells(data: dict) -> list[str]:
+    """The book's current loadout, for context only - these stay eligible."""
+    names: list[str] = []
+    for field in CURRENT_BOOK_FIELDS:
+        names.extend(_split_names(data.get(field)))
+    return list(dict.fromkeys(names))
 
 
 def max_spell_level(data: dict) -> int | None:
@@ -541,7 +595,8 @@ def _rank_book_candidates(db, query: str, *, exclude_names, cantrips: int, ritua
     return ranked
 
 
-def _format_pool(bucket: dict, slot_level: int | None, limit: int | None = None) -> str:
+def _format_pool(bucket: dict, slot_level: int | None, limit: int | None = None,
+                 character: dict | None = None) -> str:
     """Render the book candidate pool handed to the model.
 
     Only two sections exist, both of them book-eligible. Levelled spells are
@@ -578,7 +633,59 @@ def _format_pool(bucket: dict, slot_level: int | None, limit: int | None = None)
         return "(no spells matched the eligibility filter)"
     if slot_level:
         sections.insert(0, f"All of this character's spell slots are level {slot_level}.")
+
+    already = _format_already_have(character)
+    if already:
+        sections.append(already)
     return "\n\n".join(sections)
+
+
+# Human-readable labels for the per-source breakdown in the prompt. Kept next to the
+# field list they annotate so the two cannot drift apart.
+KNOWN_SOURCE_LABELS = {
+    "Known/Prepared Base Spells": "Warlock picks",
+    "Always Prepared Spells": "always prepared (patron, species or subclass)",
+    "Cantrips From Other Sources": "from species, background or feats",
+    "Free Casts Per Long Rest": "free casts per long rest",
+}
+
+
+def _format_already_have(character: dict | None) -> str:
+    """Spell out what the character already has, and what the book already holds.
+
+    The sheet spreads this across several fields, so the model has to reconstruct it
+    to make a sensible pick - and left to itself it spends book picks on spells the
+    character already always has. Stating it once, as a flat list, makes the 'do not
+    pick these' rule checkable instead of inferable.
+    """
+    if not character:
+        return ""
+
+    known = known_spells(character)
+    current = current_book_spells(character)
+    sources = [
+        (label, _split_names(character.get(field)))
+        for field, label in KNOWN_SOURCE_LABELS.items()
+        if _split_names(character.get(field))
+    ]
+    if not known and not sources:
+        return ""
+
+    lines = [
+        "=== ALREADY AVAILABLE - do NOT choose these as book picks ===",
+        "The character already has these prepared or always available "
+        "(including from species, background and feats):",
+    ]
+    lines.extend(f"  - {name}" for name in known)
+    lines.extend(f"  ({label}: {', '.join(names)})" for label, names in sources)
+
+    if current:
+        lines.append("The book CURRENTLY holds: " + ", ".join(current) + ".")
+        lines.append(
+            "Those are still legal picks - the book is conjured fresh each rest - but "
+            "only re-pick one if it genuinely remains the best choice for this scenario."
+        )
+    return "\n".join(lines)
 
 
 def _format_full_text(bucket: dict, limit: int = FULL_TEXT_SPELLS) -> str:
@@ -611,30 +718,38 @@ def _parse_args(argv=None):
 # --- REPL INTERFACE ---
 class SpellbookShell(cmd.Cmd):
     # Bare command names; the '/' prefix is added by the REPL and TAB completion.
-    COMMANDS = ("scenario", "ask", "exit")
+    COMMANDS = ("scenario", "ask", "rate", "history", "exit")
 
     intro = (
         "\n🔮 Tome Warlock Spellbook Generator Initialised.\n"
         "Commands:\n"
         "  /scenario <text> - Set a new tactical scenario and generate 3 books.\n"
         "  /ask <text>      - Ask a follow-up or refining question about the current books.\n"
+        "  /rate <n> [n]    - Rate generated books 1-5, optionally naming a book.\n"
+        "  /history         - List previously generated books and their ratings.\n"
         "  /exit            - Close the session.\n"
         "Type '/' and press TAB to complete a command.\n"
     )
     prompt = "TomeWarlock> "
 
-    def __init__(self, vector_db, character_context, character=None):
+    def __init__(self, vector_db, character_context, character=None, db_version=None):
         super().__init__()
         self.db = vector_db
         self.character_context = character_context
         # Structured sheet, when supplied by main(); falls back to rendering the
         # pre-formatted context so existing callers keep working.
         self.character = character if character is not None else {}
+        # Part of the cache key: a rebuilt index makes old entries incomparable.
+        self.db_version = INDEX_VERSION if db_version is None else db_version
         self.llm = build_llm()
         self.last_response = ""
+        self.last_prompt = ""
         self.current_scenario = ""
         self.pool_text = ""
         self.rule_context = prompts.load_rule_context(self.character, CONTEXT_DIR) if self.character else ""
+        # Book references for the current answer -> their cache files, so /rate can
+        # address a book without the user typing a path.
+        self.book_files: dict[str, str] = {}
         # readline must treat '/' as word text, not a separator, or TAB on '/s'
         # would report text 's' at begidx 1 and skip completenames entirely.
         if readline is not None:
@@ -662,6 +777,10 @@ class SpellbookShell(cmd.Cmd):
         if stripped.startswith("/"):
             line = stripped[1:]
         return super().parseline(line)
+
+    def do_help(self, arg):
+        """Show the available commands: /help"""
+        print(self.intro)
 
     @staticmethod
     def _extract_text(response):
@@ -722,7 +841,7 @@ class SpellbookShell(cmd.Cmd):
             print("There are no spells matching this character's eligibility rules.")
             return
 
-        self.pool_text = _format_pool(bucket, slot_level)
+        self.pool_text = _format_pool(bucket, slot_level, character=self.character)
         spell_data_context = _format_full_text(bucket)
 
         if not self.rule_context:
@@ -744,6 +863,7 @@ class SpellbookShell(cmd.Cmd):
             logging.warning(budget_warning)
 
         self.last_response = self._run_llm(full_prompt)
+        self.last_prompt = full_prompt
         if self.last_response is None:
             self.last_response = ""
             return
@@ -751,7 +871,141 @@ class SpellbookShell(cmd.Cmd):
         logging.info("="*50)
         print(self.last_response)
         self._warn_about_illegal_picks(bucket)
+        self._cache_books(bucket)
         logging.info("="*50)
+
+    # --- caching ---
+
+    def _cache_key(self, scenario: str | None = None) -> dict | None:
+        """Build the cache key, or None when there is no character to key on."""
+        if not self.character:
+            return None
+        return key_parts(
+            character=str(_first_present(self.character, "Name", "name") or "unknown"),
+            level=character_level(self.character),
+            party=_first_present(self.character, "Party", "party"),
+            db_version=self.db_version,
+            scenario=scenario if scenario is not None else self.current_scenario,
+        )
+
+    def _cache_books(self, bucket):
+        """Persist each generated book so it can be rated after the session.
+
+        Written before the lights come on, not after: this is the record used for
+        post-play ratings, so it must survive the session. A write failure is
+        reported but never raised - losing the cache must not lose the answer.
+        """
+        key = self._cache_key()
+        if key is None:
+            logging.debug("No character sheet loaded; skipping cache write.")
+            return
+
+        written = save_books(
+            answer=self.last_response,
+            cache_dir=CACHE_DIR,
+            character=str(_first_present(self.character, "Name", "name") or "unknown"),
+            level=key["level"],
+            party=_first_present(self.character, "Party", "party"),
+            db_version=self.db_version,
+            scenario=self.current_scenario,
+            input_data={"character_sheet": self.character},
+            context={
+                "database_version": self.db_version,
+                "rule_context_files": prompts.context_files_for(self.character),
+                "pool_cantrips": [s.name for s in bucket.get("cantrips", [])],
+                "pool_rituals": [s.name for s in bucket.get("rituals", [])],
+                "pool_text": self.pool_text,
+            },
+            prompts={"prompt": self.last_prompt},
+            model=self._model_name(),
+        )
+        self.book_files = {p.stem: str(p) for p in written}
+        if written:
+            logging.info(f"Cached {len(written)} book(s) under {written[0].parent}")
+
+    def _model_name(self) -> str:
+        """Best-effort label for the model that produced the answer."""
+        for attribute in ("model", "model_name"):
+            value = getattr(self.llm, attribute, None)
+            if isinstance(value, str):
+                return value
+        return type(self.llm).__name__
+
+    # --- rating ---
+
+    def do_rate(self, arg):
+        """Rate generated books 1-5: /rate <score> [book name or number]"""
+        if not self.book_files:
+            logging.error(
+                "Nothing to rate yet. Generate books with '/scenario <text>' first, "
+                "or use '/rate <score> <file>' to rate a cached file."
+            )
+            return
+
+        match = re.match(r"\s*([1-5])\b\s*(.*)$", arg)
+        if not match:
+            logging.error(
+                "Usage: /rate <1-5> [book name or number]. "
+                f"Books available: {', '.join(sorted(self.book_files))}"
+            )
+            return
+
+        score = int(match.group(1))
+        target = match.group(2).strip()
+        paths = self._resolve_books(target)
+        if not paths:
+            logging.error(
+                f"No cached book matched '{target}'. Available: {', '.join(sorted(self.book_files))}"
+            )
+            return
+
+        for path in paths:
+            try:
+                entry = cache_store.rate(path, score=score, notes=None, outcome=None)
+            except OSError as e:
+                logging.error(f"Could not rate {path}: {e}")
+                continue
+            name = entry.get("output", {}).get("book_name", Path(path).stem)
+            print(f"Rated '{name}' {score}/5.")
+            logging.info(f"Rated {path} {score}/5")
+
+    def _resolve_books(self, target: str) -> list[str]:
+        """Map a book reference to cache file paths.
+
+        An empty target means 'all books from the current answer'.
+        """
+        if not target:
+            return list(self.book_files.values())
+
+        needle = target.lower()
+        exact = [p for k, p in self.book_files.items() if k.lower() == needle]
+        if exact:
+            return exact
+        # A plain number addresses the generated order ("/rate 4 2").
+        numbered = [p for k, p in self.book_files.items() if k.startswith(f"{needle}-")]
+        if numbered:
+            return numbered
+        return [p for k, p in self.book_files.items() if needle in k.lower()]
+
+    def do_history(self, arg):
+        """List previously generated books and their ratings: /history"""
+        paths = cache_store.load_entries(CACHE_DIR)
+        if not paths:
+            print(f"No cached books yet under {CACHE_DIR}/.")
+            return
+
+        print(f"{len(paths)} cached book(s) under {CACHE_DIR}/ (newest first):\n")
+        for path in paths[:25]:
+            entry = json.loads(path.read_text(encoding="utf-8"))
+            key = entry.get("key", {})
+            rating = entry.get("rating", {})
+            score = rating.get("score")
+            mark = f"{score}/5" if score else "unrated"
+            name = entry.get("output", {}).get("book_name", path.stem)
+            print(f"  [{mark:>7}] {key.get('character')} L{key.get('level')}  {name}")
+            print(f"            {path.relative_to(CACHE_DIR)}")
+        if len(paths) > 25:
+            print(f"\n  ... and {len(paths) - 25} more.")
 
     def _warn_about_illegal_picks(self, bucket):
         """Report any book pick that is not actually eligible.
@@ -794,6 +1048,7 @@ class SpellbookShell(cmd.Cmd):
         )
 
         self.last_response = self._run_llm(refine)
+        self.last_prompt = refine
         if self.last_response is None:
             self.last_response = ""
             return
@@ -837,7 +1092,7 @@ def main(argv=None):
     watch_thread.start()
 
     try:
-        shell = SpellbookShell(ensure_db(), my_character, character_data)
+        shell = SpellbookShell(ensure_db(), my_character, character_data, db_version=INDEX_VERSION)
         shell.cmdloop()
     except KeyboardInterrupt:
         # Ctrl+C escapes cmdloop's internal input() loop, so unwind here instead.

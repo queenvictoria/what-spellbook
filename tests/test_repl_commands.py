@@ -82,11 +82,16 @@ def test_slash_s_completes_to_scenario(shell):
         ("/s", ["/scenario "]),
         ("/a", ["/ask "]),
         ("/e", ["/exit "]),
-        ("/", ["/scenario ", "/ask ", "/exit "]),
+        ("/r", ["/rate "]),
+        ("/h", ["/history "]),
     ],
 )
 def test_slash_prefix_completions(shell, prefix, expected):
     assert _complete(shell, prefix) == expected
+
+
+def test_bare_slash_offers_every_command(shell):
+    assert _complete(shell, "/") == [f"/{name} " for name in COMMANDS]
 
 
 @pytest.mark.parametrize("prefix", ["/x", "/zzz"])

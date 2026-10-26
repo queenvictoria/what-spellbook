@@ -240,16 +240,22 @@ For developers working on this project:
 
 ## Context files
 
-Prompting context lives in `context/`, laid out as `context/[class]/[pact|subclass]/`:
+Prompting context lives in `context/`, laid out as `context/classes/[class]/[pact|subclass]/`
+plus a class-agnostic `context/spells.md`:
 
 ```
 context/
-  spells.md                       # class-agnostic casting economy
-  warlock/
-    base.md                       # class-wide: progression, Pact Magic, invocations
-    pact/tome.md                  # Pact of the Tome / Book of Shadows
-    subclass/celestial.md         # Celestial Patron
+  spells.md                          # class-agnostic casting economy
+  classes/
+    warlock/
+      base.md                        # class-wide: progression, Pact Magic, invocations
+      pact/tome.md                   # Pact of the Tome / Book of Shadows
+      subclass/celestial.md          # Celestial Patron
 ```
+
+Resolution lives in `prompts.context_files_for()`, which derives the paths from the
+sheet's `Class`/`Pact`/`Subclass` and skips any file that is missing — so a character
+with no subclass yet still gets the class-wide rules.
 
 Rules for context files:
 
@@ -301,6 +307,11 @@ which are meaningless outside a TTY. Unit tests that call `complete()` directly 
 appear to pass because `begin`/`end` are 0 and `lstrip('')` fails. **Only a PTY test
 actually validates completion** - run one when touching this code.
 
+Adding a command means editing `COMMANDS`, `intro` and `do_<name>`; completion and
+`/help` both derive from `COMMANDS`, so they cannot drift from it. Bump
+`tests/test_repl_commands.py` only where it asserts an exact completion list - the
+command surface itself is asserted as a superset by design.
+
 ### Tests
 
 - Run `.venv/bin/python -m pytest` from the repo root.
@@ -311,6 +322,8 @@ actually validates completion** - run one when touching this code.
   accepts; a narrower fake lets broken calls pass.
 - Opening a Chroma store rewrites metadata, so the sqlite mtime changes on every
   launch. That is normal, not corruption - do not assert on it.
+- Anything that writes must be redirected. Cache tests monkeypatch `main.CACHE_DIR`;
+  without that the suite writes `.cache/` into the working tree.
 
 ### Sources: 2014 vs 2024 SRD
 
@@ -402,6 +415,65 @@ Two parsing details that matter when writing such a guard:
   (`**Light (Cantrip; Evocation; Bard)**`). Strip it, or every pick looks illegal.
 - When normalising a spell name, do not collapse whitespace —
   `"Detect Magic"` becomes `"DetectMagic"` and matches nothing.
+- Normalise apostrophes to ASCII. Models write `Tenser’s Floating Disk` with a
+  typographic `’` while the corpus uses `'`, so a legal ritual was reported as
+  illegal. The same applies to hand-written sheets, where an unmatched name is
+  silently dropped from the pool.
+
+A third, found later and worse than either: **the guard can pass on an answer it could
+not read.** The parser originally only understood bulleted lists, but the model usually
+writes picks inline (`**Cantrips:** Light, Sacred Flame, Message`). Zero parsed picks
+means zero problems reported, so the validator vouched for an answer it never examined.
+Two rules follow:
+
+- When a guard finds *nothing*, check it can still find something. Assert on a real
+  model answer, not on a tidy format you wrote yourself.
+- Never let a second parser re-implement the same reading. `cache.parse_picks()` now
+  delegates to `spells._book_picks()`; two implementations would eventually disagree
+  about what was chosen, and only one of them would be guarded.
+
+### A sheet is a union, not a field
+
+`known_spells()` must union **every** field that grants a spell: Warlock picks, the
+patron's always-prepared list, species and feat cantrips, and free casts. Reading only
+`Known/Prepared Base Spells` left `Light` and `Sacred Flame` in the pool for a Celestial
+Aasimar that always has both, so the model spent book picks on spells the character
+already had. The pool now excludes them and the prompt states the list explicitly.
+
+But the book's *current* loadout (`Book of Shadows Cantrips` / `Rituals`) must **not**
+be excluded: the book is conjured freshly at each rest, so re-picking is legal.
+Excluding it would also let this tool's own previous answer permanently constrain the
+next one. Both the exclusion set and the "still legal" note are deliberate.
+
+Also strip a trailing parenthetical from sheet entries — sheets record provenance there
+(`Light (Aasimar)`), and it is not part of the name.
+
+### The cache is the training set
+
+`.cache/` stores one JSON file per generated book, keyed by character, level, party,
+database version and a scenario hash. It is written **before** the answer is printed,
+because it is the record used for post-play ratings. Design points worth keeping:
+
+- **The key includes `INDEX_VERSION`.** A rebuilt index changes the pool, so old
+  entries are incomparable and must land in a new directory.
+- **The scenario is hashed, but also stored.** The hash makes a valid path component;
+  the text has to survive somewhere or a rating cannot be interpreted later.
+- **One file per book, not per run.** A book is the unit of rating, so ratings must be
+  independent. The raw response is stored whole on every entry, so splitting never
+  loses the original.
+- **Never let a cache write failure lose the answer.** It is wrapped and reported, not
+  raised.
+- **Parsing the model's books is harder than it looks.** A real answer ends with a
+  summary whose bullets start `**Book 1 pairs with:** Hex, ...`. An unanchored book
+  regex treated those as headings, producing six books and stealing picks from the real
+  ones. Require a heading to be short and to not read like prose; dedupe by book number.
+  The heading label is also case-unstable (`**Level 1 rituals:**`), so look section
+  names up casefolded.
+- **Anchor a label regex to the line start.** An unanchored `Cantrip` also matches
+  inside a pick's annotation (`1. **Light** (Cantrip; Evocation; Bard)`) and was read as
+  a new label, discarding that pick.
+
+`.cache/` is gitignored: it is user data, like `data/`.
 
 ### Ollama thinking models return empty responses
 

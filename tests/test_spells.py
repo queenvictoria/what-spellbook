@@ -356,3 +356,117 @@ def test_validator_tolerates_answers_without_book_headings():
 ])
 def test_entry_name_extraction(entry, expected):
     assert spells._entry_name(entry) == expected
+
+
+# --- real model output shapes ---
+#
+# The two shapes below are copied from actual runs. Both previously produced zero
+# picks, which meant validation silently reported a clean answer: the guard could not
+# see the picks it was meant to check.
+
+def test_validator_reads_inline_comma_separated_picks():
+    """The model usually writes '**Cantrips:** A, B, C' on one line, not bullets."""
+    answer = (
+        "## Book 1 — Bridge Push\n"
+        "**Cantrips:** Light, Mending, Fire Bolt\n"
+        "**Level 1 rituals:** Detect Magic, Alarm\n"
+    )
+    assert spells.validate_book_picks(answer, POOL_C, POOL_R) == []
+
+
+def test_validator_reads_lowercase_ritual_labels():
+    """'Level 1 rituals' is as common as 'Level 1 Rituals'."""
+    answer = "## Book 1 — A\n**Cantrips:** Light, Mending, Fire Bolt\n"
+    assert spells._book_picks(spells._iter_books(answer).__next__())["cantrips"] == [
+        "Light", "Mending", "Fire Bolt",
+    ]
+    answer = "## Book 1 — A\n**level 1 rituals:** Detect Magic, Alarm\n"
+    assert spells._book_picks(spells._iter_books(answer).__next__())["rituals"] == [
+        "Detect Magic", "Alarm",
+    ]
+
+
+def test_inline_splitting_does_not_tear_annotations_apart():
+    """Annotations contain semicolons, so they must be stripped before splitting."""
+    picks = spells._split_pick_list(
+        "Light (Cantrip; Evocation; Bard), Mending (Cantrip; Transmutation; Bard)"
+    )
+    assert picks == ["Light", "Mending"]
+
+
+def test_validator_still_flags_an_illegal_inline_pick():
+    answer = (
+        "## Book 1 — A\n"
+        "**Cantrips:** Guiding Bolt, Mending, Fire Bolt\n"
+        "**Rituals:** Detect Magic, Alarm\n"
+    )
+    problems = spells.validate_book_picks(answer, POOL_C, POOL_R)
+    assert any("Guiding Bolt" in p for p in problems)
+
+
+def test_book_item_annotation_is_not_mistaken_for_a_label():
+    """An unanchored label regex matched the 'Cantrip' inside a pick's annotation."""
+    answer = "## Book 1 — A\n**Cantrips:**\n1. **Light** (Cantrip; Evocation; Bard) - bright.\n"
+    assert spells._book_picks(spells._iter_books(answer).__next__()) == {
+        "cantrips": ["Light"], "rituals": [],
+    }
+
+
+def test_validator_accepts_a_typographic_apostrophe():
+    """A model writes "Tenser’s Floating Disk"; the corpus uses a straight "'".
+
+    Without normalisation a perfectly legal pick is reported as illegal, and the user
+    is warned off a correct answer.
+    """
+    pool_c = [spells.Spell(name=n, filename="c.md", level=0)
+              for n in ("Light", "Mending", "Fire Bolt")]
+    pool_r = [spells.Spell(name="Tenser's Floating Disk", filename="t.md", level=1, is_ritual=True)]
+    answer = (
+        "## Book 1 — A\n"
+        "**Cantrips:** Light, Mending, Fire Bolt\n"
+        "**Rituals:** Tenser\u2019s Floating Disk\n"
+    )
+    assert spells.validate_book_picks(answer, pool_c, pool_r) == []
+
+
+@pytest.mark.parametrize("raw", [
+    "Tenser\u2019s Floating Disk", "Tenser\u2018s Floating Disk", "Tenser\u2019s Floating Disk",
+])
+def test_entry_name_normalises_apostrophes(raw):
+    assert spells._entry_name(raw) == "Tenser's Floating Disk"
+
+
+def test_iter_books_splits_bold_headings():
+    """The model often bolds headings instead of using '#': '**Book 1 — Title**'.
+
+    The previous heading splitter only matched '#' headings, so a bold-style answer
+    yielded no sections at all and validation passed without examining a single pick.
+    """
+    answer = (
+        "**Book 1 — Radiant Chokepoint**\n"
+        "- **Cantrips:** Light, Mending, Fire Bolt\n"
+        "- **Level 1 rituals:** Detect Magic, Alarm\n"
+        "\n**Book 2 — Anti-Raiser**\n"
+        "- **Cantrips:** Message, Mage Hand, Mending\n"
+        "- **Rituals:** Alarm, Identify\n"
+    )
+    sections = list(spells._iter_books(answer))
+    assert len(sections) == 2
+    assert spells._book_picks(sections[0])["rituals"] == ["Detect Magic", "Alarm"]
+
+
+def test_validator_reads_bullet_prefixed_labels():
+    """'- **Cantrips:** A, B, C' is a label inside a list item, not a bulleted pick."""
+    answer = (
+        "**Book 1 — A**\n"
+        "- **Cantrips:** Light, Mending, Fire Bolt\n"
+        "- **Level 1 rituals:** Detect Magic, Alarm\n"
+    )
+    assert spells.validate_book_picks(answer, POOL_C, POOL_R) == []
+
+
+def test_iter_books_yields_something_for_every_layout_it_claims_to_support():
+    """A silently empty split makes the guard vacuous, so pin the count."""
+    for heading in ("## Book 1 — Title", "**Book 1: Title**", "**Book 1 — Title**", "Book 1 - Title"):
+        answer = f"{heading}\n**Cantrips:** Light, Mending, Fire Bolt\n"
+        assert list(spells._iter_books(answer)), f"no section found for {heading!r}"

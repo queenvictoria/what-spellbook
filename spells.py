@@ -54,11 +54,25 @@ _HASHTAG = re.compile(r"#(\w+)")
 _RITUAL = re.compile(r"\bRitual\b", re.IGNORECASE)
 
 # Model output parsing for the book-pick validation guard.
-_BOOK_HEADING = re.compile(r"\*\*\s*(Cantrips?|Rituals?)\s*:?\s*\*\*", re.IGNORECASE)
-_ANY_HEADING = re.compile(r"\*\*[A-Z][^*]*:?\s*\*\*")
+# Matches a pick-list label at the start of a line. It must be anchored: an
+# unanchored 'Cantrip' also appears inside a pick's annotation
+# ('1. **Light** (Cantrip; Evocation; Bard)') and would be mistaken for a new label.
+# A leading bullet is allowed, because the model often writes the label as a list item
+# ('- **Cantrips:** Word of Radiance, ...').
+_BOOK_HEADING = re.compile(
+    r"^\s*(?:[-*+]\s+)?(?:\*{1,2}\s*)?(?:Level\s*\d+\s*)?(Cantrips?|Rituals?)\s*:?\s*\*{0,2}",
+    re.IGNORECASE,
+)
+_ANY_HEADING = re.compile(r"^\s*(?:[-*+]\s+)?\*{1,2}[A-Z][^*]*:?\s*\*{0,2}")
 _BOOK_ITEM = re.compile(r"^\s*(?:\d+\.|[-*])\s+(.+)$")
-_SECTION_NAMES = {"Cantrip": "cantrips", "Cantrips": "cantrips",
-                  "Ritual": "rituals", "Rituals": "rituals"}
+_SECTION_NAMES = {"cantrip": "cantrips", "cantrips": "cantrips",
+                  "ritual": "rituals", "rituals": "rituals"}
+
+# A pick list is written either as bullets on their own lines or inline after the
+# label ('**Cantrips:** Light, Sacred Flame, Message'). Only handling bullets meant an
+# inline list silently produced zero picks, so validation passed on an unreadable
+# answer - the exact case the guard exists to catch.
+_INLINE_LIST_SEPARATOR = re.compile(r"\s*[,;]\s*")
 
 # The header block is everything before the casting-time line. Some pages (magic
 # items, malformed entries) never have one, so fall back to a bounded prefix.
@@ -291,6 +305,10 @@ def _entry_name(entry: str) -> str:
     '**Light (Cantrip; Evocation; Bard)**'. That annotation has to be dropped or the
     name never matches the pool and every pick is falsely reported as illegal.
 
+    Apostrophes are normalised to ASCII: models reliably emit a typographic '’' for
+    "Tenser's Floating Disk" while the indexed corpus uses "'", so without this a
+    legal pick is reported as illegal purely on the character used.
+
     Internal spaces are preserved: collapsing them turns "Detect Magic" into
     "DetectMagic", which matches nothing.
     """
@@ -298,37 +316,54 @@ def _entry_name(entry: str) -> str:
     name = text.group(1) if text else entry.split(" - ")[0]
     name = _ANNOTATION.sub("", name)
     name = re.sub(r"^\s*\d+[.)]\s*", "", name)
-    return name.strip(" \t`*_")
+    return name.strip(" \t`*_").translate(_APOSTROPHES)
+
+
+# Typographic apostrophes mapped to ASCII, so a model's '’' still matches the corpus.
+# Typographic apostrophes mapped to ASCII, so a model's '’' still matches the corpus.
+_APOSTROPHES = str.maketrans({"\u2019": "'", "\u2018": "'", "\u02bc": "'", "\u00b4": "'"})
 
 
 _BOLD_NAME = re.compile(r"\*\*([^*]+)\*\*")
 _ANNOTATION = re.compile(r"\s*[\(\[]\s*(?:Cantrip|Level\s*\d|Ritual).*$", re.IGNORECASE)
 
 
-_BOOK_SPLIT = re.compile(r"^#{1,4}\s*Book\s*\d+", re.IGNORECASE | re.MULTILINE)
-
-
 def _iter_books(answer: str):
     """Yield the text of each book section.
+
+    Delegates the split to ``cache.split_books``, which knows the heading shapes
+    models actually produce (``## Book 1 — Title``, ``**Book 1: Title**``) and ignores
+    prose that merely mentions a book. Splitting here as well produced two behaviours,
+    and this one silently yielded nothing for a bold heading - so validation passed
+    vacuously on an answer it never examined.
 
     Split per book, otherwise the picks from all three books accumulate and the
     per-book pick counts look wildly wrong.
     """
-    parts = _BOOK_SPLIT.split(answer)
-    sections = parts[1:] if len(parts) > 1 else parts
-    for section in sections:
-        if section.strip():
-            yield section
+    import cache
+
+    for book in cache.split_books(answer):
+        if book["text"].strip():
+            yield book["text"]
 
 
 def _book_picks(section: str) -> dict[str, list[str]]:
-    """Extract the cantrip and ritual bullet lists from one book section."""
+    """Extract the cantrip and ritual pick lists from one book section.
+
+    Handles both shapes the model produces: bulleted items under a label, and an
+    inline comma-separated list on the label line itself.
+    """
     found: dict[str, list[str]] = {"cantrips": [], "rituals": []}
     section_name = None
     for line in section.splitlines():
         heading = _BOOK_HEADING.search(line)
         if heading:
-            section_name = _SECTION_NAMES.get(heading.group(1).strip())
+            # Casefolded: the model writes 'level 1 rituals' as often as 'Rituals'.
+            section_name = _SECTION_NAMES.get(heading.group(1).strip().lower())
+            # Anything after the label on the same line is the list itself.
+            remainder = line[heading.end():].strip(" \t*:`-")
+            if section_name and remainder:
+                found[section_name].extend(_split_pick_list(remainder))
             continue
         # Any other bold heading (How to Use, Rationale, ...) ends the pick list.
         if _ANY_HEADING.match(line):
@@ -339,7 +374,31 @@ def _book_picks(section: str) -> dict[str, list[str]]:
         item = _BOOK_ITEM.match(line)
         if item:
             found[section_name].append(_entry_name(item.group(1)))
+        elif line.strip() and _INLINE_LIST_SEPARATOR.search(line):
+            # A wrapped inline list continuing on the next line.
+            found[section_name].extend(_split_pick_list(line))
     return found
+
+
+_ANNOTATION_SPAN = re.compile(
+    r"[\(\[]\s*(?:Cantrip|Level\s*\d|Ritual)[^)\]]*[\)\]]?", re.IGNORECASE
+)
+
+
+def _split_pick_list(text: str) -> list[str]:
+    """Split an inline 'Light, Sacred Flame, Message' list into clean names.
+
+    Annotation spans are removed *before* splitting: they are written with semicolons
+    ('Light (Cantrip; Evocation; Bard)'), so splitting first would tear one pick into
+    three fragments and report every one of them as illegal.
+    """
+    cleaned = _ANNOTATION_SPAN.sub("", text)
+    names = []
+    for chunk in _INLINE_LIST_SEPARATOR.split(cleaned):
+        name = _entry_name(chunk)
+        if name:
+            names.append(name)
+    return names
 
 
 def validate_book_picks(answer: str, cantrips, rituals, *, known=()) -> list[str]:

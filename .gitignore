@@ -5,3 +5,6 @@ package-lock.json
 .venv
 _retired/
 __pycache__/
+# Generated books, cached per character/level/party/DB version/scenario. User data,
+# like data/, and never a build artefact.
+.cache/

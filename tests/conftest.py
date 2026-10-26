@@ -132,3 +132,50 @@ def character_dir(tmp_path, monkeypatch):
     """Point main.CHARACTERS_DIR at an empty temp directory of character sheets."""
     monkeypatch.setattr(main, "CHARACTERS_DIR", tmp_path)
     return tmp_path
+
+
+BOOKS_ANSWER = '''### Book 1: "Ambush and Control"
+
+**Cantrips:**
+1. **Light** - illuminates the bridge.
+2. **Sacred Flame** - reliable radiant damage.
+3. **Friends** - buys a round of talking.
+
+**Rituals:**
+1. **Identify** - for the loot afterwards.
+
+---
+
+### Book 2: "Denial and Escape"
+
+**Cantrips:**
+1. **Booming Blade** - punishes movement.
+2. **Chill Touch** - stops healing.
+3. **Mending** - field repairs.
+
+**Rituals:**
+1. **Alarm** - watches the camp.
+'''
+
+
+@pytest.fixture
+def cache_dir(tmp_path, monkeypatch):
+    """Redirect cache writes to a temp directory so tests never touch the working tree."""
+    target = tmp_path / "cache"
+    monkeypatch.setattr(main, "CACHE_DIR", str(target))
+    return target
+
+
+@pytest.fixture
+def loaded_shell(shell, cache_dir):
+    """A shell with a character sheet and one generated answer already cached."""
+    shell.character = {
+        "Name": "Lois",
+        "Class": "Warlock",
+        "Current Level": 5,
+        "Party": "Barbarian, Fighter, Druid",
+    }
+    shell.character_context = "Name: Lois\nClass: Warlock\nLevel 5"
+    shell.llm.response = BOOKS_ANSWER
+    shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    return shell
