@@ -18,6 +18,15 @@ npm run dev        # http://localhost:5173
 
 `VITE_API_BASE` overrides the API address (default `http://localhost:8000`).
 
+`VITE_PORT` moves the dev server off 5173, for when another copy is already running. The
+API's CORS list follows `FRONTEND_PORT`, so a second instance needs both set to the same
+value or the browser blocks the request:
+
+```bash
+VITE_PORT=5273 VITE_API_BASE=http://localhost:8100 npm run dev
+API_PORT=8100 FRONTEND_PORT=5273 uvicorn backend.api.main:get_app --factory --port 8100
+```
+
 ## Scripts
 
 | Command | Does |

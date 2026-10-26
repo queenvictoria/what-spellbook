@@ -194,15 +194,34 @@ why its prompt instructs the model to report the gap rather than guess.
 
 Every spell mention in the UI links to `/rules?spell=Name`, which is served by
 `GET /api/spell`. The SRD is the authority and is searched first, but it carries only 339
-spells while the retrieval corpus carries 522, and the difference is exactly the
+spells while the retrieval corpus carries 517, and the difference is exactly the
 supplements a Pact of the Tome Warlock leans on: Thorn Whip, Lightning Lure, Gust, Mold
 Earth, Mind Sliver and Sapping Sting are all absent from the SRD. A link that 404s for the
 cantrips the app itself just recommended is worse than no link, so `find_spell` falls back
 to the corpus and the response's `source` says which one answered.
 
+`GET /api/spells` returns the **union** of both sources, not the corpus alone. The SRD has
+22 spells the corpus does not, and they are the 2024 generic renames of the 2014 branded
+ones — the SRD's *Hideous Laughter* against the corpus's *Tasha's Hideous Laughter*,
+*Floating Disk* against *Tenser's Floating Disk*. A model writing 2024 prose may use either
+name, so offering only the corpus's names leaves the 2024 name as dead text. The SRD's
+spelling wins where the two disagree, because that is what the lookup resolves to first.
+
+Two things about the corpus are worth knowing before trusting a filename:
+
+* **The page's title is the authority, not the filename.** Six files are named after a
+  different spell than they contain — `Confusion.md` holds Conjure Animals — and
+  `Meld Into Stone.md` capitalises a minor word the page does not. `spell_title` reads the
+  first heading, so a lookup and a link agree with the text the reader is shown.
+* **Names are never title-cased.** `title()` capitalises every word, so "Ray of Frost"
+  became "Ray Of Frost" and 77 spells containing a minor word silently stopped matching the
+  prose. It also breaks "Melf's Acid Arrow" into "Melf'S". The stems are already spelled
+  correctly, so the only correct transformation is to undo the `_s` apostrophe escape and
+  normalise the typographic apostrophe to the straight one the SRD uses.
+
 The two sources describe the same thing in different dialects, and `normalise_corpus_spell`
 rewrites the corpus's into the SRD's so one renderer handles both. The corpus's quirks are
-not uniform, which is why the normaliser is measured against all 522 files rather than a
+not uniform, which is why the normaliser is measured against all 517 files rather than a
 sample:
 
 * Three title spellings - a markdown link, a bare `# Name`, and one indented tags line.
@@ -219,6 +238,39 @@ The SRD side needs one conversion of its own: 13 spells carry their table inline
 and Confusion's entire behaviour table is one of them. `tables_to_text` renders them as
 sentences, so the numbers survive and no markup reaches the reader.
 
+### Eldritch Invocations
+
+Invocations are a Warlock class feature, not spells, so they are looked up separately rather
+than folded into `find_spell` — a class feature answering as if it were an SRD spell would
+be a category error the caller could not see.
+
+They come from the **Eldritch Invocation Options** section of the vendored
+`context/srd/classes.md`, which is the only place their effect text exists. The section is
+located by heading, because the chapter is 11,000 lines of class features and the
+invocation names are not distinguishable from any other `####` heading without it.
+
+Our own `context/classes/warlock/` is the fallback. It lists all 28 invocations with their
+level and prerequisite but not what they do, so it can answer "may I take this?" and not
+"what does it do?" — which is exactly why the class chapter was vendored. The response's
+`source` says which one answered (`vendored-srd-5.2.1` or `class-context`), because the two
+are not equally authoritative. The fallback's columns are located by header name rather
+than position, since the pact files order them differently from the base class file, and a
+table's `-` is read as "no value" rather than the literal string.
+
+The response shape is a spell's, because the same card renders both. The names are added to
+`GET /api/spells` because the books name invocations in the same sentence as spells —
+"Agonizing Blast on Eldritch Blast" — and a mention that does not link is the same defect
+either way. The front end tries `/api/spell` and falls back to `/api/invocation` on a 404,
+so the list does not need to say which is which.
+
+Vendoring the chapter widened what `/?` can answer — multiclassing and the wizard's
+spellbook are rules the SRD carries that were previously refused as absent — and it
+surfaced one false positive, now guarded. "how does a spear work" was answered with
+"Eldritch Spear", because the Spear itself lives inside an equipment *table* with no
+heading of its own, leaving the invocation as the only heading containing the word. A
+heading qualified by a distinctive word the question never mentioned is now rejected, which
+is a fourth condition on `_qualifies` alongside the three that were already there.
+
 ## Model and embedding configuration
 
 `LLM_MODEL` selects the model; OpenRouter or a local Ollama endpoint is chosen by the
@@ -229,7 +281,7 @@ depends on which model answers, so changing it changes cost and quality, not beh
 
 ## Testing
 
-657 pytest tests. The two that carry the most weight:
+808 pytest tests. The two that carry the most weight:
 
 - `test_service_imports_without_a_terminal` - guards the layering rule above.
 - An API test per error mapping - a wrong status code is a contract bug the front end

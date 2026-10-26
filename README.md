@@ -44,12 +44,12 @@ recommendation logic.
 Rules text (`/?`) is grounded in the vendored SRD 5.2.1 Markdown under `context/srd/`,
 which is CC-BY-4.0. See `context/srd/PROVENANCE.md` for attribution.
 
-https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
-https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
-https://www.dndbeyond.com/srd
-https://toolsandtaverns.com/spells
-https://dungeonmister.com/guides/classes-in-dungeons-dragons/celestial-warlock-dnd-2024-guide/
-https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
+- https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
+- https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
+- https://www.dndbeyond.com/srd
+- https://toolsandtaverns.com/spells
+- https://dungeonmister.com/guides/classes-in-dungeons-dragons/celestial-warlock-dnd-2024-guide/
+- https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
 
 ## Versions
 
@@ -68,6 +68,17 @@ The API must be running first (below). The dev server talks to `http://localhost
 directly rather than proxying, because the API allows that origin explicitly — a proxy
 would hide the CORS setup from the dev loop and only fail in a real deployment.
 `VITE_API_BASE` overrides the address for a build.
+
+Both ports are overridable, because more than one copy of each may be running on the same
+machine. `VITE_PORT` moves the dev server and `FRONTEND_PORT` tells the API which origin to
+allow; they must be set to the same value or the browser will block the request. `API_PORT`
+is documentation only — uvicorn takes `--port` — and `CORS_ORIGINS` adds any further
+origins as a comma-separated list.
+
+```bash
+VITE_PORT=5273 VITE_API_BASE=http://localhost:8100 npm run dev
+API_PORT=8100 FRONTEND_PORT=5273 uvicorn backend.api.main:get_app --factory --port 8100
+```
 
 The one thing the UI is careful about: an answer's `source` is always visible. A `sheet`
 answer is read verbatim from the character file and cannot be wrong, a `model` answer is
@@ -102,7 +113,8 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `POST /api/runs/{id}/rate` | Record an outcome rating |
 | `GET /api/rules?question=` | The `/?` command, grounded in the 2024 SRD |
 | `GET /api/spell?name=` | One spell's description, for every spell mention in the UI |
-| `GET /api/spells` | Every spell name the UI should link |
+| `GET /api/invocation?name=` | One Eldritch Invocation, from the SRD's class chapter |
+| `GET /api/spells` | Every name the UI should link — spells and invocations |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
 retrying could help:
@@ -411,7 +423,11 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [ ] Read books should look like a button with a carat
 - [ ] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
 - [ ] Opening in the scenario screen should show the results as well as the prompt.
-- [ ] The rules lookup button should be an icon and shouldn't wrap the text.
+- [x] The rules lookup button should be an icon and shouldn't wrap the text.
+- [ ] When reading a book open clicked local context spell descriptions in a pull out drawer.
+- [ ] Separate books with dividers
+- [ ] The pull out drawer of spells should have a search box at the top to search all spells.
+- [ ] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
 
 ### Choosing the model
 

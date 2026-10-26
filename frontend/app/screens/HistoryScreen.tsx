@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { ChevronDown, ChevronRight, Star } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 
 import { api, ApiError } from '@/api/client'
-import type { RunSummary } from '@/api/types'
-import { Markdown } from '@/components/Markdown'
+import type { Book, RunSummary } from '@/api/types'
+import { BookPanel } from '@/components/BookPanel'
 import { formatSeconds } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
@@ -100,6 +100,12 @@ export function HistoryScreen() {
  *
  * `open` is owned by the list because it drives the card's width; this component only
  * fetches the books and reports the toggle.
+ *
+ * The books are rendered with the same `BookPanel` the scenario screen uses, rather than
+ * a read-only preview. A rating is the whole reason to come back to a past run - "how did
+ * that approach actually go?" - and a history page that shows the stars but cannot set
+ * them makes the user navigate away to record the answer. Reusing the panel also means
+ * the two screens cannot drift apart in what they show.
  */
 function ViewRun({
   run,
@@ -110,9 +116,7 @@ function ViewRun({
   open: boolean
   onToggle: () => void
 }) {
-  const [books, setBooks] = useState<{ name: string; text: string; rating: number | null }[]>(
-    [],
-  )
+  const [books, setBooks] = useState<Book[]>([])
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
@@ -125,13 +129,7 @@ function ViewRun({
     setError(null)
     try {
       const result = await api.run(run.id)
-      setBooks(
-        result.books.map((book) => ({
-          name: book.name,
-          text: book.text,
-          rating: book.rating?.score ?? null,
-        })),
-      )
+      setBooks(result.books)
       onToggle()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e))
@@ -149,22 +147,13 @@ function ViewRun({
       {error && <p className="pt-1 text-red-300">{error}</p>}
       {open && (
         <div className="mt-3 space-y-3 border-t border-void-800 pt-3">
-          {books.map((book, i) => (
-            <div key={i}>
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-parchment">{book.name}</span>
-                {book.rating !== null && (
-                  <span className="flex items-center gap-0.5 text-radiant-400">
-                    <Star className="h-3 w-3 fill-radiant-400" />
-                    {book.rating}
-                  </span>
-                )}
-              </div>
-              {/* Rendered rather than printed raw: the model emits markdown, and a
-                  preview full of ** and # markers reads as corruption. Shown in full -
-                  the card is already open, so clipping it only hides what was asked for. */}
-              <Markdown text={book.text} className="prose-spell mt-1 text-xs" />
-            </div>
+          {books.map((book) => (
+            <BookPanel
+              key={book.index}
+              book={book}
+              scenario={run.scenario}
+              runId={run.id}
+            />
           ))}
           <Link
             to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}

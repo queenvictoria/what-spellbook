@@ -102,14 +102,15 @@ def corpus_spell_names(docs_path=None) -> list[str]:
         return []
     names = set()
     for path in root.rglob("*.md"):
-        name = prettify_name(path.stem)
-        if not name:
-            continue
         try:
             head = path.read_text(encoding="utf-8")[:400]
         except OSError:
             continue
-        if _SPELL_LEVEL.search(head):
+        if not _SPELL_LEVEL.search(head):
+            continue
+        # The page's own title wins over the filename, which is wrong for six files.
+        name = spell_title(head) or prettify_name(path.stem)
+        if name:
             names.add(name)
     return sorted(names)
 
@@ -128,9 +129,49 @@ def prettify_name(stem: str) -> str:
 
     The one stem that is genuinely malformed is "Heroes_ Feast", where the underscore
     stands in for an apostrophe rather than the ``_s`` escape.
+
+    A filename is still only a filename: six corpus files are named after a different
+    spell than the one they contain ("Confusion.md" holds Conjure Animals). Where the
+    file itself can be read, prefer :func:`spell_title`, which takes the name from the
+    page rather than the path.
     """
     name = re.sub(r"[_-]s\b", "'s", stem)
-    return name.replace("Heroes_ ", "Heroes' ")
+    return _straighten_apostrophes(name.replace("Heroes_ ", "Heroes' "))
+
+
+def _straighten_apostrophes(name: str) -> str:
+    """Normalise a typographic apostrophe to a straight one.
+
+    The corpus writes "Tenser\u2019s Floating Disk" and the SRD writes "Tenser's Floating
+    Disk". They are the same spell, and a name that differs only in which apostrophe it
+    uses is a name that fails to match, so both sources are normalised to the SRD's
+    convention. The front end folds the two together as well, for names it holds itself.
+    """
+    return name.replace("\u2019", "'")
+
+
+# The corpus writes a spell's title as its first line, either as a markdown link to
+# D&D Beyond (`# [Fireball](https://...)`) or, in 133 files, as a bare heading (`# Fireball`).
+_TITLE_LINK = re.compile(r"^\s*#\s*\[([^\]]+)\]\([^)]*\)\s*$")
+_TITLE_PLAIN = re.compile(r"^\s*#\s+(.+?)\s*$")
+
+
+def spell_title(text: str) -> str | None:
+    """The spell's own name, read from the first heading of its page.
+
+    This is the authority on what a corpus file contains, because the filename is not:
+    six files are named after a different spell than the page holds, and one
+    ("Meld Into Stone.md") capitalises a minor word the page does not. Reading the title
+    means a lookup and a link agree with the text the reader is shown.
+
+    Returns None when the page has no heading, so a caller can fall back to the filename.
+    """
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        match = _TITLE_LINK.match(line) or _TITLE_PLAIN.match(line)
+        return _straighten_apostrophes(match.group(1).strip()) if match else None
+    return None
 
 
 def header_block(text: str) -> str:

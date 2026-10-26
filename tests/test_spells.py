@@ -130,10 +130,79 @@ def test_body_refactor_does_not_leak_level_into_header():
         ("Drawmij_s Instant Summons", "Drawmij's Instant Summons"),
         ("Acid Splash", "Acid Splash"),
         ("Melf-s Acid Arrow", "Melf's Acid Arrow"),
+        # The underscore stands in for an apostrophe here rather than the `_s` escape.
+        ("Heroes_ Feast", "Heroes' Feast"),
     ],
 )
 def test_prettify_name_restores_apostrophes(stem, expected):
     assert spells.prettify_name(stem) == expected
+
+
+@pytest.mark.parametrize(
+    "stem",
+    [
+        "Ray of Frost",
+        "Toll the Dead",
+        "Word of Radiance",
+        "Spare the Dying",
+        "Hunger of Hadar",
+        "Arms of Hadar",
+        "Wall of Fire",
+        "Shield of Faith",
+        "Speak with Animals",
+        "Protection from Energy",
+        "Transport via Plants",
+        "Create or Destroy Water",
+        "Meld Into Stone",
+        "Pass Without Trace",
+    ],
+)
+def test_prettify_name_leaves_minor_words_lowercase(stem):
+    """A minor word must not be capitalised.
+
+    ``title()`` capitalises every word, so "Ray of Frost" became "Ray Of Frost" - which
+    never matches the prose, and every spell containing a minor word silently stopped
+    being linkable. The stems are already spelled correctly, so the only correct
+    transformation is to leave them alone.
+    """
+    assert spells.prettify_name(stem) == stem
+
+
+@pytest.mark.parametrize(
+    "stem,expected",
+    [
+        ("Abi-Dalzim\u2019s Horrid Wilting", "Abi-Dalzim's Horrid Wilting"),
+        ("Green-Flame Blade", "Green-Flame Blade"),
+        ("Melf_s Acid Arrow", "Melf's Acid Arrow"),
+        ("Tasha_s Hideous Laughter", "Tasha's Hideous Laughter"),
+    ],
+)
+def test_prettify_name_preserves_hyphens_and_possessives(stem, expected):
+    """Hyphenated names and possessives survive.
+
+    A "lowercase the minor words" rule would break "Melf's Acid Arrow", because the `s`
+    after the apostrophe looks like a minor word. Not title-casing at all is what makes
+    these correct. The typographic apostrophe is normalised to a straight one so the
+    corpus and the SRD agree on the spelling of the same spell.
+    """
+    result = spells.prettify_name(stem)
+    assert result == expected
+    assert "S " not in result and not result.endswith("S")
+
+
+def test_no_corpus_name_has_a_capitalised_minor_word():
+    """Whole-corpus guard: no name may contain a capitalised minor word.
+
+    Checked across all 522 corpus spells rather than a sample, because the defect was
+    invisible in any single name - it only showed up as 77 names that failed to match.
+    """
+    minor = {"Of", "The", "And", "With", "To", "From", "Via", "Or", "Into"}
+    offenders = [
+        name
+        for name in spells.corpus_spell_names()
+        if minor & set(name.split())
+    ]
+    assert offenders == []
 
 
 # --- metadata round trip ---

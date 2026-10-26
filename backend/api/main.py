@@ -385,15 +385,49 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             )
         return schemas.SpellSchema(**spell)
 
+    @app.get("/api/invocation", response_model=schemas.SpellSchema, tags=["rules"])
+    def get_invocation(name: str = Query(min_length=1,
+                                         description="Invocation name, e.g. Agonizing Blast")):
+        """One Eldritch Invocation's rules, read from our own class context.
+
+        A separate endpoint from ``/api/spell`` because an invocation is not a spell: the
+        2024 SRD does not publish them at all, so the text comes from
+        ``context/classes/warlock/`` and the response's ``source`` says so. Folding them
+        into the spell lookup would make a class feature look like an SRD quote.
+
+        The response shape is the same as a spell's, because the card that renders it is
+        the same card.
+        """
+        invocation = rules.find_invocation(name)
+        if invocation is None:
+            raise _error(
+                404,
+                f"No Eldritch Invocation named '{name}' is in the class context. "
+                "Check the spelling - the context uses the name as published, so "
+                "\"Agonizing Blast\" rather than \"Agonizing\".",
+            )
+        return schemas.SpellSchema(**invocation)
+
     @app.get("/api/spells", response_model=list[str], tags=["rules"])
     def spell_names():
-        """Every spell name in the retrieval corpus, for linking prose to the SRD.
+        """Every name the front end may link, for turning prose into links.
 
         Sent from the server rather than hard-coded in the front end so there is one
-        authority on which names exist: the corpus is what the model may pick from, and a
-        spell added to it should become linkable without editing the UI.
+        authority on which names exist: a spell added to the corpus or the SRD should
+        become linkable without editing the UI.
+
+        This is the union of the corpus and the SRD, not the corpus alone. The SRD has 22
+        spells the corpus does not - the 2024 generic renames of the 2014 branded ones,
+        "Hideous Laughter" for "Tasha's Hideous Laughter" - and a model writing 2024 prose
+        may use either name.
+
+        Eldritch Invocations are included even though they are not spells, because the
+        books name them in the same prose ("Agonizing Blast on Eldritch Blast") and a
+        mention that does not link is the same defect either way. The front end resolves
+        each name against ``/api/spell`` and falls back to ``/api/invocation``, so the
+        list does not need to say which is which.
         """
-        return spells.corpus_spell_names()
+        return sorted(set(rules.linkable_spell_names()) | set(rules.invocation_names()))
 
     @app.get("/api/sheet-keys", response_model=list[str], tags=["character"])
     def sheet_keys():

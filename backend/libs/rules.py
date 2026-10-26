@@ -48,6 +48,29 @@ RULES_SOURCE = "vendored-srd-5.2.1"
 # in the UI, because the SRD is the 2024 authority and the corpus is not.
 CORPUS_SOURCE = "retrieval-corpus"
 
+# The SRD's class chapter. It is where the Eldritch Invocation options live, and it is the
+# only vendored file that carries their effect text.
+CLASSES_FILE = "classes.md"
+# The anchor for the invocation options within that chapter. The file is 11,000 lines of
+# class features, so the section is located by heading rather than by scanning for names.
+INVOCATION_SECTION = "Eldritch Invocation Options"
+
+# Used when an invocation is in our own class context but not the vendored SRD. The
+# distinction is shown in the UI, because the SRD is the 2024 authority and our context is
+# not - and our context carries only the level and prerequisite, not what the invocation
+# does.
+CLASS_SOURCE = "class-context"
+
+# The class context files that carry invocation tables, in the order a lookup should try
+# them. The base class file holds the full list; the pact files hold the handful that
+# relate to that pact. These are the fallback for an invocation the SRD does not carry.
+INVOCATION_FILES = (
+    "classes/warlock/base.md",
+    "classes/warlock/pact/tome.md",
+    "classes/warlock/pact/blade.md",
+    "classes/warlock/pact/chain.md",
+)
+
 # Citation shown when a question matches nothing, so the reply still points somewhere.
 RULES_INDEX = "context/srd/playing-the-game.md"
 
@@ -449,6 +472,18 @@ _MIN_SUBJECT_WEIGHT = 0.65
 # accounts for only a third is talking about something the question did not ask about.
 _HEADING_SHARE = 0.5
 
+# And the winning heading must not be *qualified* by a distinctive word the question never
+# mentioned. A heading that adds a real word is naming a different thing: "how does a spear
+# work" was answered with "Eldritch Spear" once the class chapter was vendored, because
+# "spear" is the only weapon name that appears in any heading and the Spear itself lives
+# inside an equipment table with no heading of its own.
+#
+# The threshold is what separates a qualifier from a stemming artifact. A word the
+# question did mention but that stems differently weighs exactly zero - "wild shape" leaves
+# "shape" at 0.0 against "Wild Shape", and "grappling" at 0.0 against "Grappling" - so a
+# floor above zero ignores those while still catching "eldritch" at 0.93.
+_MIN_QUALIFIER_WEIGHT = 0.5
+
 
 # Built once, lazily, from the vendored files: term -> number of sections containing it.
 _SECTION_FREQUENCY: dict[str, int] | None = None
@@ -599,7 +634,7 @@ def _qualifies(scored, terms) -> list:
     Shared by :func:`find_passages` and :func:`gather` so the single-file path and the
     all-files path cannot drift apart and answer the same question two different ways.
 
-    Three conditions, in order, and each one catches a failure seen in practice:
+    Four conditions, in order, and each one catches a failure seen in practice:
 
     1. The question's most distinctive term must be distinctive enough to be a subject
        (``_MIN_SUBJECT_WEIGHT``). Without it "what is my spell save dc" is answered with
@@ -610,6 +645,9 @@ def _qualifies(scored, terms) -> list:
     3. Among those, the best must account for half the question's remaining substance
        (``_HEADING_SHARE``). Without it "Combat Encounters" outranked "Hiding" for "can I
        hide in combat", because the two matched their question equally often.
+    4. And that heading must not be qualified by a distinctive word the question never
+       mentioned (``_MIN_QUALIFIER_WEIGHT``). Without it "how does a spear work" was
+       answered with "Eldritch Spear" once the class chapter was vendored.
 
     Refusing is the honest outcome: the SRD is a subset of the 2024 rulebook, and a
     plausible-looking paragraph presented as the rule reads as sourced.
@@ -631,7 +669,48 @@ def _qualifies(scored, terms) -> list:
     named.sort(key=lambda item: (-item[0], item[1]))
     if _discrimination(named[0][2], set(ordered)) < _HEADING_SHARE:
         return []
-    return named
+
+    # Filtered rather than rejected: a qualified heading is a worse *candidate*, not a
+    # reason to refuse the question. "how does grappling work" scores "Grappled Condition"
+    # above "Grappling", and dropping the qualified one leaves the right answer.
+    unqualified = [
+        item for item in named
+        if _qualifier_weight(item[2], set(ordered)) < _MIN_QUALIFIER_WEIGHT
+    ]
+    return unqualified
+
+
+def _qualifier_weight(heading: str, terms) -> float:
+    """The weight of the most distinctive word *qualifying* a heading, or zero.
+
+    A qualifier is a leading modifier: English puts the head noun last, so "Eldritch
+    Spear" is a kind of spear and "Arcane Hand" a kind of hand. Only the words *before* the
+    first one the question matched are considered, which is what separates a qualifier from
+    the rest of the heading:
+
+    * "Eldritch Spear" for "how does a spear work" - "eldritch" leads, at 0.93. Rejected.
+    * "Grappled Condition" for "how does grappling work" - "grappled" is the first match,
+      so nothing leads it. Kept, and it is the right answer.
+    * "Stabilizing a Character" for "how do I stabilize a creature" - "stabilizing" leads.
+      Kept.
+    * "Level 2: Wild Shape" - the level prefix is stripped, then "wild" leads. Kept.
+
+    The comparison folds the heading's words the same way :func:`_terms` folds the
+    question's, because the two are otherwise never equal: the question yields the stem
+    ``multiclas`` while the heading says "Multiclass", and ``shap`` against "Shape".
+    Comparing raw words made every legitimate heading look like it added something.
+
+    A leading "Level 1:" is stripped first. The class chapter prefixes every feature
+    heading with its level, and "level" is a word the rulebook uses everywhere, so it
+    carries real weight while saying nothing about the subject.
+    """
+    subject = re.sub(r"^level\s+\d+\s*:\s*", "", heading.lower())
+    leading = []
+    for word in re.findall(r"[a-z]{2,}", subject):
+        if _fold(word) in terms:
+            break
+        leading.append(word)
+    return max((term_weight(word) for word in leading), default=0.0)
 
 
 def _discrimination(heading: str, terms) -> float:
@@ -851,6 +930,38 @@ def spell_names() -> list[str]:
     return sorted(_spells_index())
 
 
+def linkable_spell_names() -> list[str]:
+    """Every spell name the front end may link, as the union of both sources.
+
+    The corpus is what the model picks from, but it is not the only thing it may *name*:
+    the SRD carries 22 spells the corpus does not, and they are the 2024 generic renames
+    of the 2014 branded ones - the SRD's "Hideous Laughter" against the corpus's "Tasha's
+    Hideous Laughter", "Floating Disk" against "Tenser's Floating Disk". A model writing
+    prose may use either name, so both must be linkable or the 2024 name renders as dead
+    text. The reverse also holds: 200 corpus spells are not in the SRD at all.
+
+    The SRD's spelling wins where the two disagree, because that is the name the lookup
+    resolves to first and the one the card will show.
+    """
+    from . import spells as spells_module
+
+    merged: dict[str, str] = {}
+    for name in spells_module.corpus_spell_names():
+        merged.setdefault(_fold_name(name), name)
+    for name in _spells_index().values():
+        merged[_fold_name(name[0])] = name[0]
+    return sorted(merged.values())
+
+
+def _fold_name(name: str) -> str:
+    """A comparison key for a spell name: case- and apostrophe-insensitive.
+
+    The two sources disagree on the apostrophe - the corpus writes "Tenser_s" and the SRD
+    writes a typographic one - so folding both is what makes them the same spell.
+    """
+    return name.replace("\u2019", "'").lower()
+
+
 def _spells_index() -> dict[str, tuple[str, str]]:
     """``{lowercased name: (name as written, body)}`` for the vendored SRD's spells.
 
@@ -908,7 +1019,7 @@ def find_spell(name: str) -> dict | None:
     SRD's eyes - product identity was removed in 2024 - so the SRD is not searched for a
     renamed equivalent; the corpus entry is returned instead.
     """
-    wanted = " ".join(str(name).split()).strip().lower()
+    wanted = _fold_name(" ".join(str(name).split()).strip())
     if not wanted:
         return None
 
@@ -937,11 +1048,211 @@ def _corpus_spell(wanted: str) -> dict | None:
     except OSError:
         return None
     return {
-        "name": spells_module.prettify_name(path.stem),
+        # The same name the index is keyed on, so the card's heading matches the link
+        # the reader followed to get here.
+        "name": spells_module.spell_title(text) or spells_module.prettify_name(path.stem),
         "text": normalise_corpus_spell(text),
         "url": _reference(path),
         "source": CORPUS_SOURCE,
     }
+
+
+# A markdown table row: `| Agonizing Blast | 2 | A damage-dealing cantrip | Yes |`.
+_TABLE_ROW = re.compile(r"^\s*\|(.+)\|\s*$")
+# The `| --- | --- |` separator under a table's header row.
+_TABLE_RULE = re.compile(r"^\s*\|[\s:|-]+\|\s*$")
+
+
+def _invocation_rows() -> dict[str, dict]:
+    """Every Eldritch Invocation our class context lists, keyed by folded name.
+
+    The 2024 SRD does not publish invocations - the vendored files have no invocation text
+    at all - so this reads our own class context instead, and the response says so. The
+    tables there are the authority on the invocation's minimum level and prerequisite,
+    which is what a recommendation has to respect.
+
+    A name appearing in more than one file keeps the first, because the base class file
+    holds the full list and the pact files repeat the entries that relate to them.
+    """
+    found: dict[str, dict] = {}
+    for relative in INVOCATION_FILES:
+        path = config.CONTEXT_DIR_PATH / relative
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for row in _invocation_table_rows(text):
+            name = row["name"]
+            found.setdefault(_fold_name(name), {**row, "url": _reference(path)})
+    return found
+
+
+def _invocation_table_rows(text: str) -> list[dict]:
+    """Parse the invocation tables out of one context file.
+
+    Only tables whose header names an invocation are read, so the progression and feature
+    tables in the same file are not mistaken for invocations. The columns are located by
+    header name rather than by position, because the pact files order them differently
+    from the base class file.
+    """
+    rows: list[dict] = []
+    header: list[str] | None = None
+
+    for line in text.splitlines():
+        if _TABLE_RULE.match(line):
+            continue
+        match = _TABLE_ROW.match(line)
+        if not match:
+            header = None
+            continue
+
+        cells = [c.strip() for c in match.group(1).split("|")]
+        if header is None:
+            lowered = [c.lower() for c in cells]
+            if "invocation" in lowered:
+                header = lowered
+            continue
+
+        if len(cells) != len(header):
+            continue
+        row = dict(zip(header, cells))
+        name = row.get("invocation", "").strip()
+        if not name or name.startswith("-"):
+            continue
+        rows.append(
+            {
+                "name": name,
+                "level": _first_int(row.get("lv") or row.get("minimum level") or ""),
+                "prereq": _dash_to_none(row.get("prereq", "")),
+                "repeatable": row.get("repeatable", "").strip().lower() == "yes",
+                "note": _dash_to_none(row.get("note", "")),
+            }
+        )
+    return rows
+
+
+def _first_int(text: str) -> int | None:
+    match = re.search(r"\d+", text or "")
+    return int(match.group(0)) if match else None
+
+
+def _dash_to_none(text: str) -> str | None:
+    """A table's "-" means "no value", not the literal string."""
+    cleaned = (text or "").strip()
+    return None if cleaned in ("", "-", "\u2014") else cleaned
+
+
+@lru_cache(maxsize=1)
+def _invocations_index() -> dict[str, tuple[str, str]]:
+    """``{folded name: (name as written, body)}`` for the SRD's Eldritch Invocations.
+
+    Read from the ``Eldritch Invocation Options`` section of the vendored class chapter,
+    which is the only place the effect text lives. The section is located by heading
+    because the file is 11,000 lines of class features and the invocation names are not
+    distinguishable from any other ``####`` heading without it.
+
+    The body excludes the ``####`` heading, because the card already shows the name.
+    """
+    path = srd_dir() / CLASSES_FILE
+    if not path.is_file():
+        return {}
+    try:
+        markdown = read_srd(path)
+    except RulesUnavailable:
+        return {}
+
+    start = markdown.find(f"### {INVOCATION_SECTION}")
+    if start < 0:
+        # The document's shape changed. Returning nothing is right: indexing the whole
+        # chapter would offer every class feature as an invocation.
+        logging.warning(
+            f"{INVOCATION_SECTION!r} not found in {CLASSES_FILE}; no invocations indexed."
+        )
+        return {}
+
+    # The section runs to the next `###` heading, which is the Warlock spell list.
+    rest = markdown[start:]
+    following = re.search(r"\n### ", rest[4:])
+    section = rest[: 4 + following.start()] if following else rest
+
+    index: dict[str, tuple[str, str]] = {}
+    parts = re.split(r"^#### (.+)$", section, flags=re.MULTILINE)
+    for i in range(1, len(parts) - 1, 2):
+        name = parts[i].strip()
+        body = parts[i + 1].strip()
+        if body:
+            index[_fold_name(name)] = (name, body)
+    return index
+
+
+def find_invocation(name: str) -> dict | None:
+    """One Eldritch Invocation's rules, or None if neither source has such an entry.
+
+    Invocations are not spells, so they are looked up separately rather than folded into
+    :func:`find_spell` - a class feature answering as if it were an SRD spell would be a
+    category error the caller could not see.
+
+    The vendored SRD is preferred because it carries the invocation's *effect* text, which
+    is what a reader actually wants to know. Our own class context is the fallback: it
+    lists all 28 invocations with their level and prerequisite, but not what they do, so
+    it can only answer "may I take this?" rather than "what does it do?". The response's
+    ``source`` says which one answered, because the two are not equally authoritative.
+    """
+    wanted = _fold_name(" ".join(str(name).split()).strip())
+    if not wanted:
+        return None
+
+    found = _invocations_index().get(wanted)
+    if found is not None:
+        name, body = found
+        return {
+            "name": name,
+            "text": body,
+            "url": _reference(srd_dir() / CLASSES_FILE),
+            "source": RULES_SOURCE,
+        }
+
+    row = _invocation_rows().get(wanted)
+    if row is None:
+        return None
+    return {
+        "name": row["name"],
+        "text": _invocation_text(row),
+        "url": row["url"],
+        "source": CLASS_SOURCE,
+    }
+
+
+def _invocation_text(row: dict) -> str:
+    """Render an invocation row as the same shape a spell's text takes.
+
+    The card renders one markdown subset for both, so an invocation is written as a stats
+    line and a sentence rather than as a table - the renderer has no table syntax, and a
+    raw pipe row would show as literal text.
+    """
+    parts = []
+    if row["level"] is not None:
+        parts.append(f"Minimum Warlock level {row['level']}")
+    if row["prereq"]:
+        parts.append(f"Prerequisite: {row['prereq']}")
+    if row["repeatable"]:
+        parts.append("Repeatable")
+    lines = [f"_{' \u00b7 '.join(parts)}_"] if parts else []
+    if row["note"]:
+        lines.append(row["note"])
+    return "\n\n".join(lines)
+
+
+def invocation_names() -> list[str]:
+    """Every invocation name our class context lists, sorted.
+
+    Offered to the front end alongside the spell names so a mention in a book becomes a
+    link. Invocations are named in the same prose as spells - "Agonizing Blast on Eldritch
+    Blast" - and leaving them as dead text is the same defect as an unlinked spell.
+    """
+    return sorted(row["name"] for row in _invocation_rows().values())
 
 
 # The corpus writes a spell's title as a markdown link to D&D Beyond, and its level,
@@ -1044,14 +1355,14 @@ def _corpus_spell_paths() -> dict[str, Path]:
         return {}
     found: dict[str, Path] = {}
     for path in root.rglob("*.md"):
-        name = spells_module.prettify_name(path.stem)
-        if not name:
-            continue
         try:
             head = path.read_text(encoding="utf-8")[:400]
         except OSError:
             continue
         if not _CORPUS_LEVEL.search(head):
             continue
-        found.setdefault(name.lower(), path)
+        # The page's own title wins over the filename, which is wrong for six files.
+        name = spells_module.spell_title(head) or spells_module.prettify_name(path.stem)
+        if name:
+            found.setdefault(_fold_name(name), path)
     return found

@@ -115,10 +115,23 @@ export const api = {
 
   rules: (question: string) => request<Answer>(`/api/rules${query({ question })}`),
 
-  /** One spell's own text. A 404 means the SRD has no spell by that name. */
+  /** One spell's own text. A 404 means neither the SRD nor the corpus has that name. */
   spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),
 
-  /** Every spell name in the corpus, used to decide which prose mentions to link. */
+  /**
+   * One Eldritch Invocation's rules.
+   *
+   * Separate from `spell` because an invocation is a class feature, not a spell, and the
+   * 2024 SRD does not publish them - the text comes from our own class context.
+   */
+  invocation: (name: string) => request<Spell>(`/api/invocation${query({ name })}`),
+
+  /**
+   * Every name the prose may mention, used to decide which mentions to link.
+   *
+   * Spells and invocations together: the books name both in the same sentence, and the
+   * caller resolves each name against `spell` and falls back to `invocation`.
+   */
   spells: () => request<string[]>('/api/spells'),
 
   history: (character?: string) =>

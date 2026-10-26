@@ -465,3 +465,59 @@ def test_an_srd_spell_prefers_the_srd(api):
 
 def test_spell_requires_a_name(api):
     assert api.get("/api/spell", params={"name": ""}).status_code == 422
+
+
+def test_invocation_is_served_from_the_vendored_srd(api):
+    """An invocation is not a spell, but the SRD does carry it - in the class chapter.
+
+    The response shape matches a spell's because the same card renders both, and the
+    source says the text is the SRD's rather than our own class context's.
+    """
+    response = api.get("/api/invocation", params={"name": "Agonizing Blast"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Agonizing Blast"
+    assert body["source"] == "vendored-srd-5.2.1"
+    assert body["url"] == "context/srd/classes.md"
+    assert "Charisma modifier" in body["text"]
+
+
+def test_an_unknown_invocation_is_a_404(api):
+    response = api.get("/api/invocation", params={"name": "Flaming Death Ray"})
+    assert response.status_code == 404
+    assert "Flaming Death Ray" in response.json()["detail"]
+
+
+def test_the_link_list_covers_spells_and_invocations(api):
+    """One list, because the prose names both in the same sentence.
+
+    The books write "Agonizing Blast on Eldritch Blast" - a spell and an invocation in one
+    clause - so a list holding only spells leaves half of that sentence as dead text.
+    """
+    names = api.get("/api/spells").json()
+    assert "Fireball" in names
+    assert "Thorn Whip" in names
+    assert "Hideous Laughter" in names
+    assert "Agonizing Blast" in names
+    assert "Repelling Blast" in names
+    assert "Eldritch Spear" in names
+    assert "Mask of Many Faces" in names
+    assert "Pact of the Tome" in names
+
+
+def test_every_name_in_the_link_list_resolves(api):
+    """A name offered for linking must not 404, whichever endpoint answers it.
+
+    The front end tries `/api/spell` and falls back to `/api/invocation`, so a name is
+    only linkable if one of the two has it. Checked across the whole list rather than a
+    sample, because one bad name is invisible in a spot check.
+    """
+    names = api.get("/api/spells").json()
+    misses = []
+    for name in names:
+        if api.get("/api/spell", params={"name": name}).status_code == 200:
+            continue
+        if api.get("/api/invocation", params={"name": name}).status_code == 200:
+            continue
+        misses.append(name)
+    assert misses == [], f"{len(misses)} linkable names do not resolve: {misses[:5]}"

@@ -26,9 +26,11 @@ const EXAMPLES = [
  * happens the honest outcome is to say which part is missing rather than to answer from
  * memory, and a 404 is a normal result here, not an error to hide.
  *
- * `?spell=Name` opens a spell instead of a question. The spell text comes from the same
- * vendored SRD, so a spell the corpus knows but the SRD dropped (Tenser's Floating Disk,
- * Bigby's Hand) reports that plainly rather than showing nothing.
+ * `?spell=Name` opens a spell instead of a question. The text is quoted from a vendored
+ * file rather than generated, so it cannot be a paraphrase of a damage die. Three sources
+ * are tried in order and the card says which answered: the 2024 SRD, the retrieval corpus
+ * for the ~200 spells the SRD does not carry (Tenser's Floating Disk, Bigby's Hand), and
+ * our own class context for Eldritch Invocations, which the SRD does not publish at all.
  */
 export function RulesScreen() {
   const [params, setParams] = useSearchParams()
@@ -50,8 +52,16 @@ export function RulesScreen() {
   useEffect(() => {
     if (!spellName) return
     let cancelled = false
+    // A name in the link list may be a spell or an Eldritch Invocation, and the list does
+    // not say which. Trying the spell first and falling back keeps the front end from
+    // needing a second list, and the fallback only runs on a 404 - a real failure still
+    // surfaces rather than being swallowed as "not an invocation either".
     api
       .spell(spellName)
+      .catch((e: unknown) => {
+        if (e instanceof ApiError && e.status === 404) return api.invocation(spellName)
+        throw e
+      })
       .then((found) => {
         if (!cancelled) setLoaded({ name: spellName, spell: found })
       })
@@ -153,10 +163,13 @@ export function RulesScreen() {
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle className="text-sm">{spell.name}</CardTitle>
-            {/* The SRD is the 2024 authority; the corpus is not. A spell the SRD does not
-                carry is still shown, but it must not look like an SRD quote. */}
+            {/* The SRD is the 2024 authority; the other two sources are not. A spell the
+                SRD does not carry is still shown, but it must not look like an SRD quote -
+                and an invocation is not even a spell, so it must not look like one. */}
             {spell.source === 'vendored-srd-5.2.1' ? (
               <SourceBadge source="rules" />
+            ) : spell.source === 'class-context' ? (
+              <Badge tone="muted">Eldritch Invocation</Badge>
             ) : (
               <Badge tone="muted">From the spell corpus</Badge>
             )}

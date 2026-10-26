@@ -259,8 +259,6 @@ def test_a_rule_question_is_answered_from_the_heading_that_names_it(question, he
         "how does two weapon fighting work",
         "how does flanking work",
         "how does a spear work",
-        "what is a wizard's spellbook",
-        "how do I multiclass",
     ],
 )
 def test_a_rule_the_srd_does_not_contain_is_refused(question):
@@ -272,6 +270,12 @@ def test_a_rule_the_srd_does_not_contain_is_refused(question):
     on "two" and "combat", words the rulebook uses everywhere, so they cannot identify a
     rule.
 
+    "how does a spear work" is the same failure arriving from the other direction. The
+    Spear is a weapon that lives inside an equipment *table* with no heading of its own, so
+    once the class chapter was vendored the only heading containing the word was "Eldritch
+    Spear" - a Warlock invocation, and not what was asked about. A leading qualifier the
+    question never mentioned is what rules it out.
+
     This is a boundary rather than a guarantee. A question whose subject the SRD does not
     have but which shares a distinctive word with a neighbouring rule can still return that
     neighbour - "what is a subclass feature" reaches "Special Feature". That is deliberate:
@@ -281,6 +285,39 @@ def test_a_rule_the_srd_does_not_contain_is_refused(question):
     """
     with pytest.raises(rules.RulesUnavailable):
         rules.gather(question)
+
+
+@pytest.mark.parametrize(
+    ("question", "heading"),
+    [
+        # Both were refused before the class chapter was vendored, and both are genuinely
+        # in it. Multiclassing is a rule the SRD carries; the wizard's spellbook is a class
+        # feature. Refusing them was the gap, not the guard.
+        ("how do I multiclass", "Multiclass"),
+        ("what is a wizard's spellbook", "Spellbook"),
+    ],
+)
+def test_a_class_rule_is_answered_from_the_class_chapter(question, heading):
+    """Vendoring classes.md must widen what can be answered, not just add invocations."""
+    result = rules.gather(question)
+    assert result["url"] == "context/srd/classes.md"
+    assert heading.lower() in result["passages"][0].splitlines()[0].lower()
+
+
+def test_a_leading_qualifier_is_not_mistaken_for_the_subject():
+    """A heading that *qualifies* the subject is naming a different thing.
+
+    "Eldritch Spear" is a Warlock invocation; the question was about a spear. English puts
+    the head noun last, so only the words before the first match are qualifiers - which is
+    what keeps "Grappled Condition" (correct for "how does grappling work") while rejecting
+    "Eldritch Spear".
+    """
+    assert rules._qualifier_weight("Eldritch Spear", {"spear"}) > 0.5
+    assert rules._qualifier_weight("Grappled Condition", {"grappl"}) == 0.0
+    assert rules._qualifier_weight("Stabilizing a Character", {"stabiliz"}) == 0.0
+    # The class chapter prefixes every feature heading with its level, which says nothing
+    # about the subject and must not count as a qualifier.
+    assert rules._qualifier_weight("Level 2: Wild Shape", {"wild", "shap"}) == 0.0
 
 
 def test_a_missing_corpus_is_reported_not_answered():
@@ -489,6 +526,95 @@ def test_a_spell_name_the_srd_dropped_falls_back_to_the_corpus():
     assert plain["source"] == rules.RULES_SOURCE
 
 
+# --- Eldritch Invocations ---
+
+
+def test_invocations_are_read_from_the_vendored_class_chapter():
+    """The invocation options live in the SRD's class chapter, and that is the source.
+
+    They are not in any other vendored file - the chapter is the only place the effect
+    text exists - so the section is located by heading within an 11,000-line document.
+    """
+    names = rules.invocation_names()
+    assert len(names) >= 25, f"unexpected invocation count: {len(names)}"
+    for name in ("Agonizing Blast", "Repelling Blast", "Eldritch Spear",
+                 "Mask of Many Faces", "Pact of the Tome"):
+        assert name in names, name
+
+    assert len(rules._invocations_index()) == 28
+
+
+def test_an_invocation_is_quoted_from_the_srd():
+    """The SRD is the authority, and it carries the effect text our context does not.
+
+    Our own class context lists all 28 invocations with their level and prerequisite but
+    not what they do, so it can only answer "may I take this?" - the SRD answers "what
+    does it do?". The card shows the source, so the distinction has to survive.
+    """
+    invocation = rules.find_invocation("Agonizing Blast")
+    assert invocation is not None
+    assert invocation["source"] == rules.RULES_SOURCE
+    assert invocation["url"] == "context/srd/classes.md"
+    assert invocation["name"] == "Agonizing Blast"
+
+
+def test_an_invocation_carries_its_effect_text():
+    """The effect is the point of the card, and it is what the class context lacks.
+
+    Before the class chapter was vendored the card showed only "Minimum Warlock level 2 ·
+    Prerequisite: ... · Repeatable" - which answers whether the invocation may be taken,
+    not what it does.
+    """
+    agonizing = rules.find_invocation("Agonizing Blast")
+    assert "Charisma modifier" in agonizing["text"]
+    assert "Level 2+ Warlock" in agonizing["text"]
+
+    faces = rules.find_invocation("Mask of Many Faces")
+    assert "Disguise Self" in faces["text"]
+
+    tome = rules.find_invocation("Pact of the Tome")
+    assert "Book of Shadows" in tome["text"]
+
+
+def test_the_class_context_is_the_fallback_for_an_invocation_the_srd_lacks():
+    """Our context still answers when the SRD does not, and says so.
+
+    It carries the level and prerequisite for all 28, so it is a real fallback rather than
+    a stub - but it is not the authority, and the response must not claim to be.
+    """
+    row = rules._invocation_rows()["agonizing blast"]
+    assert row["level"] == 2
+    assert row["repeatable"] is True
+    assert row["url"] == "context/classes/warlock/base.md"
+
+    # The rendered fallback names the level and prereq, and no effect text.
+    text = rules._invocation_text(row)
+    assert "level 2" in text
+    assert "damage-dealing Warlock cantrip" in text
+    assert "Repeatable" in text
+
+    # A row with no prereq must not render the literal "-" the table uses for "none".
+    faces = rules._invocation_text(rules._invocation_rows()["mask of many faces"])
+    assert "Prerequisite" not in faces
+    assert "-" not in faces
+
+
+def test_an_invocation_is_not_a_spell():
+    """The two lookups must stay separate.
+
+    Folding invocations into `find_spell` would make a class feature answer as if it were
+    an SRD spell, and would let a spell lookup return something that is not a spell.
+    """
+    assert rules.find_spell("Agonizing Blast") is None
+    assert rules.find_invocation("Fireball") is None
+
+
+def test_every_invocation_name_resolves():
+    """A name offered for linking must not 404, checked across the whole list."""
+    misses = [n for n in rules.invocation_names() if rules.find_invocation(n) is None]
+    assert misses == [], f"{len(misses)} invocation names do not resolve: {misses[:5]}"
+
+
 def test_a_corpus_only_cantrip_resolves():
     """Thorn Whip is in the corpus and not the SRD, and the app recommends it.
 
@@ -499,6 +625,74 @@ def test_a_corpus_only_cantrip_resolves():
     assert spell is not None
     assert spell["source"] == rules.CORPUS_SOURCE
     assert "1d6 Piercing damage" in spell["text"]
+
+
+def test_a_corpus_spell_is_named_as_its_page_names_it():
+    """The page's own title is the authority, not the filename.
+
+    Six corpus files are named after a different spell than the page holds - "Confusion.md"
+    contains Conjure Animals - and "Meld Into Stone.md" capitalises a minor word the page
+    does not. Keying the corpus index on the filename would file Conjure Animals' text
+    under "Confusion", so a lookup for Confusion would return the wrong spell's rules.
+
+    All six misnamed files happen to hold a spell the SRD also has, so the SRD answers
+    first and the corpus file is never reached for those names. The filename must still
+    not be offered as a corpus name, or the corpus would claim to hold a spell it does not.
+    """
+    from backend.libs import spells as spells_module
+
+    corpus = spells_module.corpus_spell_names()
+    assert "Conjure Animals" in corpus
+    # The filename's spelling is not a corpus name, because the page is not that spell.
+    assert "Confusion" not in corpus
+    assert "Vitriolic Sphere" not in corpus
+
+    # And the SRD still answers for the names the filenames claimed.
+    for name in ("Confusion", "Disintegrate", "Flame Blade", "Greater Restoration"):
+        spell = rules.find_spell(name)
+        assert spell is not None, name
+        assert spell["source"] == rules.RULES_SOURCE, name
+
+
+def test_linkable_names_are_the_union_of_both_sources():
+    """The link list must cover both sources, not just the corpus.
+
+    The SRD carries 22 spells the corpus does not - the 2024 generic renames of the 2014
+    branded ones - and a model writing 2024 prose may use either name. Offering only the
+    corpus's names leaves the 2024 name as dead text.
+    """
+    names = rules.linkable_spell_names()
+    assert len(names) > 500
+
+    # Corpus-only, SRD-only, and the branded/generic pair that differs between them.
+    assert "Thorn Whip" in names
+    assert "Hideous Laughter" in names
+    assert "Tasha's Hideous Laughter" in names
+    assert "Floating Disk" in names
+    assert "Tenser's Floating Disk" in names
+
+
+def test_every_linkable_name_resolves():
+    """A name offered for linking must not 404.
+
+    This is the whole point of the list: the front end turns a name into a link, and a
+    link that opens "not in the SRD" is worse than plain text. Checked across all 539
+    names rather than a sample, because a single bad name is invisible in a spot check.
+    """
+    misses = [n for n in rules.linkable_spell_names() if rules.find_spell(n) is None]
+    assert misses == [], f"{len(misses)} linkable names do not resolve: {misses[:5]}"
+
+
+def test_linkable_names_are_unique_case_and_apostrophe_insensitively():
+    """The two sources must not produce the same spell twice under two spellings.
+
+    The corpus writes a typographic apostrophe where the SRD writes a straight one, so
+    "Tenser's Floating Disk" would otherwise appear twice and the front end would build a
+    pattern with a duplicate alternative.
+    """
+    names = rules.linkable_spell_names()
+    folded = [rules._fold_name(n) for n in names]
+    assert len(folded) == len(set(folded))
 
 
 def test_a_corpus_spell_is_normalised_into_the_srd_shape():

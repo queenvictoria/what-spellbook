@@ -778,7 +778,32 @@ does not have, and the two front ends would drift within a week.
   now both return `run_id`, and the UI passes it through.
 - **Keep the CORS origin list explicit.** `allow_origins=["*"]` with
   `allow_credentials=True` is both rejected by browsers and a decision that should be
-  made deliberately at deployment rather than inherited from a dev convenience.
+  made deliberately at deployment rather than inherited from a dev convenience. The list
+  is derived from `FRONTEND_PORT` rather than hard-coded, because more than one copy of
+  the dev server may be running on the same machine and a fixed list silently blocks the
+  second one.
+- **A spell name is not a filename.** Six corpus files are named after a different spell
+  than they contain (`Confusion.md` holds Conjure Animals), so the page's own title is the
+  authority and `spell_title` reads it. Keying the index on the filename files one spell's
+  rules under another's name.
+- **Never title-case a spell name.** `title()` capitalises every word, so "Ray of Frost"
+  became "Ray Of Frost" and 77 spells containing a minor word stopped matching the prose —
+  the mentions rendered as dead text with no error anywhere. It also breaks "Melf's Acid
+  Arrow" into "Melf'S". The corpus stems are already spelled correctly.
+- **An Eldritch Invocation is not a spell.** They are served by `/api/invocation` rather
+  than folded into `find_spell`, because a class feature answering as if it were an SRD
+  spell is a category error the caller cannot see. Their names still go in `/api/spells`,
+  because the books name them in the same sentence as spells.
+- **The invocation effect text is in `context/srd/classes.md`.** Our own
+  `context/classes/warlock/` lists all 28 with their level and prerequisite but not what
+  they do, so it is the fallback and reports `source: class-context`; the SRD is preferred
+  and reports `vendored-srd-5.2.1`. The section is located by heading, because the chapter
+  is 11,000 lines and the names are not distinguishable from any other `####` heading.
+- **Vendoring a file can create a false positive, not just a gap.** Adding `classes.md`
+  made "how does a spear work" resolve to "Eldritch Spear" — the Spear lives inside an
+  equipment *table* with no heading, so the invocation was the only heading containing the
+  word. `_qualifies` now rejects a heading qualified by a distinctive word the question
+  never mentioned. Check what a new file *steals*, not only what it adds.
 - **The UI calls the API directly rather than through a Vite proxy.** A proxy would hide
   the CORS setup from the dev loop and only fail once deployed. Testing against the real
   origin means the CORS config is exercised every day.
