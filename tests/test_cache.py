@@ -53,7 +53,7 @@ def _save(tmp_path, **overrides):
         scenario=SCENARIO,
     )
     kwargs.update(overrides)
-    return cache.save_books(**kwargs)
+    return cache.save_run(**kwargs)
 
 
 # --- key generation ---
@@ -186,12 +186,65 @@ def test_parse_picks_ignores_later_sections():
 
 
 # --- files ---
+#
+# A run is stored as a shared run.json plus one file per book. The prompt, sheet and
+# pool are identical across books, so storing them per book duplicated ~35KB per run.
+
+def _book_files(paths):
+    return [p for p in paths if p.name != cache.RUN_FILENAME]
+
 
 def test_each_book_gets_its_own_file(tmp_path):
     written = _save(tmp_path)
-    assert len(written) == 2
-    assert {p.name for p in written} == {"1-ambush-and-control.json", "2-denial-and-escape.json"}
+    assert {p.name for p in _book_files(written)} == {
+        "1-ambush-and-control.json", "2-denial-and-escape.json",
+    }
     assert len({p.parent for p in written}) == 1, "books share one key directory"
+
+
+def test_shared_inputs_are_stored_once_not_per_book(tmp_path):
+    """The whole point of the split: no field shared across books is duplicated."""
+    _save(tmp_path, prompts={"prompt": "x" * 5000})
+    total = sum(p.stat().st_size for p in (tmp_path.rglob("*.json")))
+    run = next(tmp_path.rglob(cache.RUN_FILENAME))
+    books = [p for p in tmp_path.rglob("*.json") if p.name != cache.RUN_FILENAME]
+
+    assert run.stat().st_size > 4000, "the prompt belongs in the run file"
+    assert all(p.stat().st_size < 1500 for p in books), "book files stay small"
+    # Three copies of the prompt would dwarf the run file itself.
+    assert total < run.stat().st_size * 1.5
+
+
+def test_run_file_holds_the_shared_half(tmp_path):
+    _save(
+        tmp_path,
+        input_data={"character_sheet": {"Name": "Lois"}},
+        context={"pool_cantrips": ["Light"]},
+        prompts={"prompt": "the full prompt"},
+        model="qwen2.5-coder:7b-instruct",
+    )
+    run = json.loads(next(tmp_path.rglob(cache.RUN_FILENAME)).read_text(encoding="utf-8"))
+    assert run["input"]["character_sheet"]["Name"] == "Lois"
+    assert run["context"]["pool_cantrips"] == ["Light"]
+    assert run["prompt"]["prompt"] == "the full prompt"
+    assert run["response"] == ANSWER
+    assert run["model"] == "qwen2.5-coder:7b-instruct"
+    assert run["schema_version"] == cache.SCHEMA_VERSION
+
+
+def test_book_file_holds_only_what_is_book_specific(tmp_path):
+    entry = json.loads(_book_files(_save(tmp_path))[0].read_text(encoding="utf-8"))
+    assert set(entry) == {"schema_version", "run", "key", "output", "rating"}
+    assert entry["output"]["book_name"] == "Ambush and Control"
+    assert entry["output"]["picks"]["cantrips"] == ["Light", "Sacred Flame", "Friends"]
+    assert entry["run"] == cache.RUN_FILENAME, "a book points at its run file"
+
+
+def test_book_file_does_not_repeat_the_response(tmp_path):
+    entry = json.loads(_book_files(_save(tmp_path))[0].read_text(encoding="utf-8"))
+    assert "response" not in entry
+    assert "prompt" not in entry
+    assert "context" not in entry
 
 
 def test_cache_path_encodes_the_whole_key(tmp_path):
@@ -201,37 +254,15 @@ def test_cache_path_encodes_the_whole_key(tmp_path):
     assert relative[1].startswith("5-barbarian-fighter-druid-3-")
 
 
-def test_entry_records_input_context_prompts_response_and_output(tmp_path):
-    written = _save(
-        tmp_path,
-        input_data={"character_sheet": {"Name": "Lois", "Current Level": 5}},
-        context={"rule_context_files": ["spells.md"], "pool_cantrips": ["Light"]},
-        prompts={"prompt": "the full prompt"},
-        model="qwen2.5-coder:7b-instruct",
-        book_filters={"Ambush and Control": {"k": 30}},
-    )
-    entry = json.loads(written[0].read_text(encoding="utf-8"))
-
-    assert entry["input"]["character_sheet"]["Name"] == "Lois"
-    assert entry["context"]["pool_cantrips"] == ["Light"]
-    assert entry["prompt"]["prompt"] == "the full prompt"
-    assert entry["response"] == ANSWER
-    assert entry["output"]["picks"]["cantrips"] == ["Light", "Sacred Flame", "Friends"]
-    assert entry["output"]["book_filters"] == {"k": 30}
-    assert entry["model"] == "qwen2.5-coder:7b-instruct"
-    assert entry["schema_version"] == cache.SCHEMA_VERSION
-
-
 def test_entry_stores_the_scenario_text_not_just_its_hash(tmp_path):
-    written = _save(tmp_path)
-    entry = json.loads(written[0].read_text(encoding="utf-8"))
-    assert entry["key"]["scenario_text"] == SCENARIO
-    assert entry["key"]["scenario"] == cache.scenario_fingerprint(SCENARIO)
+    _save(tmp_path)
+    run = json.loads(next(tmp_path.rglob(cache.RUN_FILENAME)).read_text(encoding="utf-8"))
+    assert run["key"]["scenario_text"] == SCENARIO
+    assert run["key"]["scenario"] == cache.scenario_fingerprint(SCENARIO)
 
 
 def test_rating_starts_empty_and_ready_to_fill(tmp_path):
-    written = _save(tmp_path)
-    entry = json.loads(written[0].read_text(encoding="utf-8"))
+    entry = json.loads(_book_files(_save(tmp_path))[0].read_text(encoding="utf-8"))
     assert entry["rating"] == {"score": None, "rated_at": None, "notes": None, "outcome": None}
 
 
@@ -239,13 +270,13 @@ def test_same_inputs_overwrite_rather_than_duplicate(tmp_path):
     first = _save(tmp_path)
     second = _save(tmp_path)
     assert [p.name for p in first] == [p.name for p in second]
-    assert len(list(tmp_path.rglob("*.json"))) == 2
+    assert len(list(tmp_path.rglob("*.json"))) == 3, "one run file plus two books"
 
 
 def test_different_scenario_writes_a_second_directory(tmp_path):
     _save(tmp_path)
     _save(tmp_path, scenario="A chase through the sewers.")
-    assert len(list(tmp_path.rglob("*.json"))) == 4
+    assert len(list(tmp_path.rglob("*.json"))) == 6
     assert len(list((tmp_path / "lois").iterdir())) == 2
 
 
@@ -262,17 +293,101 @@ def test_save_creates_missing_directories(tmp_path):
 
 
 def test_save_returns_empty_for_an_empty_answer(tmp_path):
-    assert _save(tmp_path, answer="") == []
-    assert not list(tmp_path.rglob("*.json"))
+    written = _save(tmp_path, answer="")
+    assert _book_files(written) == []
 
 
-# --- find / list ---
+def test_regeneration_removes_orphaned_book_files(tmp_path):
+    """A renamed book must not linger, or find_run would count a full set."""
+    _save(tmp_path)
+    _save(tmp_path, answer=ANSWER.replace("Ambush and Control", "Bridge Push"))
+    names = {p.name for p in tmp_path.rglob("*.json")}
+    assert "1-ambush-and-control.json" not in names
+    assert "1-bridge-push.json" in names
+    assert len(names) == 3
 
-def test_load_entries_lists_newest_first(tmp_path):
+
+# --- find_run ---
+
+def _find(tmp_path, **overrides):
+    kwargs = dict(
+        cache_dir=tmp_path, character="Lois", level=5,
+        party=["Barbarian", "Fighter", "Druid"], db_version=3, scenario=SCENARIO,
+    )
+    kwargs.update(overrides)
+    return cache.find_run(**kwargs)
+
+
+def test_find_run_returns_the_run_and_its_books(tmp_path):
+    _save(tmp_path)
+    cached = _find(tmp_path)
+    assert cached is not None
+    assert cached["run"]["response"] == ANSWER
+    assert [b["output"]["book_index"] for b in cached["books"]] == [1, 2]
+    assert cached["books"][0]["output"]["book_name"] == "Ambush and Control"
+
+
+def test_find_run_misses_on_an_unknown_scenario(tmp_path):
+    _save(tmp_path)
+    assert _find(tmp_path, scenario="A quiet dinner in Waterdeep.") is None
+
+
+def test_find_run_misses_on_a_missing_directory(tmp_path):
+    assert _find(tmp_path) is None
+
+
+def test_find_run_misses_when_the_character_fingerprint_diffs(tmp_path):
+    """An edited sheet must regenerate rather than replay stale advice."""
+    _save(tmp_path, character_fingerprint="aaaaaaaaaaaaaaaa")
+    assert _find(tmp_path, character_fingerprint="bbbbbbbbbbbbbbbb") is None
+    assert _find(tmp_path, character_fingerprint="aaaaaaaaaaaaaaaa") is not None
+
+
+def test_find_run_ignores_the_fingerprint_when_not_supplied(tmp_path):
+    _save(tmp_path, character_fingerprint="aaaaaaaaaaaaaaaa")
+    assert _find(tmp_path) is not None
+
+
+def test_find_run_misses_on_a_partial_set(tmp_path):
+    """Half a cache would show fewer books than the model produced."""
+    _save(tmp_path)
+    next(p for p in tmp_path.rglob("*.json") if p.name.startswith("1-")).unlink()
+    assert _find(tmp_path) is None
+
+
+def test_find_run_misses_on_a_stale_schema_version(tmp_path):
+    _save(tmp_path)
+    run = next(tmp_path.rglob(cache.RUN_FILENAME))
+    payload = json.loads(run.read_text(encoding="utf-8"))
+    payload["schema_version"] = cache.SCHEMA_VERSION - 1
+    run.write_text(json.dumps(payload), encoding="utf-8")
+    assert _find(tmp_path) is None
+
+
+def test_find_run_ignores_a_book_without_output(tmp_path):
+    _save(tmp_path)
+    next(p for p in tmp_path.rglob("*.json") if p.name.startswith("2-")).write_text("{}")
+    assert _find(tmp_path) is None
+
+
+def test_find_run_survives_corrupt_json(tmp_path):
+    _save(tmp_path)
+    next(tmp_path.rglob(cache.RUN_FILENAME)).write_text("{not json")
+    assert _find(tmp_path) is None
+
+
+# --- load_entries / find_book ---
+
+def test_load_entries_lists_books_newest_first(tmp_path):
     written = _save(tmp_path)
     paths = cache.load_entries(tmp_path)
-    assert len(paths) == 2
-    assert {p.name for p in paths} == {p.name for p in written}
+    assert {p.name for p in paths} == {p.name for p in _book_files(written)}
+
+
+def test_load_entries_excludes_the_run_file(tmp_path):
+    """run.json has no book output and no rating; it is not a rating target."""
+    _save(tmp_path)
+    assert all(p.name != cache.RUN_FILENAME for p in cache.load_entries(tmp_path))
 
 
 def test_load_entries_filters_by_character(tmp_path):
@@ -297,7 +412,7 @@ def test_find_book_by_numbered_prefix(tmp_path):
 
 
 def test_find_book_by_explicit_path(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     assert cache.find_book(str(written[0]), tmp_path) == written[0]
 
 
@@ -306,34 +421,38 @@ def test_find_book_returns_none_when_nothing_matches(tmp_path):
     assert cache.find_book("nonexistent-book", tmp_path) is None
 
 
+def test_find_book_never_returns_the_run_file(tmp_path):
+    _save(tmp_path)
+    assert cache.find_book(cache.RUN_FILENAME, tmp_path) is None
+
+
 # --- rating ---
 
 def test_rate_records_the_score_and_keeps_everything_else(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     entry = cache.rate(written[0], score=4, notes="Carried the fight", outcome="won")
     assert entry["rating"]["score"] == 4
     assert entry["rating"]["notes"] == "Carried the fight"
     assert entry["rating"]["outcome"] == "won"
     assert entry["rating"]["rated_at"]
-    assert entry["prompt"] == {}
+    assert entry["output"]["book_name"] == "Ambush and Control"
 
 
 def test_rate_persists_to_disk(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     cache.rate(written[0], score=5)
     reloaded = json.loads(written[0].read_text(encoding="utf-8"))
     assert reloaded["rating"]["score"] == 5
 
 
 def test_rate_does_not_touch_sibling_books(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     cache.rate(written[0], score=1)
-    sibling = json.loads(written[1].read_text(encoding="utf-8"))
-    assert sibling["rating"]["score"] is None
+    assert json.loads(written[1].read_text(encoding="utf-8"))["rating"]["score"] is None
 
 
 def test_rate_is_idempotent_for_the_latest_call(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     cache.rate(written[0], score=2)
     cache.rate(written[0], score=5, notes="Reassessed after the session")
     entry = json.loads(written[0].read_text(encoding="utf-8"))
@@ -342,9 +461,19 @@ def test_rate_is_idempotent_for_the_latest_call(tmp_path):
 
 
 def test_rate_accepts_a_fixed_timestamp(tmp_path):
-    written = _save(tmp_path)
+    written = _book_files(_save(tmp_path))
     entry = cache.rate(written[0], score=3, rated_at="2024-01-01T00:00:00+00:00")
     assert entry["rating"]["rated_at"] == "2024-01-01T00:00:00+00:00"
+
+
+def test_rating_survives_a_regeneration_of_the_same_inputs(tmp_path):
+    """Regenerating rewrites the books; the human's earlier rating must not vanish."""
+    written = _book_files(_save(tmp_path))
+    cache.rate(written[0], score=4, notes="Solid")
+    _save(tmp_path)
+    entry = json.loads(written[0].read_text(encoding="utf-8"))
+    assert entry["rating"]["score"] == 4
+    assert entry["rating"]["notes"] == "Solid"
 
 
 # --- module hygiene ---
@@ -434,8 +563,8 @@ def test_find_book_prefers_the_most_recent_match(tmp_path):
     """
     import os
 
-    older = _save(tmp_path, scenario="first scenario")[0]
-    newer = _save(tmp_path, scenario="second scenario")[0]
+    older = _book_files(_save(tmp_path, scenario="first scenario"))[0]
+    newer = _book_files(_save(tmp_path, scenario="second scenario"))[0]
     # Both land in the same instant, so pin the mtimes to make "newest" unambiguous.
     os.utime(older, (1_000_000, 1_000_000))
     os.utime(newer, (2_000_000, 2_000_000))
@@ -443,7 +572,34 @@ def test_find_book_prefers_the_most_recent_match(tmp_path):
     assert cache.find_book("ambush", tmp_path) == newer
 
 
-def test_save_books_returns_each_book_file(tmp_path):
+def test_save_run_returns_the_run_plus_each_book(tmp_path):
     written = _save(tmp_path)
-    assert len(written) == 2
+    assert len(written) == 3
+    assert written[0].name == cache.RUN_FILENAME
     assert all(p.read_text(encoding="utf-8") for p in written)
+
+
+def test_rating_survives_a_regeneration_that_renames_the_books(tmp_path):
+    """A regeneration almost always renames the books.
+
+    Matching carried ratings on the filename would silently drop every rating on the
+    next run, so a rating follows its book *slot* instead.
+    """
+    written = _book_files(_save(tmp_path))
+    cache.rate(written[1], score=5, notes="The one that worked")
+
+    renamed = ANSWER.replace("Ambush and Control", "Bridge Push").replace(
+        "Denial and Escape", "Water Terrain")
+    books = sorted(_book_files(_save(tmp_path, answer=renamed)), key=lambda p: p.name)
+    assert [json.loads(b.read_text(encoding="utf-8"))["output"]["book_name"] for b in books] \
+        == ["Bridge Push", "Water Terrain"]
+    assert books[1].name.startswith("2-")
+    assert json.loads(books[1].read_text(encoding="utf-8"))["rating"]["score"] == 5
+
+
+def test_unrated_slots_do_not_inherit_a_rating(tmp_path):
+    written = _book_files(_save(tmp_path))
+    cache.rate(written[0], score=4)
+    books = sorted(_book_files(_save(tmp_path)), key=lambda p: p.name)
+    assert json.loads(books[0].read_text(encoding="utf-8"))["rating"]["score"] == 4
+    assert json.loads(books[1].read_text(encoding="utf-8"))["rating"]["score"] is None

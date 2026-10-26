@@ -18,35 +18,38 @@ import main
 
 def test_scenario_caches_every_book(loaded_shell, cache_dir):
     files = sorted(cache_dir.rglob("*.json"))
-    assert len(files) == 2
-    assert {p.stem for p in files} == {"1-ambush-and-control", "2-denial-and-escape"}
+    assert len(files) == 3, "one shared run file plus one file per book"
+    assert {p.stem for p in files} == {"run", "1-ambush-and-control", "2-denial-and-escape"}
 
 
 def test_cache_is_keyed_by_character_level_party_dbversion_and_scenario(loaded_shell, cache_dir):
-    key_dir = next(p for p in cache_dir.rglob("*.json")).parent
+    key_dir = next(cache_dir.rglob(cache.RUN_FILENAME)).parent
     assert key_dir.parent.name == "lois"
     assert key_dir.name.startswith("5-barbarian-fighter-druid-")
     assert key_dir.name.endswith(cache.scenario_fingerprint("We are ambushed on a narrow stone bridge."))
 
 
-def test_cached_entry_holds_the_prompt_and_response(loaded_shell, cache_dir):
-    entry = json.loads(sorted(cache_dir.rglob("*.json"))[0].read_text(encoding="utf-8"))
-    assert entry["prompt"]["prompt"] == loaded_shell.last_prompt
-    assert entry["response"] == loaded_shell.last_response
-    assert "We are ambushed" in entry["prompt"]["prompt"]
+def test_cached_run_holds_the_prompt_and_response(loaded_shell, cache_dir):
+    """The prompt is run-wide, so it is stored once in run.json, not per book."""
+    run = json.loads(next(cache_dir.rglob(cache.RUN_FILENAME)).read_text(encoding="utf-8"))
+    assert run["prompt"]["prompt"] == loaded_shell.last_prompt
+    assert run["response"] == loaded_shell.last_response
+    assert "We are ambushed" in run["prompt"]["prompt"]
 
 
-def test_cached_entry_records_the_eligible_pool(loaded_shell, cache_dir):
+def test_cached_run_records_the_eligible_pool(loaded_shell, cache_dir):
     """The pool is the evidence for why only these books were possible."""
-    entry = json.loads(sorted(cache_dir.rglob("*.json"))[0].read_text(encoding="utf-8"))
-    assert "pool_cantrips" in entry["context"]
-    assert "pool_rituals" in entry["context"]
-    assert entry["context"]["database_version"] == main.INDEX_VERSION
+    run = json.loads(next(cache_dir.rglob(cache.RUN_FILENAME)).read_text(encoding="utf-8"))
+    assert "pool_cantrips" in run["context"]
+    assert "pool_rituals" in run["context"]
+    assert run["context"]["database_version"] == main.INDEX_VERSION
 
 
-def test_cached_entry_records_the_sibling_picks_for_context(loaded_shell, cache_dir):
-    entry = json.loads(sorted(cache_dir.rglob("*.json"))[0].read_text(encoding="utf-8"))
-    assert entry["output"]["picks"]["cantrips"] == ["Light", "Sacred Flame", "Friends"]
+def test_cached_book_records_its_own_picks(loaded_shell, cache_dir):
+    book = json.loads(
+        (cache_dir.rglob("1-*.json")).__next__().read_text(encoding="utf-8")
+    )
+    assert book["output"]["picks"]["cantrips"] == ["Light", "Sacred Flame", "Friends"]
 
 
 def test_shell_tracks_the_book_files_for_the_current_answer(loaded_shell):
@@ -61,15 +64,18 @@ def test_no_character_means_no_cache_write(shell, cache_dir, fake_llm):
     assert not list(cache_dir.rglob("*.json"))
 
 
-def test_a_second_identical_scenario_overwrites_the_same_entry(loaded_shell, cache_dir):
+def test_a_second_identical_scenario_is_served_from_the_cache(loaded_shell, cache_dir, fake_llm):
+    """The whole point: a repeat must not reach the model."""
+    before = len(fake_llm.prompts)
     loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
-    assert len(list(cache_dir.rglob("*.json"))) == 2
+    assert len(fake_llm.prompts) == before, "no second model call"
+    assert len(list(cache_dir.rglob("*.json"))) == 3
 
 
 def test_a_different_scenario_gets_its_own_directory(loaded_shell, cache_dir):
     loaded_shell.onecmd("/scenario A chase through the sewers.")
     assert len(list((cache_dir / "lois").iterdir())) == 2
-    assert len(list(cache_dir.rglob("*.json"))) == 4
+    assert len(list(cache_dir.rglob("*.json"))) == 6
 
 
 def test_a_failed_llm_call_writes_nothing(shell, cache_dir):
@@ -190,3 +196,85 @@ def test_help_documents_the_new_commands(shell, capsys):
 def test_commands_include_rate_and_history():
     assert "rate" in main.SpellbookShell.COMMANDS
     assert "history" in main.SpellbookShell.COMMANDS
+
+
+# --- serving from the cache ---
+
+def test_a_repeat_scenario_makes_no_model_call(loaded_shell, cache_dir):
+    """The headline behaviour: same character and scenario, no regeneration."""
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert len(loaded_shell.llm.prompts) == before
+
+
+def test_a_cache_hit_skips_retrieval_entirely(loaded_shell, fake_db):
+    """Not just the model: no embedding call for the ranking lane either."""
+    before = len(fake_db.as_retriever_calls)
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert len(fake_db.as_retriever_calls) == before
+    assert len(fake_db.get_calls) == 2, "the pool lanes were only built once"
+
+
+def test_a_cache_hit_replays_the_original_answer(loaded_shell, capsys):
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    out = capsys.readouterr().out
+    assert "Reusing the cached books" in out
+    assert "Ambush and Control" in out
+
+
+def test_a_cache_hit_repoints_rate_at_the_cached_files(loaded_shell, cache_dir, capsys):
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    capsys.readouterr()
+    loaded_shell.onecmd("/rate 3")
+    assert "Rated 'Ambush and Control' 3/5." in capsys.readouterr().out
+    book = json.loads((cache_dir.rglob("1-*.json")).__next__().read_text(encoding="utf-8"))
+    assert book["rating"]["score"] == 3
+
+
+def test_a_whitespace_only_change_still_hits_the_cache(loaded_shell):
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.onecmd("/scenario   We are ambushed on a narrow stone bridge.  ")
+    assert len(loaded_shell.llm.prompts) == before
+
+
+def test_a_different_scenario_regenerates(loaded_shell):
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.onecmd("/scenario A chase through the sewers.")
+    assert len(loaded_shell.llm.prompts) == before + 1
+
+
+def test_an_edited_sheet_regenerates(loaded_shell):
+    """A changed sheet invalidates the cached advice, which was for the old build."""
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.character["Known/Prepared Base Spells"] = "Eldritch Blast, Hex"
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert len(loaded_shell.llm.prompts) == before + 1
+
+
+def test_a_cache_hit_revalidates_the_picks(loaded_shell, cache_dir, caplog):
+    """A cached answer is re-checked, not trusted: it may predate a rules change."""
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    with caplog.at_level("WARNING"):
+        loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert "not an eligible" in caplog.text
+
+
+def test_refresh_ignores_the_cache(loaded_shell, cache_dir):
+    loaded_shell.refresh = True
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert len(loaded_shell.llm.prompts) == before + 1
+
+
+def test_a_broken_cache_file_falls_back_to_regenerating(loaded_shell, cache_dir, caplog):
+    (cache_dir.rglob(cache.RUN_FILENAME)).__next__().write_text("{not json")
+    before = len(loaded_shell.llm.prompts)
+    loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
+    assert len(loaded_shell.llm.prompts) == before + 1
+
+
+def test_no_character_means_no_cache_read(shell, cache_dir):
+    """Without a sheet there is no key, so the model is always called."""
+    before = len(shell.llm.prompts)
+    shell.onecmd("/scenario anything")
+    assert len(shell.llm.prompts) == before + 1

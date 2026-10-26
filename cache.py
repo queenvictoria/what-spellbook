@@ -1,20 +1,24 @@
-"""Local result cache: one JSON file per generated book.
+"""Local result cache: a shared run file plus one file per generated book.
 
-Every generated book is written under ``.cache/`` so a recommendation can be
-revisited later. The point of the store is to make outcome ratings possible: the
-entry keeps the exact inputs, contexts, prompts and raw response alongside the
-parsed book, and adds a ``rating`` block the user fills in after the session.
+A run is written under ``.cache/`` so a recommendation can be revisited later, and so
+a repeat of the same scenario is served without a model call. The point of the store
+is outcome ratings: after the scenario is played, the book that was used can be scored.
 
 Layout::
 
     .cache/
       <character>/
         <level>-<party>-<dbversion>-<scenario>/
-          <book-slug>.json
+          run.json
+          1-illuminated-kill-zone.json
+          2-ambush-breaker.json
+          3-bridge-hold-defense.json
 
-The directory path *is* the key (character, level, party, database version,
-scenario), and each book gets its own file, so a book can be rated or replaced
-without rewriting its siblings.
+The directory path *is* the key (character, level, party, database version, scenario).
+``run.json`` holds what is identical across the books - the sheet, resolved rule
+context, eligible pool, the assembled prompt and the raw response - so it is stored
+once instead of copied into each book. Each book file then holds only its own markdown
+and picks, because a book is the unit of rating and must be scoreable independently.
 
 Nothing here imports LangChain or Chroma, and every function takes an explicit
 ``cache_dir`` so tests never write to the working tree.
@@ -30,9 +34,12 @@ from pathlib import Path
 
 DEFAULT_CACHE_DIR = ".cache"
 
+# The shared half of a run lives here; each book gets its own numbered file beside it.
+RUN_FILENAME = "run.json"
+
 # Bump when the entry shape changes, so old entries are recognisable rather than
 # silently misread.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _WORD = re.compile(r"[a-z0-9]+")
 _BOOK_HEADING = re.compile(
@@ -83,6 +90,19 @@ def scenario_fingerprint(scenario: str) -> str:
     normalised = " ".join(str(scenario).split()).lower()
     digest = hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:12]
     return digest
+
+
+def character_fingerprint(sheet) -> str:
+    """Stable hash of a character sheet.
+
+    Name and level are not enough to decide whether a cached run still applies: a
+    sheet edited between runs (new spells prepared, a different subclass, a swapped
+    magic item) produces a different recommendation at the same level. Hashing the
+    whole sheet catches that, and it is stored in the entry rather than put in the
+    path, so a re-run overwrites in place instead of littering directories.
+    """
+    canonical = json.dumps(sheet, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
 def key_parts(*, character: str, level, party, db_version, scenario: str) -> dict:
@@ -180,7 +200,7 @@ def parse_picks(section: str) -> dict:
     return spells._book_picks(section)
 
 
-def save_books(
+def save_run(
     *,
     answer: str,
     cache_dir=DEFAULT_CACHE_DIR,
@@ -192,52 +212,149 @@ def save_books(
     input_data: dict | None = None,
     context: dict | None = None,
     prompts: dict | None = None,
-    book_filters: dict | None = None,
     model: str | None = None,
+    character_fingerprint: str | None = None,
 ) -> list[Path]:
-    """Write one JSON entry per generated book. Returns the files written.
+    """Write a run to the cache: one shared file plus one file per book.
 
-    Failures are reported by the caller and never raised: a cache that cannot be
-    written must not lose a recommendation the user is reading.
+    The prompt, sheet and pool are identical for all three books, so storing them per
+    book copied ~35KB three times per run. They live once in ``run.json``; each book
+    file holds only what is specific to that book.
+
+    A book file is the unit of rating, so its rating is written to its own file and a
+    regeneration never disturbs a sibling's rating. Returns the paths written.
     """
     parts = key_parts(
         character=character, level=level, party=party, db_version=db_version, scenario=scenario
     )
     directory = entry_dir(cache_dir, parts)
     books = split_books(answer)
+    directory.mkdir(parents=True, exist_ok=True)
 
-    written: list[Path] = []
+    run_path = directory / RUN_FILENAME
+    previous_run = _read(run_path)
+    run = {
+        "schema_version": SCHEMA_VERSION,
+        "created_at": now(),
+        "key": {
+            **parts,
+            "scenario_text": scenario.strip(),
+            "character_fingerprint": character_fingerprint,
+        },
+        "input": input_data or {},
+        "context": context or {},
+        "prompt": prompts or {},
+        "response": answer,
+        "model": model,
+    }
+    run_path.write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    written = [run_path]
+    # A rating belongs to a book *slot* (1st, 2nd, 3rd), not to its generated name:
+    # a regeneration almost always renames the books, and matching on the name would
+    # silently drop every rating on the next run.
+    previous = _ratings_by_slot(directory)
+
+    current_names = set()
     for book in books:
-        slug = book_slug(book["index"], book["name"])
-        filters = (book_filters or {}).get(book["name"]) or (book_filters or {}).get(book["index"])
+        slug = f"{book['index']}-{_slug(book['name'], max_length=40)}"
+        current_names.add(f"{slug}.json")
+        path = directory / f"{slug}.json"
+        carried = _read(path).get("rating") or previous.get(book["index"])
         entry = {
             "schema_version": SCHEMA_VERSION,
-            "created_at": now(),
-            "key": {**parts, "scenario_text": scenario.strip()},
-            "input": input_data or {},
-            "context": context or {},
-            "prompt": prompts or {},
-            "response": answer,
+            "run": RUN_FILENAME,
+            "key": run["key"],
             "output": {
                 "book_index": book["index"],
                 "book_name": book["name"],
                 "text": book["text"],
                 "picks": parse_picks(book["text"]),
-                "book_filters": filters or {},
             },
-            "rating": {
-                "score": None,
-                "rated_at": None,
-                "notes": None,
-                "outcome": None,
-            },
-            "model": model,
+            # A rating is human effort and is never silently discarded. It is carried
+            # forward so the user can see it and judge whether it still applies.
+            "rating": carried or _empty_rating(),
         }
-        path = directory / f"{slug}.json"
-        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8")
         written.append(path)
+
+    # A rename from a regeneration would otherwise leave an orphan book in the
+    # directory, which find_run would count as a full set.
+    for stale in directory.glob("*.json"):
+        if stale.name not in current_names and stale.name != RUN_FILENAME:
+            stale.unlink()
     return written
+
+
+def _ratings_by_slot(directory: Path) -> dict[int, dict]:
+    """Existing ratings keyed by book index, for carrying across a regeneration."""
+    ratings: dict[int, dict] = {}
+    for path in directory.glob("*.json"):
+        if path.name == RUN_FILENAME:
+            continue
+        entry = _read(path)
+        rating = entry.get("rating") or {}
+        index = (entry.get("output") or {}).get("book_index")
+        if index is not None and rating.get("score") is not None:
+            ratings[index] = rating
+    return ratings
+
+
+def _empty_rating() -> dict:
+    return {"score": None, "rated_at": None, "notes": None, "outcome": None}
+
+
+def find_run(
+    *,
+    cache_dir=DEFAULT_CACHE_DIR,
+    character: str,
+    level,
+    party,
+    db_version,
+    scenario: str,
+    character_fingerprint: str | None = None,
+) -> dict | None:
+    """Return ``{"run": ..., "books": [...]}`` for these exact inputs, or None.
+
+    This is the read side of the cache. A hit requires the whole key to match *and*
+    the left character fingerprint, so editing the sheet between runs misses instead
+    of replaying advice for a character that no longer exists.
+    """
+    parts = key_parts(
+        character=character, level=level, party=party, db_version=db_version, scenario=scenario
+    )
+    directory = entry_dir(cache_dir, parts)
+    if not directory.is_dir():
+        return None
+
+    run = _read(directory / RUN_FILENAME)
+    if not run or run.get("response") is None:
+        return None
+    if run.get("schema_version") != SCHEMA_VERSION:
+        return None
+    stored = (run.get("key") or {}).get("character_fingerprint")
+    if character_fingerprint is not None and stored != character_fingerprint:
+        return None
+
+    books = []
+    for path in directory.glob("*.json"):
+        if path.name == RUN_FILENAME:
+            continue
+        book = _read(path)
+        if not book or book.get("output") is None:
+            continue
+        book["_path"] = str(path)
+        books.append(book)
+
+    # A partial set is a miss: half a cache would show the user fewer books than the
+    # model produced, which is worse than regenerating.
+    expected = len(split_books(run["response"]))
+    if not books or len(books) != expected:
+        return None
+
+    books.sort(key=lambda b: b.get("output", {}).get("book_index", 0))
+    run["_path"] = str(directory / RUN_FILENAME)
+    return {"run": run, "books": books}
 
 
 def _read(path: Path) -> dict:
@@ -248,12 +365,16 @@ def _read(path: Path) -> dict:
 
 
 def load_entries(cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -> list[Path]:
-    """List cached entries, newest first; optionally filtered to one character."""
+    """List cached *book* files, newest first; optionally filtered to one character.
+
+    The shared ``run.json`` is excluded: it has no book output and no rating, so it
+    would be noise in a listing or a rating target.
+    """
     root = Path(cache_dir)
     if not root.is_dir():
         return []
     pattern = f"{_slug(character)}/*/*.json" if character else "*/*/*.json"
-    paths = list(root.glob(pattern))
+    paths = [p for p in root.glob(pattern) if p.name != RUN_FILENAME]
     return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
 
 

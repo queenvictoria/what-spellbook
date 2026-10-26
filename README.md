@@ -44,6 +44,7 @@ Run it with:
 python main.py                      # loads data/characters/lois.yaml
 python main.py --character vax      # loads data/characters/vax.yaml
 CHARACTER=vax python main.py        # same, via environment variable
+python main.py --refresh            # ignore cached books, regenerate everything
 ```
 
 Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
@@ -107,50 +108,65 @@ excluded — the book is conjured fresh each rest, so re-picking remains legal.
 
 ### Result cache and ratings
 
-Every generated book is written to `.cache/` before it is printed, so a run can be
-revisited after the scenario is actually played:
+A run is written to `.cache/` before it is printed, and a repeat of the same
+scenario is then served straight from disk — no embedding call, no prompt
+assembly, no model call:
 
 ```
 .cache/
 └── lois/
     └── 5-barbarian-fighter-druid-3-098f6d563801/
-        ├── 1-illuminated-kill-zone.json
+        ├── run.json                      # shared: sheet, context, prompt, response
+        ├── 1-illuminated-kill-zone.json  # one book: its markdown, picks, rating
         ├── 2-ambush-breaker.json
         └── 3-bridge-hold-defense.json
 ```
 
 The directory path *is* the cache key: character, level, party, database version,
 and a hash of the scenario. A rebuilt index (`INDEX_VERSION`) lands in a new
-directory, so stale entries can never be mistaken for current ones. Each book gets
-its own file, because a book is the unit of rating.
+directory, so stale entries can never be mistaken for current ones.
 
-Each entry keeps everything needed to judge the result later: the character sheet,
-the resolved `context/` files, the eligible pool, the full assembled prompt, the
-raw model response, and the parsed per-book picks — plus a `rating` block that
-starts empty:
+**Shared inputs are stored once.** The prompt, sheet and pool are identical across
+the three books, so they live in `run.json` rather than being copied into each book
+(~47KB once instead of three times). **Each book gets its own file** because a book
+is the unit of rating, so rating one never rewrites its siblings.
+
+A hit requires the *whole* key plus a fingerprint of the character sheet, so editing
+the sheet between runs regenerates instead of replaying advice for a character that
+no longer exists. Cached answers are re-validated against the eligibility rules
+rather than trusted, since an entry may predate a rules change. A partial directory
+(a hand-deleted book) is treated as a miss, so you never see fewer books than the
+model produced.
 
 ```json
-{
-  "key": { "character": "lois", "level": 5, "party": "barbarian-fighter-druid",
+// run.json — written once per run
+{ "key": { "character": "lois", "level": 5, "party": "barbarian-fighter-druid",
            "db_version": 3, "scenario": "098f6d563801",
-           "scenario_text": "We are ambushed crossing a narrow stone bridge at night." },
+           "scenario_text": "We are ambushed crossing a narrow stone bridge at night.",
+           "character_fingerprint": "1f3c…" },
   "prompt": { "prompt": "..." },
   "response": "...",
-  "output": { "book_name": "Illuminated Kill Zone",
+  "context": { "pool_cantrips": ["..."], "rule_context_files": ["spells.md"] } }
+
+// 1-illuminated-kill-zone.json — one per book, the unit of rating
+{ "run": "run.json",
+  "output": { "book_index": 1, "book_name": "Illuminated Kill Zone",
               "picks": { "cantrips": ["Mind Sliver"], "rituals": ["Alarm"] } },
-  "rating": { "score": null, "rated_at": null, "notes": null, "outcome": null }
-}
+  "rating": { "score": null, "rated_at": null, "notes": null, "outcome": null } }
 ```
 
 ```bash
 /rate 5                  # rate every book from the latest answer
 /rate 4 bridge denial    # rate one book by name fragment
 /history                 # list cached books and their ratings
+python main.py --refresh # ignore the cache, regenerate every scenario
 ```
 
-Because the prompt and response are stored alongside the rating, a rated book is
-labelled training data: it records what was asked, what was suggested, and how well
-it actually went.
+A rating is attached to a book *slot* and carried across a regeneration, so a
+`--refresh` that renames all three books does not discard the scoring you already
+did. Because the prompt and response are stored alongside the rating, a rated book
+is labelled training data: it records what was asked, what was suggested, and how
+well it actually went.
 
 Tests:
 
@@ -173,10 +189,12 @@ redirect writes to a temporary directory.
 - [x] Ground prompts in `context/` rules files
 - Move remaining config to .env file
 - [x] Cache input, context, and responses so we can learn from the previous outputs
+- [x] Reuse the cache when the character and scenario are unchanged
 - [x] Rate a generated book after the scenario is played
 - [ ] Report on rating patterns once enough books are rated
 - [ ] Add /character command to switch characters
 - [ ] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
+- [ ] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
 
 LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
 

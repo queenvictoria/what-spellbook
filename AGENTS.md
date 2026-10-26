@@ -450,25 +450,43 @@ Also strip a trailing parenthetical from sheet entries — sheets record provena
 
 ### The cache is the training set
 
-`.cache/` stores one JSON file per generated book, keyed by character, level, party,
-database version and a scenario hash. It is written **before** the answer is printed,
-because it is the record used for post-play ratings. Design points worth keeping:
+`.cache/` stores a run as a shared `run.json` plus one file per book, keyed by
+character, level, party, database version and a scenario hash. It is written **before**
+the answer is printed, because it is the record used for post-play ratings, and it is
+**read before any work** so a repeated scenario costs nothing.
 
+- **A write-only cache is not a cache.** The first version stored everything and never
+  looked it up, so re-running a scenario re-ran the whole pipeline. Store *and* read.
+- **Look the cache up before the retrieval stage**, not just before the model call. The
+  ranking lane embeds the scenario, so a lookup placed after it still pays for an
+  embedding request.
 - **The key includes `INDEX_VERSION`.** A rebuilt index changes the pool, so old
   entries are incomparable and must land in a new directory.
+- **Name and level do not identify a character.** A sheet edited between runs (spells,
+  subclass, items) gives different advice at the same level, so the entry stores a
+  fingerprint of the whole sheet. It is compared on read but kept out of the path, so a
+  re-run overwrites in place instead of littering directories.
+- **Keep shared inputs in one file.** The prompt is ~33KB and identical for all three
+  books; storing it per book copied it three times.
+- **A book file is the unit of rating**, so its rating lives there and rating one book
+  never rewrites its siblings.
+- **Key carried ratings by book slot, not by filename.** A regeneration renames the
+  books, so matching on the name silently discarded every rating. This was only caught
+  by regenerating a real run and looking at the files.
+- **Never let a cache failure lose the answer.** Reads and writes are wrapped and
+  reported, not raised.
+- **Treat a partial directory as a miss.** A hand-deleted book would otherwise show the
+  user fewer books than the model produced.
+- **Re-validate on a hit.** A cached answer may predate a rules change, so the
+  eligibility guard runs again rather than being trusted.
 - **The scenario is hashed, but also stored.** The hash makes a valid path component;
   the text has to survive somewhere or a rating cannot be interpreted later.
-- **One file per book, not per run.** A book is the unit of rating, so ratings must be
-  independent. The raw response is stored whole on every entry, so splitting never
-  loses the original.
-- **Never let a cache write failure lose the answer.** It is wrapped and reported, not
-  raised.
 - **Parsing the model's books is harder than it looks.** A real answer ends with a
   summary whose bullets start `**Book 1 pairs with:** Hex, ...`. An unanchored book
   regex treated those as headings, producing six books and stealing picks from the real
   ones. Require a heading to be short and to not read like prose; dedupe by book number.
-  The heading label is also case-unstable (`**Level 1 rituals:**`), so look section
-  names up casefolded.
+  Heading labels are also case-unstable (`**Level 1 rituals:**`), so look section names
+  up casefolded.
 - **Anchor a label regex to the line start.** An unanchored `Cantrip` also matches
   inside a pick's annotation (`1. **Light** (Cantrip; Evocation; Bard)`) and was read as
   a new label, discarding that pick.

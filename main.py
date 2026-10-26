@@ -30,7 +30,7 @@ import logging
 
 import prompts
 import spells
-from cache import key_parts, save_books
+from cache import key_parts, save_run
 import cache as cache_store
 
 # Set up basic configuration for logging
@@ -712,6 +712,13 @@ def _parse_args(argv=None):
             f"(default: ${'CHARACTER'} or '{DEFAULT_CHARACTER}')."
         ),
     )
+    parser.add_argument(
+        "--refresh",
+        "--no-cache",
+        dest="refresh",
+        action="store_true",
+        help="Ignore any cached books and regenerate every scenario.",
+    )
     return parser.parse_args(argv)
 
 
@@ -732,7 +739,8 @@ class SpellbookShell(cmd.Cmd):
     )
     prompt = "TomeWarlock> "
 
-    def __init__(self, vector_db, character_context, character=None, db_version=None):
+    def __init__(self, vector_db, character_context, character=None, db_version=None,
+                 refresh=False):
         super().__init__()
         self.db = vector_db
         self.character_context = character_context
@@ -741,6 +749,8 @@ class SpellbookShell(cmd.Cmd):
         self.character = character if character is not None else {}
         # Part of the cache key: a rebuilt index makes old entries incomparable.
         self.db_version = INDEX_VERSION if db_version is None else db_version
+        # --refresh: ignore the cache for this session, always call the model.
+        self.refresh = refresh
         self.llm = build_llm()
         self.last_response = ""
         self.last_prompt = ""
@@ -829,6 +839,14 @@ class SpellbookShell(cmd.Cmd):
         self.current_scenario = arg
         slot_level = max_spell_level(self.character) if self.character else None
 
+        # A repeated scenario with an unchanged sheet must not cost a model call. The
+        # pool and prompt are rebuilt from the same inputs every time, so a stored
+        # answer is exactly reproducible - only the model's wording would differ.
+        cached = self._load_cached_run()
+        if cached is not None:
+            self._present_cached(cached)
+            return
+
         # Stage 1: build the legal candidate pool. The character's class, pact and
         # subclass decide what can go in the book; the scenario only ranks which legal
         # candidates get their full text put in front of the model.
@@ -888,8 +906,70 @@ class SpellbookShell(cmd.Cmd):
             scenario=scenario if scenario is not None else self.current_scenario,
         )
 
+    def _load_cached_run(self) -> list[dict] | None:
+        """Return a previously generated run for the current inputs, if there is one.
+
+        Looked up before any work is done, so a repeat costs nothing: no embedding
+        call for the ranking lane, no prompt assembly, no model call.
+        """
+        if self.refresh:
+            logging.info("--refresh given: ignoring any cached books for this session.")
+            return None
+
+        key = self._cache_key()
+        if key is None:
+            return None
+
+        try:
+            return cache_store.find_run(
+                cache_dir=CACHE_DIR,
+                character=str(_first_present(self.character, "Name", "name") or "unknown"),
+                level=key["level"],
+                party=_first_present(self.character, "Party", "party"),
+                db_version=self.db_version,
+                scenario=self.current_scenario,
+                character_fingerprint=cache_store.character_fingerprint(self.character),
+            )
+        except OSError as e:
+            # A broken cache must never block a fresh recommendation.
+            logging.warning(f"Could not read the cache ({e}); regenerating.")
+            return None
+
+    def _present_cached(self, cached: dict):
+        """Replay a cached run and re-point /rate at its book files."""
+        run, books = cached["run"], cached["books"]
+        self.last_response = run.get("response", "")
+        self.last_prompt = (run.get("prompt") or {}).get("prompt", "")
+        self.book_files = {
+            Path(book["_path"]).stem: book["_path"] for book in books if book.get("_path")
+        }
+
+        print(f"📖 Reusing the cached books for this scenario ({len(books)} book(s)).")
+        print("   Drop the cache files, change the scenario, or pass --refresh to regenerate.\n")
+        print(self.last_response)
+        self._warn_about_illegal_picks(self._cached_pool(run))
+        logging.info(f"Served {len(books)} book(s) from the cache; no model call made.")
+
+    @staticmethod
+    def _cached_pool(run: dict) -> dict:
+        """Rebuild the pool shape from a cached run so picks can still be validated.
+
+        Validation is re-run on a cache hit rather than trusted: an entry may predate a
+        rules change, so replaying it without checking would resurrect an illegal book.
+        """
+        names = run.get("context") or {}
+        return {
+            "cantrips": [spells.Spell(name=n, filename="", level=0, school="", classes=(),
+                                      is_ritual=False, is_spell=True)
+                         for n in names.get("pool_cantrips", [])],
+            "rituals": [spells.Spell(name=n, filename="", level=1, school="", classes=(),
+                                     is_ritual=True, is_spell=True)
+                        for n in names.get("pool_rituals", [])],
+            "ranked": [],
+        }
+
     def _cache_books(self, bucket):
-        """Persist each generated book so it can be rated after the session.
+        """Persist the run so it can be replayed and rated after the session.
 
         Written before the lights come on, not after: this is the record used for
         post-play ratings, so it must survive the session. A write failure is
@@ -900,7 +980,7 @@ class SpellbookShell(cmd.Cmd):
             logging.debug("No character sheet loaded; skipping cache write.")
             return
 
-        written = save_books(
+        written = save_run(
             answer=self.last_response,
             cache_dir=CACHE_DIR,
             character=str(_first_present(self.character, "Name", "name") or "unknown"),
@@ -918,10 +998,12 @@ class SpellbookShell(cmd.Cmd):
             },
             prompts={"prompt": self.last_prompt},
             model=self._model_name(),
+            character_fingerprint=cache_store.character_fingerprint(self.character),
         )
-        self.book_files = {p.stem: str(p) for p in written}
+        book_paths = [p for p in written if p.name != cache_store.RUN_FILENAME]
+        self.book_files = {p.stem: str(p) for p in book_paths}
         if written:
-            logging.info(f"Cached {len(written)} book(s) under {written[0].parent}")
+            logging.info(f"Cached {len(book_paths)} book(s) under {written[0].parent}")
 
     def _model_name(self) -> str:
         """Best-effort label for the model that produced the answer."""
@@ -1092,7 +1174,10 @@ def main(argv=None):
     watch_thread.start()
 
     try:
-        shell = SpellbookShell(ensure_db(), my_character, character_data, db_version=INDEX_VERSION)
+        shell = SpellbookShell(
+            ensure_db(), my_character, character_data,
+            db_version=INDEX_VERSION, refresh=args.refresh,
+        )
         shell.cmdloop()
     except KeyboardInterrupt:
         # Ctrl+C escapes cmdloop's internal input() loop, so unwind here instead.
