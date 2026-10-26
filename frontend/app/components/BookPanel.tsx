@@ -5,6 +5,7 @@ import { api, ApiError } from '@/api/client'
 import type { Answer, Book } from '@/api/types'
 import { Markdown } from '@/components/Markdown'
 import { SourceBadge } from '@/components/SourceBadge'
+import { SpellLink } from '@/components/SpellLink'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
@@ -138,13 +139,10 @@ export function BookPanel({
                   {names.map((name, i) => (
                     <span key={name}>
                       {i > 0 && ', '}
-                      <a
-                        href={`/rules?spell=${encodeURIComponent(name)}`}
-                        className="underline decoration-dotted underline-offset-2 hover:text-arcane-200"
-                        title={`Look up ${name} in the rules`}
-                      >
-                        {name}
-                      </a>
+                      {/* The same link the prose uses, so a pick and a mention behave
+                          alike - both open the drawer on a click and keep the href for
+                          Ctrl+click. */}
+                      <SpellLink name={name} className="text-inherit" />
                     </span>
                   ))}
                 </Badge>

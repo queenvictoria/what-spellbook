@@ -6,12 +6,10 @@ import { api, ApiError } from '@/api/client'
 import type { Answer, Spell } from '@/api/types'
 import { Markdown } from '@/components/Markdown'
 import { SourceBadge } from '@/components/SourceBadge'
-import { SpellStatsStrip } from '@/components/SpellStats'
+import { SpellCard } from '@/components/SpellCard'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
-import { withoutStatLines } from '@/lib/spellText'
 
 const EXAMPLES = [
   'how does cover work',
@@ -161,39 +159,8 @@ export function RulesScreen() {
         </Card>
       )}
 
-      {spell && (
-        <Card>
-          <CardHeader className="flex-row items-center justify-between">
-            <CardTitle className="text-sm">{spell.name}</CardTitle>
-            {/* The SRD is the 2024 authority; the other two sources are not. A spell the
-                SRD does not carry is still shown, but it must not look like an SRD quote -
-                and an invocation is not even a spell, so it must not look like one. */}
-            {spell.source === 'vendored-srd-5.2.1' ? (
-              <SourceBadge source="rules" />
-            ) : spell.source === 'class-context' ? (
-              <Badge tone="muted">Eldritch Invocation</Badge>
-            ) : (
-              <Badge tone="muted">From the spell corpus</Badge>
-            )}
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {/* Null for an invocation, which is quoted through this same card. It has no
-                Casting Time, Range or Duration, and a strip of empty tiles would imply it
-                does. */}
-            {spell.stats && <SpellStatsStrip stats={spell.stats} />}
-            <Markdown
-              // The stat lines the strip just rendered are dropped here, so a value is not
-              // shown twice - and the copy that is left would be the unexpanded one.
-              text={withoutStatLines(spell.text, spell.stats)}
-              className="prose-spell"
-              linkSpells={false}
-            />
-            <p className="border-t border-void-800 pt-2 font-mono text-xs text-parchment/40">
-              {spell.url}
-            </p>
-          </CardContent>
-        </Card>
-      )}
+      {/* The same card the drawer uses, so the two readings of a spell cannot drift. */}
+      {spell && <SpellCard spell={spell} />}
 
       {answer && (
         <Card>

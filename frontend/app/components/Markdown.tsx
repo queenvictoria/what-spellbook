@@ -7,6 +7,7 @@
  * output into the page as HTML. Here the text is escaped by React and stays text.
  */
 
+import { SpellLink } from '@/components/SpellLink'
 import { splitSpells, useSpellNames } from '@/lib/spellNames'
 
 interface Block {
@@ -63,25 +64,6 @@ function toBlocks(text: string): Block[] {
   }
   endList()
   return blocks
-}
-
-/**
- * A spell mention, rendered as a link into the rules tab.
- *
- * A real `<a href>` rather than a router link, because the rules tab is a separate
- * document in this app's routing and the browser's own navigation is what keeps the
- * back button working.
- */
-function SpellLink({ name }: { name: string }) {
-  return (
-    <a
-      href={`/rules?spell=${encodeURIComponent(name)}`}
-      className="text-arcane-300 underline decoration-dotted underline-offset-2 hover:text-arcane-200"
-      title={`Look up ${name} in the rules`}
-    >
-      {name}
-    </a>
-  )
 }
 
 /**

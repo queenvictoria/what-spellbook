@@ -95,6 +95,13 @@ answer is read verbatim from the character file and cannot be wrong, a `model` a
 generated and can be, and a `rules` answer is quoted from the 2024 SRD. Showing one as
 another would let a plausible guess look like a recorded fact.
 
+A spell mentioned in a book opens in a pull-out drawer rather than navigating away, so the
+recommendation stays on screen while you compare. The link is still a real `<a href>` to
+`/rules?spell=…`: only an unmodified left click is intercepted, so Ctrl/Cmd/Shift-click and
+middle-click still open a new tab. The panel is Base UI's `Drawer` (what shadcn's current
+drawer wraps, `@base-ui/react`), which supplies the focus trap, Escape handling and
+`aria-*` wiring.
+
 ### Backend API
 
 Framework: FastAPI + uvicorn
@@ -443,8 +450,8 @@ whatever a one-line fake SRD implies rather than what the real one does.
       is ~38% of all prose and its invocation half repeats identically in every book.
 - [x] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
 - [x] Opening in the scenario screen should show the results as well as the prompt.
-- [ ] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
-- [ ] The pull out drawer of spells should have a search box at the top to search all spells.
+- [x] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
+- [x] The pull out drawer of spells should have a search box at the top to search all spells.
 - [ ] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
 - [ ] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
 - [ ] When showing spells or other information contextualise it to the current character: Goodbye, Warlock should be Goodbye Louis, Eldritch blast should show "2 beams (L5)"
