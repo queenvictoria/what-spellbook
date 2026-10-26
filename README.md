@@ -416,18 +416,20 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [x] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
 - [x] Build the React/Vite/Tailwind/shadcn front end
 - [x] Create the backend API
+- [x] The rules lookup button should be an icon and shouldn't wrap the text.
+- [x] Each mention of a spell should open the rules tab and display the spell from the vendored repo
+- [x] Read books should look like a button with a carat
 - [ ] Restructure the book prompt: fold the item pairings into each book, make the
       invocations one run-level line, promote the gotchas into their own block. Section 4
       is ~38% of all prose and its invocation half repeats identically in every book.
-- [ ] Each mention of a spell should open the rules tab and display the spell from the vendored repo
-- [ ] Read books should look like a button with a carat
 - [ ] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
 - [ ] Opening in the scenario screen should show the results as well as the prompt.
-- [x] The rules lookup button should be an icon and shouldn't wrap the text.
-- [ ] When reading a book open clicked local context spell descriptions in a pull out drawer.
-- [ ] Separate books with dividers
+- [ ] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
 - [ ] The pull out drawer of spells should have a search box at the top to search all spells.
 - [ ] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
+- [ ] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
+- [ ] When showing spells or other information contextualise it to the current character: Goodbye, Warlock should be Goodbye Louis, Eldritch blast should show "2 beams (L5)"
+- [ ] Spells display parsing: Expand Components to their full meaning (V, S, D, M), add Damage (if any) to the description at the top next to Casting time, add icons to duration, casting time, damage, components, range.
 
 ### Choosing the model
 
