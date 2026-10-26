@@ -77,8 +77,18 @@ origins as a comma-separated list.
 
 ```bash
 VITE_PORT=5273 VITE_API_BASE=http://localhost:8100 npm run dev
-API_PORT=8100 FRONTEND_PORT=5273 uvicorn backend.api.main:get_app --factory --port 8100
+API_PORT=8100 FRONTEND_PORT=5273 uvicorn backend.api.main:get_app --factory --reload \
+  --reload-dir backend --reload-dir context --port 8100
 ```
+
+The dev server is already live: Vite replaces a changed module in place, so an edit to
+anything under `frontend/app/` appears without a reload and without losing the scenario
+typed into the form. Only the API needs the flag, and only because uvicorn does not watch
+by default.
+
+`.vscode/tasks.json` starts both, one terminal each, with `⌘⇧B`. The pairs are `Vite: dev`
+and `API: dev` for the default ports, and `Vite: dev (5273)` and `API: dev (8100)` for a
+second copy running alongside someone else's.
 
 The one thing the UI is careful about: an answer's `source` is always visible. A `sheet`
 answer is read verbatim from the character file and cannot be wrong, a `model` answer is
@@ -91,8 +101,17 @@ Framework: FastAPI + uvicorn
 Status: working
 
 ```bash
-uvicorn backend.api.main:get_app --factory --port 8000
+uvicorn backend.api.main:get_app --factory --reload \
+  --reload-dir backend --reload-dir context --port 8000
 ```
+
+`--reload` is what makes the API live: an edit to a module under `backend/` restarts it
+within about a second, and the front end picks up the new routes on its next request with
+no restart of its own. The two `--reload-dir` flags matter more than they look. Without
+them uvicorn watches the whole repository, and `.cache/` is written on *every run* — so
+each generated book would restart the server, terminating the request that was writing it.
+Watching `context/` as well means editing a vendored SRD file or a class context file takes
+effect without a manual restart, which is the other half of the rule text this app reads.
 
 Interactive docs are at `http://localhost:8000/docs`. The API contains no logic: every
 route validates its input, calls one `SpellbookService` method, and maps the result or a
