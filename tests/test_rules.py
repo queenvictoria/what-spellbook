@@ -123,6 +123,81 @@ def test_question_framing_words_are_not_terms():
     assert terms == {"jump"}
 
 
+@pytest.mark.parametrize(
+    "question,subject",
+    [
+        ("explain the initiative system to me like I'm 12yo", "initiativ"),
+        ("explain advantage", "advantag"),
+        ("tell me about opportunity attacks", "opportunity"),
+        ("define difficult terrain", "difficult"),
+        ("elaborate on exhaustion", "exhaustion"),
+        ("walk me through a short rest", "short"),
+        ("I want to understand spell slots", "slot"),
+        ("help me understand attunement", "attunement"),
+    ],
+)
+def test_an_asking_verb_does_not_outrank_the_subject(question, subject):
+    """A framing verb is rare in a rulebook, so rarity alone elects it as the subject.
+
+    This is the failure the stopword list exists to prevent, and it is worse than a bad
+    ranking: :func:`_qualifies` requires a heading naming the subject, no heading contains
+    "explain", and so a question the SRD answers perfectly well was reported as absent.
+    The rarer the verb the harder it fails - "elaborate" weighs 0.98 against "exhaustion"
+    at 0.93, so the question was refused on the strength of its own phrasing.
+    """
+    terms = rules._terms(question)
+    weights = {term: rules.term_weight(term) for term in terms}
+    assert max(weights, key=lambda term: weights[term]) == subject
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["help", "describe", "list", "find", "learn", "read", "see"],
+)
+def test_a_framing_word_that_names_a_rule_is_kept(word):
+    """Some asking words are also rules, and dropping them breaks working questions.
+
+    "Help [Action]" is a heading, so "how does the help action work" must keep "help" as a
+    term. The same is true of "describe", "list", "find", "learn", "read" and "see". Only
+    words that name no heading at all may be dropped, which is why the list is enumerated
+    rather than guessed at.
+
+    Compared on the folded form, because that is what :func:`_terms` returns - "describe"
+    arrives as ``describ``.
+    """
+    assert rules._fold(word) in rules._terms(f"how does the {word} action work")
+
+
+@pytest.mark.parametrize(
+    "question,heading",
+    [
+        ("explain the initiative system to me like I'm 12yo", "Initiative"),
+        ("explain advantage", "Advantage"),
+        ("tell me about opportunity attacks", "Opportunity Attacks"),
+        ("define difficult terrain", "Difficult Terrain"),
+        ("elaborate on exhaustion", "Exhaustion"),
+        ("walk me through a short rest", "Short Rest"),
+        ("help me understand attunement", "Attunement"),
+        ("can you explain concentration", "Concentration"),
+    ],
+)
+def test_a_conversationally_phrased_question_reaches_its_rule(question, heading):
+    """The same rule, however the question is asked.
+
+    A player asking "explain the initiative system to me like I'm 12yo" wants the Initiative
+    rule, not a report that the SRD has no section by that name. The phrasing is the
+    question's, not the rule's, so it must not decide the answer.
+    """
+    result = rules.gather(question)
+    headings = [
+        line.removeprefix("## ")
+        for line in result["passages"][0].splitlines()
+        if line.startswith("## ")
+    ]
+    assert any(heading.lower() in h.lower() for h in headings), \
+        f"{question!r} answered from {headings!r}"
+
+
 # --- markdown conversion -------------------------------------------------------
 
 
@@ -509,6 +584,31 @@ def test_an_answer_from_an_older_retrieval_is_not_reused(tmp_path):
 
     assert rules.load_cached("how does grappling work", tmp_path) is None
     assert rules.gather("how does grappling work", cache_dir=tmp_path)["from_cache"] is False
+
+
+def test_a_conversational_question_retires_its_older_answer(tmp_path):
+    """The framing-verb fix changed retrieval, so answers cached before it must not serve.
+
+    A question phrased conversationally used to be *refused*, and a refusal is not cached -
+    but the same question could also have been answered from the wrong passage, and either
+    way the entry predates the fix. The source file is unchanged, so only the retrieval
+    version can retire it.
+    """
+    import json
+
+    path = rules.entry_path("explain advantage", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "question": "explain advantage",
+        "answer": "The 2024 SRD has no section matching 'explain advantage'.",
+        "passages": [],
+        "url": "context/srd/playing-the-game.md",
+        "source": rules.RULES_SOURCE,
+        "retrieval_version": 2,
+    }))
+
+    assert rules.load_cached("explain advantage", tmp_path) is None
+    assert rules.gather("explain advantage", cache_dir=tmp_path)["from_cache"] is False
 
 
 def test_an_answer_is_cached_under_the_current_source(tmp_path):

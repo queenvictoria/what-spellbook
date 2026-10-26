@@ -49,7 +49,12 @@ RULES_SOURCE = "vendored-srd-5.2.1"
 # invalidates it just as changing the source file does - and unlike the source, nothing
 # about the file on disk changed to signal it. Bump this whenever the passages a question
 # returns would differ, or the old answers outlive the fix.
-RETRIEVAL_VERSION = 2
+#
+# 3: question-framing verbs became stopwords, so a question phrased conversationally
+#    ("explain the initiative system to me like I'm 12yo") now retrieves the rule it is
+#    about instead of being refused. Answers cached under 2 were written from the refusal
+#    or from the wrong passage.
+RETRIEVAL_VERSION = 3
 
 # Used when a spell is in the retrieval corpus but not the SRD. The distinction is shown
 # in the UI, because the SRD is the 2024 authority and the corpus is not.
@@ -354,6 +359,50 @@ where whether which while who whom why will with work works would you your
 # passage highly for containing "is" and "a", and a passage about *when time is short*
 # outranks one that actually mentions resting. Question-framing verbs ("how does X work",
 # "what does X mean") are included because they name the question, not the rule.
+#
+# The framing verbs below are the *asking* half of that list, and they are not optional
+# filler. A framing verb is rare in a rulebook - it is a word about asking, not about
+# playing - so :func:`term_weight` rates it as highly distinctive, and it then wins the
+# subject election in :func:`_qualifies` against the word the question is actually about.
+# "explain the initiative system to me like I'm 12yo" elected "explain" (0.905) over
+# "initiative" (0.881), and since no heading contains "explain" the heading-anchored gate
+# refused the question outright - so a question the SRD answers perfectly well was reported
+# as absent. The rarer the framing verb, the worse it fails: "elaborate on exhaustion"
+# elected "elaborate" at 0.98.
+#
+# Every word here was checked against the real heading set, because some framing words are
+# also rules and dropping them breaks working questions. "help" is the trap - "Help
+# [Action]" is a heading, so "how does the help action work" must keep it. The same goes
+# for "describe", "list", "find", "learn", "need", "read" and "see", all of which name
+# headings. Only words that name no heading at all are listed.
+#
+# Inflections are spelled out rather than left to :func:`_fold`, because stopwords are
+# subtracted *before* folding - so "explaining" has to be listed to be dropped, and
+# "explain" alone would not cover it. "known" is deliberately absent: it folds to itself
+# rather than to "know", and "Known Forms" is a heading.
+_FRAMING_STOPWORDS = frozenset("""
+ask asked asking asks
+clarified clarifies clarify clarifying
+define defined defines defining
+elaborate elaborated elaborates elaborating
+explain explained explaining explains
+gave give given gives giving
+know knowing knows
+let lets letting
+look looked looking looks
+say saying says
+show showed showing shown shows
+summarise summarised summarises summarising
+summarize summarized summarizes summarizing
+taught teach teaches teaching
+tell telling tells told
+tried tries try trying
+understand understanding understands understood
+walk walked walking walks
+want wanted wanting wants
+""".split())
+
+_STOPWORDS = _STOPWORDS | _FRAMING_STOPWORDS
 
 
 def _fold(word: str) -> str:
