@@ -6,10 +6,12 @@ import { api, ApiError } from '@/api/client'
 import type { Answer, Spell } from '@/api/types'
 import { Markdown } from '@/components/Markdown'
 import { SourceBadge } from '@/components/SourceBadge'
+import { SpellStatsStrip } from '@/components/SpellStats'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
+import { withoutStatLines } from '@/lib/spellText'
 
 const EXAMPLES = [
   'how does cover work',
@@ -175,7 +177,17 @@ export function RulesScreen() {
             )}
           </CardHeader>
           <CardContent className="space-y-3">
-            <Markdown text={spell.text} className="prose-spell" linkSpells={false} />
+            {/* Null for an invocation, which is quoted through this same card. It has no
+                Casting Time, Range or Duration, and a strip of empty tiles would imply it
+                does. */}
+            {spell.stats && <SpellStatsStrip stats={spell.stats} />}
+            <Markdown
+              // The stat lines the strip just rendered are dropped here, so a value is not
+              // shown twice - and the copy that is left would be the unexpanded one.
+              text={withoutStatLines(spell.text, spell.stats)}
+              className="prose-spell"
+              linkSpells={false}
+            />
             <p className="border-t border-void-800 pt-2 font-mono text-xs text-parchment/40">
               {spell.url}
             </p>

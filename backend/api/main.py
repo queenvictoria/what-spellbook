@@ -36,7 +36,16 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.libs import cache as cache_store
-from backend.libs import characters, config, indexing, llm, rules, service, spells
+from backend.libs import (
+    characters,
+    config,
+    indexing,
+    llm,
+    rules,
+    service,
+    spellstats,
+    spells,
+)
 
 from . import schemas
 
@@ -383,7 +392,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 "Check the spelling - the corpus uses the name as published, so "
                 "\"Tenser's Floating Disk\" rather than \"Floating Disk\".",
             )
-        return schemas.SpellSchema(**spell)
+        return schemas.SpellSchema(**spellstats.attach(spell))
 
     @app.get("/api/invocation", response_model=schemas.SpellSchema, tags=["rules"])
     def get_invocation(name: str = Query(min_length=1,
@@ -396,7 +405,9 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         into the spell lookup would make a class feature look like an SRD quote.
 
         The response shape is the same as a spell's, because the card that renders it is
-        the same card.
+        the same card - and that includes ``stats``, which comes back null here. An
+        invocation has no Casting Time, Range or Duration, and the shared card must not
+        offer it a strip of empty tiles implying it does.
         """
         invocation = rules.find_invocation(name)
         if invocation is None:
@@ -406,7 +417,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 "Check the spelling - the context uses the name as published, so "
                 "\"Agonizing Blast\" rather than \"Agonizing\".",
             )
-        return schemas.SpellSchema(**invocation)
+        return schemas.SpellSchema(**spellstats.attach(invocation))
 
     @app.get("/api/spells", response_model=list[str], tags=["rules"])
     def spell_names():

@@ -76,6 +76,39 @@ export interface Answer {
   from_cache: boolean
 }
 
+export interface SpellComponents {
+  letters: string[]
+  /** `V (Verbal), S (Somatic)` — the shorthand with what it stands for. */
+  expanded: string
+  material: string | null
+  consumed: boolean
+}
+
+export interface SpellDamage {
+  /** A roll (`8d6`, `10d6+40`) or a count of instances (`5x` for five separate hits). */
+  dice: string
+  types: string[]
+  /** The caster picks the type at cast time, as distinct from the type being unknown. */
+  chosen_type: boolean
+}
+
+/**
+ * A spell's stat block, read back out of its own text rather than generated.
+ *
+ * Every value is one the file already wrote — the point is that the file does not explain
+ * itself. `V` is Verbal only if you have memorised the Components rule, and the damage sits
+ * in the description's second paragraph where it is the most important number on the card.
+ */
+export interface SpellStats {
+  casting_time: string
+  ritual: boolean
+  range: string | null
+  components: SpellComponents | null
+  duration: string | null
+  concentration: boolean
+  damage: SpellDamage[]
+}
+
 /**
  * One spell, quoted from the vendored SRD. Mirrors `SpellSchema`.
  *
@@ -87,6 +120,11 @@ export interface Spell {
   text: string
   url: string
   source: string
+  /**
+   * Null for anything that is not a spell. An Eldritch Invocation is quoted through this
+   * same card and is a class feature, so it gets no stat block rather than an empty one.
+   */
+  stats: SpellStats | null
 }
 
 export interface Character {

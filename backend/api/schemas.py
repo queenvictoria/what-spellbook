@@ -96,6 +96,58 @@ class AnswerSchema(BaseModel):
         )
 
 
+class SpellComponentsSchema(BaseModel):
+    """A components line, expanded.
+
+    `V, S, M (a bit of fleece)` assumes the reader already knows the rule, so the letters
+    are sent with what they stand for. The material is sent exactly as the file wrote it -
+    *which* material decides whether a component pouch covers the spell, and "a bit of
+    fleece" is not something to summarise.
+    """
+
+    letters: list[str] = Field(default_factory=list)
+    expanded: str
+    material: str | None = None
+    # A consumed material with a GP cost is why a spell can cost money to cast, which is a
+    # material fact about a recommendation rather than a footnote.
+    consumed: bool = False
+
+
+class SpellDamageSchema(BaseModel):
+    """One damage amount the spell states.
+
+    ``dice`` is either a roll (``8d6``, ``10d6+40``) or a count of instances (``5x``, for
+    "takes 5 Cold damage" from five separate hits). The two are not the same thing and are
+    not rendered as though they were.
+    """
+
+    dice: str
+    types: list[str] = Field(default_factory=list)
+    # True when the text says the type is chosen at cast time - "3d8 damage of the chosen
+    # type". Distinct from `types` being empty, which would just be unknown.
+    chosen_type: bool = False
+
+
+class SpellStatsSchema(BaseModel):
+    """A spell's stat block, read back out of its own text.
+
+    Every value is one the file already wrote; nothing here decides what a spell does. It
+    exists because the file does not explain itself - `V` is Verbal only if you have
+    memorised the Components rule, and the damage sits in the description's second
+    paragraph where it is the most important number on the card.
+    """
+
+    casting_time: str
+    # A ritual costs 10 minutes more to cast, which is a decision at the table.
+    ritual: bool = False
+    range: str | None = None
+    components: SpellComponentsSchema | None = None
+    duration: str | None = None
+    # The most consequential thing about a spell for a caster who can hold only one.
+    concentration: bool = False
+    damage: list[SpellDamageSchema] = Field(default_factory=list)
+
+
 class SpellSchema(BaseModel):
     """One spell, quoted verbatim from a vendored file.
 
@@ -114,6 +166,9 @@ class SpellSchema(BaseModel):
     text: str
     url: str
     source: str
+    # Null for anything that is not a spell. An Eldritch Invocation is quoted through this
+    # same card and is a class feature, so it gets no stat block rather than an empty one.
+    stats: SpellStatsSchema | None = None
 
 
 class ScenarioRequest(BaseModel):
