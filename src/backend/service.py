@@ -13,6 +13,8 @@ returned value.
 from __future__ import annotations
 
 import logging
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -58,6 +60,7 @@ class Generation:
     from_cache: bool = False
     model: str | None = None
     pool: dict = field(default_factory=dict)
+    timings: dict = field(default_factory=dict)
 
     @property
     def summary(self) -> str:
@@ -65,6 +68,42 @@ class Generation:
         if self.from_cache:
             return f"Loaded {len(self.books)} book(s) from the cache"
         return f"Scribed {len(self.books)} book(s)"
+
+
+class Timer:
+    """Wall-clock stopwatch for the named phases of a run.
+
+    Phases are recorded rather than merely totalled so a slow run can be attributed:
+    retrieval embeds the scenario locally, prompting is pure CPU, and the model call is
+    network-bound remote work. They fail independently and want different fixes.
+
+    Every phase is recorded even when it raises, so a failed run still says how far it
+    got and where it died.
+    """
+
+    def __init__(self, clock=time.perf_counter):
+        self._clock = clock
+        self.phases: dict[str, float] = {}
+        self._started = self._clock()
+
+    @contextmanager
+    def phase(self, name: str):
+        start = self._clock()
+        try:
+            yield
+        finally:
+            self.phases[name] = round(self._clock() - start, 3)
+
+    def measured(self) -> dict:
+        """The timing payload stored with the run."""
+        total = round(self._clock() - self._started, 3)
+        return {
+            "phases": dict(self.phases),
+            "total_seconds": total,
+            "unaccounted_seconds": round(
+                max(0.0, total - sum(self.phases.values())), 3
+            ),
+        }
 
 
 class NoEligibleSpells(RuntimeError):
@@ -80,12 +119,14 @@ class SpellbookService:
     """
 
     def __init__(self, vector_db, character: dict, *, db_version=None,
-                 refresh=False, backend=None, context_dir=None, cache_dir=None):
+                 refresh=False, backend=None, context_dir=None, cache_dir=None,
+                 books=None):
         self.db = vector_db
         self.character = character or {}
         self.character_text = characters.format_character(self.character)
         self.db_version = config.INDEX_VERSION if db_version is None else db_version
         self.refresh = refresh
+        self.books = config.select_book_count() if books is None else books
         self.context_dir = context_dir or config.CONTEXT_DIR_PATH
         self.cache_dir = cache_dir or config.CACHE_DIR_PATH
         self.llm = backend if backend is not None else llm.build_llm()
@@ -102,6 +143,7 @@ class SpellbookService:
             party=characters.first_present(self.character, "Party", "party"),
             db_version=self.db_version,
             scenario=scenario,
+            books=self.books,
         )
 
     def _cache_lookup_args(self, scenario: str) -> dict:
@@ -113,6 +155,7 @@ class SpellbookService:
             "db_version": self.db_version,
             "scenario": scenario,
             "character_fingerprint": cache.character_fingerprint(self.character),
+            "book_count": self.books,
         }
 
     # --- public API ---
@@ -145,6 +188,8 @@ class SpellbookService:
             from_cache=True,
             model=run.get("model"),
             pool=self._pool_from_context(run.get("context") or {}),
+            # Replayed unchanged so a caller can show what the original run cost.
+            timings=run.get("timings") or {},
             warnings=self.validate(run.get("response", ""), self._pool_from_context(
                 run.get("context") or {})),
         )
@@ -164,20 +209,22 @@ class SpellbookService:
 
         emit = progress or (lambda _message: None)
         slot_level = characters.max_spell_level(self.character) if self.character else None
+        timer = Timer()
 
         # Stage 1: the legal pool. Class, pact and subclass decide what can go in the
         # book; the scenario only ranks which legal candidates get their full text.
         emit("Fetching spells from the grimoire")
-        bucket = retrieval.gather_spell_candidates(
-            self.db, character=self.character, query=scenario
-        )
-        if not bucket["cantrips"] and not bucket["rituals"]:
-            raise NoEligibleSpells(
-                "There are no spells matching this character's eligibility rules."
+        with timer.phase("retrieval"):
+            bucket = retrieval.gather_spell_candidates(
+                self.db, character=self.character, query=scenario
             )
+            if not bucket["cantrips"] and not bucket["rituals"]:
+                raise NoEligibleSpells(
+                    "There are no spells matching this character's eligibility rules."
+                )
 
-        pool_text = retrieval.format_pool(bucket, slot_level, character=self.character)
-        spell_text = retrieval.format_full_text(bucket)
+            pool_text = retrieval.format_pool(bucket, slot_level, character=self.character)
+            spell_text = retrieval.format_full_text(bucket)
 
         if not self.rule_context:
             logging.warning(
@@ -187,18 +234,21 @@ class SpellbookService:
 
         # Stage 2: the model ranks an already-legal pool, with rules and sheet in hand.
         emit("Crafting the prompt")
-        full_prompt = prompts.full_prompt(
-            character_text=self.character_text,
-            rule_context=self.rule_context,
-            scenario=scenario,
-            pool_text=pool_text,
-            spell_text=spell_text,
-        )
-        if warning := prompts.prompt_budget_warning(full_prompt):
-            logging.warning(warning)
+        with timer.phase("prompt"):
+            full_prompt = prompts.full_prompt(
+                character_text=self.character_text,
+                rule_context=self.rule_context,
+                scenario=scenario,
+                pool_text=pool_text,
+                spell_text=spell_text,
+                books=self.books,
+            )
+            if warning := prompts.prompt_budget_warning(full_prompt):
+                logging.warning(warning)
 
         emit("Scribing the Books of Shadows")
-        answer = llm.invoke(self.llm, full_prompt)
+        with timer.phase("books"):
+            answer = llm.invoke(self.llm, full_prompt)
 
         generation = Generation(
             scenario=scenario,
@@ -207,6 +257,7 @@ class SpellbookService:
             books=self._split_books(answer),
             model=llm.model_name(self.llm),
             pool=bucket,
+            timings=timer.measured(),
         )
         generation.warnings = self.validate(answer, bucket)
         self._persist(generation, bucket, pool_text)
@@ -242,6 +293,51 @@ class SpellbookService:
             books=self._split_books(answer),
             model=llm.model_name(self.llm),
             pool=previous.pool,
+        )
+
+    def history(self) -> list[dict]:
+        """Every stored run, newest first, for a history listing."""
+        try:
+            return cache.load_runs(self.cache_dir)
+        except OSError as e:
+            logging.warning(f"Could not read the cache ({e}).")
+            return []
+
+    def replay(self, reference: str) -> Generation | None:
+        """Re-open a stored run by reference, so a past recommendation can be read.
+
+        A run's books only make sense beside the scenario and sheet that produced them,
+        so this returns a full ``Generation`` - the same shape a cache hit produces, and
+        the same shape the REPL renders. Picks are re-validated against the current
+        rules, because an entry may predate a change.
+
+        Accepts a run directory, a ``run.json`` path, a scenario hash or a fragment of
+        the scenario text.
+        """
+        try:
+            directory = cache.find_run_dir(reference, self.cache_dir)
+            if directory is None:
+                return None
+            stored = cache.load_run(directory)
+        except OSError as e:
+            logging.warning(f"Could not read the cache ({e}).")
+            return None
+        if stored is None:
+            return None
+
+        run = stored["run"]
+        pool = self._pool_from_context(run.get("context") or {})
+        answer = run.get("response", "")
+        return Generation(
+            scenario=(run.get("key") or {}).get("scenario_text", ""),
+            answer=answer,
+            books=[Book.from_cache(entry) for entry in stored["books"]],
+            prompt=(run.get("prompt") or {}).get("prompt", ""),
+            from_cache=True,
+            model=run.get("model"),
+            pool=pool,
+            timings=run.get("timings") or {},
+            warnings=self.validate(answer, pool),
         )
 
     def validate(self, answer: str, pool: dict) -> list[str]:
@@ -310,6 +406,8 @@ class SpellbookService:
                 prompts={"prompt": generation.prompt},
                 model=generation.model,
                 character_fingerprint=cache.character_fingerprint(self.character),
+                timings=generation.timings,
+                book_count=self.books,
             )
         except OSError as e:
             logging.warning(f"Could not write the cache ({e}); the answer is unaffected.")

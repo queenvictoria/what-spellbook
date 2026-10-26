@@ -150,6 +150,12 @@ def _format_spell_pool(pool_text: str, spell_text: str = "") -> str:
     return pool_text
 
 
+def _ordinal_word(number: int) -> str:
+    """'1' -> 'one', for prose in the prompt."""
+    return {1: "one", 2: "two", 3: "three", 4: "four", 5: "five",
+            6: "six", 7: "seven", 8: "eight", 9: "nine"}.get(number, str(number))
+
+
 def full_prompt(
     *,
     character_text: str,
@@ -157,8 +163,17 @@ def full_prompt(
     scenario: str,
     pool_text: str,
     spell_text: str = "",
+    books: int = config.BOOK_COUNT,
 ) -> str:
-    """Build the first-pass prompt that produces the three book loadouts."""
+    """Build the first-pass prompt that produces the book loadouts.
+
+    The requested count is interpolated rather than hard-coded, so raising ``BOOKS``
+    cannot leave the prompt still demanding three - which would produce three books and
+    a run that looks broken.
+    """
+    count = max(1, int(books))
+    word = _ordinal_word(count)
+    labels = ", ".join(f'"Book {n}"' for n in range(1, count + 1))
     return f"""{system_prompt()}
 
 === RULES CONTEXT ===
@@ -174,8 +189,7 @@ def full_prompt(
 {_format_spell_pool(pool_text, spell_text)}
 
 === OUTPUT REQUIREMENTS ===
-Produce EXACTLY 3 distinct Book of Shadows loadouts, labelled "Book 1", "Book 2" and
-"Book 3".
+Produce EXACTLY {count} distinct Book of Shadows loadouts, labelled {labels}.
 
 For each book:
 1. A short tactical theme name.
@@ -183,7 +197,7 @@ For each book:
 3. A "How to use" breakdown tying the picks to this scenario, naming the specific
    spells involved.
 
-After the three books, add:
+After the {word} books, add:
 4. Which of the character's existing prepared spells and class features pair with each
    book, and any invocation the character should be using (only those already
    available at their level).

@@ -106,6 +106,11 @@ CONTEXT_DIR = config.CONTEXT_DIR_PATH
 CACHE_DIR = config.CACHE_DIR_PATH
 CHARACTERS_DIR = config.CHARACTERS_DIR
 DEFAULT_CHARACTER = config.DEFAULT_CHARACTER
+SCHEMA_VERSION = cache_store.SCHEMA_VERSION
+BOOK_COUNT = config.BOOK_COUNT
+MIN_BOOKS = config.MIN_BOOKS
+MAX_BOOKS = config.MAX_BOOKS
+select_book_count = config.select_book_count
 
 # Re-exported so tests can keep referencing them through this module.
 Document = indexing.Document

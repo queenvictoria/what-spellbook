@@ -573,6 +573,45 @@ the answer is printed, because it is the record used for post-play ratings, and 
   build artifact, but it is the record of every run and rating — the thing the whole
   project is trying to accumulate. Verify against a throwaway `--cache-dir`/temp path,
   and never delete the real one during development.
+- **An added optional field is not a schema change.** Adding `timings` does not need
+  `SCHEMA_VERSION` bumped, because readers already treat a missing key as "no data".
+  Bumping invalidates *every* cached run and *every* rating, and costs the user a fresh
+  model call for nothing — which is exactly what happened here. Bump for a renamed
+  field, a changed meaning, or a new *required* key. If you do bump, expect to migrate
+  the existing entries rather than silently discarding the user's data.
+- **A new input belongs in the cache key.** `BOOKS` changes the answer, so it had to join
+  `db_version` in `key_parts` and `key_dir` — otherwise a `BOOKS=2` request replays a
+  stored three-book run and the caller silently gets the wrong number of books. The
+  rule: if it would change the output, it is part of the key. Directory shape changed
+  from `<level>-<party>-<db>-<hash>` to `<level>-<party>-<db>-<books>-<hash>`.
+- **Time the phases, not the run.** Retrieval, prompting and the model call fail
+  independently and want different fixes, so a single total says "it is slow" and
+  nothing else. Keep an `unaccounted_seconds` too: growth there means the measurement is
+  missing work, not that the work is free.
+- **Estimate from a median over a short recent window, not the last value.** A single
+  latest sample is fragile: one rate-limited or otherwise slow run poisons every estimate
+  after it until the next run lands. Observed live — an estimate of `~1m 08s` for a run
+  that took `43.2s`, because the previous run had been slow. A median over the last few
+  runs (5) shrugs off one outlier while still following a real trend; a median over the
+  whole history would lag a model change forever. A mean is worse than either, since
+  outliers dominate it.
+- **Do not invent an estimate.** With fewer than `timing.MIN_SAMPLES` samples no ETA is
+  shown at all, rather than one derived from a single run, and phase names are shared
+  constants so a renamed stage loses its estimate instead of showing someone else's.
+- **Keep a sample that is missing a phase.** A run that died in the model call still has
+  a valid retrieval time; discarding it throws away a real measurement.
+- **Progress time is measured in the CLI, not the service.** The backend takes an
+  `emit(message)` callback and knows nothing about stages; timing is presentation, so it
+  belongs with the display. It also stays correct if a stage is reordered.
+- **A run is the unit of reading; a book is the unit of rating.** `/history` lists runs
+  because a book is ambiguous on its own — reading one means reading the scenario it was
+  written for. `/read` returns a full `Generation` (the same shape a cache hit produces)
+  so the REPL has one rendering path, and it restores `book_files` so `/rate` and the
+  legality warnings work as they do after a fresh generation. Before this, the only route
+  back into a result was a cache path, which is unusable to type.
+- **Reading must not depend on this session.** `/read <n>` falls back to resolving the
+  number against the store when `/history` has not been run yet, because requiring a
+  listing first would make the common case ("read the last one") fail confusingly.
 
 ### Choosing the model: one setting, inferred backend
 

@@ -61,13 +61,14 @@ def _save(tmp_path, **overrides):
 def test_key_parts_contains_all_six_components(tmp_path):
     key = cache.key_parts(
         character="Lois", level=5, party=["Barbarian", "Fighter"],
-        db_version=3, scenario=SCENARIO,
+        db_version=3, scenario=SCENARIO, books=3,
     )
-    assert set(key) == {"character", "level", "party", "db_version", "scenario"}
+    assert set(key) == {"character", "level", "party", "db_version", "scenario", "books"}
     assert key["character"] == "lois"
     assert key["level"] == 5
     assert key["party"] == "barbarian-fighter"
     assert key["db_version"] == 3
+    assert key["books"] == 3
 
 
 @pytest.mark.parametrize(
@@ -78,16 +79,27 @@ def test_key_parts_contains_all_six_components(tmp_path):
         ("party", ["Barbarian", "Rogue"]),
         ("db_version", 4),
         ("scenario", "A quiet dinner in Waterdeep."),
+        ("books", 5),
     ],
 )
 def test_each_component_changes_the_key(field, value):
     """Every listed input must be able to produce a distinct cache entry."""
     base = dict(
         character="Lois", level=5, party=["Barbarian", "Fighter"],
-        db_version=3, scenario=SCENARIO,
+        db_version=3, scenario=SCENARIO, books=3,
     )
     changed = {**base, field: value}
     assert cache.key_parts(**base) != cache.key_parts(**changed)
+
+
+def test_the_book_count_is_part_of_the_key():
+    """Asking for two loadouts is not the same request as asking for three."""
+    two = cache.key_parts(character="Lois", level=5, party="B", db_version=3,
+                          scenario=SCENARIO, books=2)
+    three = cache.key_parts(character="Lois", level=5, party="B", db_version=3,
+                            scenario=SCENARIO, books=3)
+    assert two != three
+    assert cache.key_dir(two) != cache.key_dir(three)
 
 
 def test_scenario_fingerprint_ignores_case_and_layout():

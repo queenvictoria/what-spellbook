@@ -44,6 +44,7 @@ python main.py                      # loads data/characters/lois.yaml
 python -m src.cli.app               # same, without the shim
 python main.py --character vax      # loads data/characters/vax.yaml
 CHARACTER=vax python main.py        # same, via environment variable
+BOOKS=2 python main.py              # generate 2 alternatives instead of 3
 python main.py --refresh            # ignore cached books, regenerate everything
 ```
 
@@ -54,13 +55,18 @@ commas.
 While it works, the CLI reports each stage and styles the answer:
 
 ```
-... Fetching spells from the grimoire
-    done: Fetching spells from the grimoire
-... Crafting the prompt
-    done: Crafting the prompt
-... Scribing the Books of Shadows
-    done: Scribing the Books of Shadows
+... Fetching spells from the grimoire... (~2.5s)
+    done: Fetching spells from the grimoire (2.5s)
+... Crafting the prompt... (~0.2s)
+    done: Crafting the prompt (0.2s)
+... Scribing the Books of Shadows... (~68.5s)
+    done: Scribing the Books of Shadows (1m 08s)
 ```
+
+Each stage is timed, and once a couple of runs are stored the typical duration of each
+is known, so a running stage advertises roughly how long it will take. With no history
+no estimate is invented. After each run the timings are logged, both for that run and
+across all runs. See [Timings](#timings).
 
 Headings, bold and lists are rendered rather than shown as raw markdown, and the
 styling is skipped automatically when output is redirected.
@@ -186,7 +192,9 @@ model produced.
 ```bash
 /rate 5                  # rate every book from the latest answer
 /rate 4 bridge denial    # rate one book by name fragment
-/history                 # list cached books and their ratings
+/history                 # list cached runs, newest first, numbered
+/read 2                  # open run 2 from that listing and print its books
+/read bridge denial      # same, by a fragment of its scenario
 python main.py --refresh # ignore the cache, regenerate every scenario
 ```
 
@@ -195,6 +203,59 @@ A rating is attached to a book _slot_ and carried across a regeneration, so a
 did. Because the prompt and response are stored alongside the rating, a rated book
 is labelled training data: it records what was asked, what was suggested, and how
 well it actually went.
+
+`/history` lists **runs**, not books, because a book is ambiguous on its own — reading
+one means reading the scenario it was written for. Each run is numbered so `/read <n>`
+reopens it without typing a path, and `/read` restores the current answer, so `/rate`
+and the legality warnings work exactly as they do after a fresh generation.
+
+### Timings
+
+Each run records how long its three phases took, in `run.json`:
+
+```json
+"timings": {
+  "phases": { "retrieval": 2.558, "prompt": 0.0, "books": 38.379 },
+  "total_seconds": 40.937,
+  "unaccounted_seconds": 0.0
+}
+```
+
+Per phase rather than one number, because they fail independently and want different
+fixes: retrieval embeds the scenario locally, prompting is CPU work, and the model call
+is network-bound. `unaccounted_seconds` is whatever the phases do not explain — if that
+grows, the measurement is missing something rather than the work being free.
+
+Two choices worth knowing when reading the numbers:
+
+- **The estimate is a median over a short recent window** (5 runs), not the last value and
+  not the whole history. A single sample is fragile — one rate-limited run skews every
+  estimate after it until the next run lands (observed live: an estimate of `~1m 08s` for
+  a run that took `43.2s`). A median over the recent window shrugs off one outlier while
+  still following a real trend such as a model change. `median_seconds` is also reported
+  across all runs for context.
+- **A missing phase is kept, not discarded.** A run that died in the model call still
+  has a valid retrieval time.
+
+Phase names are shared with `backend/timing.py`; renaming one in the service without
+renaming it there yields an empty breakdown rather than an error, which is why
+`test_phase_names_match_the_service_and_the_labels` exists.
+
+### Number of books
+
+`BOOKS` sets how many Book of Shadows loadouts to ask for (1–9, default 3). It is not a
+rules number — a book holds 3 cantrips and 2 level 1 rituals and is _one_ loadout per
+short rest, so this is how many alternatives to compare. Each one lengthens the answer
+and the wait.
+
+```bash
+BOOKS=2 python main.py      # two alternatives, roughly two thirds of the output
+```
+
+The count is part of the cache key, so asking for two is a different request from asking
+for three and will not replay a stored three-book run. An out-of-range or non-numeric
+value is clamped with a warning rather than failing the run — a typo in an untracked
+`.env` should not cost you a scenario.
 
 Tests:
 
@@ -219,7 +280,7 @@ missing character into an exit code (so the library stays exception-based).
 - [x] Move character/s to JSON/YAML file in `data/characters`
 - [x] Filter retrieval by what the character can legally prepare
 - [x] Ground prompts in `context/` rules files
-- [ ] Move remaining config to .env file (`CHARACTER` and `LLM_MODEL` are wired; paths are not)
+- [x] Move remaining config to .env file (`CHARACTER` and `LLM_MODEL` are wired; paths are not)
 - [x] Cache input, context, and responses so we can learn from the previous outputs
 - [x] Reuse the cache when the character and scenario are unchanged
 - [x] Rate a generated book after the scenario is played
@@ -227,7 +288,7 @@ missing character into an exit code (so the library stays exception-based).
 - [ ] Add /character command to switch characters
 - [x] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
 - [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
-- [ ] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, where the stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception or /? short rest
+- [ ] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
 
 ### Choosing the model
 

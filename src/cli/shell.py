@@ -25,7 +25,7 @@ except ImportError:  # Windows has no readline; cmd merely loses TAB completion 
     readline = None
 
 from backend import cache as cache_store
-from backend import characters, config, llm, service
+from backend import characters, config, llm, service, timing
 
 from . import progress as progress_mod
 from . import render
@@ -33,15 +33,16 @@ from . import render
 
 class SpellbookShell(cmd.Cmd):
     # Bare command names; the '/' prefix is added by the REPL and TAB completion.
-    COMMANDS = ("scenario", "ask", "rate", "history", "exit")
+    COMMANDS = ("scenario", "ask", "read", "rate", "history", "exit")
 
     intro = (
         "\n🔮 Tome Warlock Spellbook Generator Initialised.\n"
         "Commands:\n"
-        "  /scenario <text> - Set a new tactical scenario and generate 3 books.\n"
+        "  /scenario <text> - Set a new tactical scenario and generate books.\n"
         "  /ask <text>      - Ask a follow-up or refining question about the current books.\n"
+        "  /read <n>        - Read a previous run's books (see /history).\n"
         "  /rate <n> [n]    - Rate generated books 1-5, optionally naming a book.\n"
-        "  /history         - List previously generated books and their ratings.\n"
+        "  /history         - List previous runs, newest first.\n"
         "  /exit            - Close the session.\n"
         "Type '/' and press TAB to complete a command.\n"
     )
@@ -55,12 +56,16 @@ class SpellbookShell(cmd.Cmd):
         self.cache_dir = cache_dir or spellbook.cache_dir
         self.console = console
         self.progress = (
-            progress_mod.StageProgress(console=console) if show_progress
+            progress_mod.StageProgress(
+                console=console, estimates=self._stage_estimates()
+            ) if show_progress
             else progress_mod.SilentProgress()
         )
         # Book references for the current answer -> their cache files, so /rate can
         # address a book without the user typing a path.
         self.book_files: dict[str, str] = {}
+        # The listing /history last printed, so '/read 2' means the second row shown.
+        self.history_runs: list[dict] = []
         # readline must treat '/' as word text, not a separator, or TAB on '/s'
         # would report text 's' at begidx 1 and skip completenames entirely.
         if readline is not None:
@@ -106,6 +111,34 @@ class SpellbookShell(cmd.Cmd):
         return self.last.prompt if self.last else ""
 
     # --- cmd.Cmd hooks ---
+
+    def _stage_estimates(self) -> dict[str, float]:
+        """Map each progress stage message to its typical duration from past runs.
+
+        Keyed by the exact stage text the service emits, so a renamed stage simply loses
+        its estimate instead of showing the wrong one.
+        """
+        try:
+            per_phase = timing.estimates(self.cache_dir)
+        except OSError:
+            return {}
+        return {
+            timing.PHASE_LABELS[phase]: seconds
+            for phase, seconds in per_phase.items()
+            if phase in timing.PHASE_LABELS
+        }
+
+    def _log_timing_summary(self):
+        """Log how long this run took, and the typical profile across all runs."""
+        measured = self.progress.report()
+        if measured:
+            logging.info(f"Scenario timings: {measured}")
+        try:
+            stats = timing.summary(self.cache_dir)
+        except OSError:
+            return
+        if stats.get("samples", 0) > 1:
+            logging.info(timing.format_summary(stats, prefix="Typical: "))
 
     def completenames(self, text, *ignored):
         """Offer '/<command>' for a leading-slash token, the bare command otherwise."""
@@ -162,6 +195,7 @@ class SpellbookShell(cmd.Cmd):
             print(f"Request to the model failed: {e}")
             return
 
+        self._log_timing_summary()
         self._show(generation)
 
     def do_ask(self, arg):
@@ -221,26 +255,92 @@ class SpellbookShell(cmd.Cmd):
             logging.info(f"Rated {path} {score}/5")
 
     def do_history(self, arg):
-        """List previously generated books and their ratings: /history"""
-        paths = cache_store.load_entries(self.cache_dir)
-        if not paths:
-            print(f"No cached books yet under {self.cache_dir}/.")
+        """List previous runs (scenario + books) newest first: /history
+
+        Lists *runs*, not books: a book is ambiguous on its own, and reading one means
+        reading the scenario it was written for. Each entry is numbered so ``/read <n>``
+        can reopen it without typing a path.
+        """
+        runs = self.spellbook.history()
+        if not runs:
+            print(f"No runs cached yet under {self.cache_dir}/.")
+            print("Generate one with '/scenario <text>'.")
             return
 
-        print(f"{len(paths)} cached book(s) under {self.cache_dir}/ (newest first):\n")
-        for path in paths[:25]:
-            try:
-                entry = json.loads(Path(path).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                continue
-            key = entry.get("key", {})
-            score = (entry.get("rating") or {}).get("score")
-            mark = f"{score}/5" if score else "unrated"
-            name = (entry.get("output") or {}).get("book_name", Path(path).stem)
-            print(f"  [{mark:>7}] {key.get('character')} L{key.get('level')}  {name}")
-            print(f"            {Path(path).relative_to(self.cache_dir)}")
-        if len(paths) > 25:
-            print(f"\n  ... and {len(paths) - 25} more.")
+        self.history_runs = runs
+        shown = runs[:20]
+        print(f"{len(runs)} cached run(s) under {self.cache_dir}/ (newest first):\n")
+        for position, run in enumerate(shown, start=1):
+            scores = [
+                (entry.get("rating") or {}).get("score")
+                for entry in cache_store.load_run(run["directory"])["books"]
+            ]
+            rated = [s for s in scores if s]
+            mark = f"{sum(rated)/len(rated):.1f}/5" if rated else "unrated"
+            scenario = " ".join((run.get("scenario") or "").split())
+            if len(scenario) > 68:
+                scenario = scenario[:65].rstrip() + "..."
+            created = (run.get("created_at") or "")[:16].replace("T", " ")
+            total = (run.get("timings") or {}).get("total_seconds")
+            took = f"{total:.0f}s" if isinstance(total, (int, float)) else "-"
+
+            print(f"  [{position:>2}] {created}  {run.get('book_count')} book(s)  "
+                  f"{mark:>8}  {took:>5}")
+            print(f"       {scenario}")
+            if run.get("book_names"):
+                names = ", ".join(n for n in run["book_names"] if n)
+                if len(names) > 70:
+                    names = names[:67].rstrip() + "..."
+                print(f"       {names}")
+        if len(runs) > len(shown):
+            print(f"\n  ... and {len(runs) - len(shown)} more.")
+
+        print("\nRead one with '/read <number>', e.g. '/read 1'.")
+
+    def do_read(self, arg):
+        """Open a previous run and print its books: /read <number|scenario|dir>
+
+        After a restart the current answer is gone, so this is how a stored
+        recommendation is read back. It reuses the same presentation as a fresh
+        generation, so the books, the legality warnings and /rate all behave identically.
+        """
+        reference = arg.strip()
+        if not reference:
+            logging.error("Usage: /read <number|scenario fragment|run directory>. "
+                          "Run '/history' to list what is available.")
+            return
+
+        reference = self._resolve_history_reference(reference)
+        try:
+            generation = self.spellbook.replay(reference)
+        except OSError as e:
+            logging.error(f"Could not read the cache: {e}")
+            return
+
+        if generation is None:
+            logging.error(
+                f"No cached run matched '{reference}'. Run '/history' to list them."
+            )
+            return
+
+        self._show(generation)
+
+    def _resolve_history_reference(self, reference: str) -> str:
+        """Turn a number from the last /history listing into a run directory.
+
+        Numbering is what makes /history usable: a cache path is long, and a scenario
+        hash is meaningless to read.
+        """
+        if not reference.isdigit():
+            return reference
+        index = int(reference)
+        if 1 <= index <= len(self.history_runs):
+            return self.history_runs[index - 1]["directory"]
+        # Nothing listed yet this session, so fall back to whichever run sorts there.
+        runs = self.spellbook.history()
+        if 1 <= index <= len(runs):
+            return runs[index - 1]["directory"]
+        return reference
 
     def do_exit(self, arg):
         """Exit the script cleanly."""

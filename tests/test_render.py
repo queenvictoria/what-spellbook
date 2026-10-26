@@ -126,3 +126,117 @@ def test_progress_works_as_a_context_manager(capsys):
     out = capsys.readouterr().out
     assert "Scribing the Books of Shadows" in out
     assert "done: Scribing the Books of Shadows" in out
+
+
+# --- progress timing ---
+
+
+def _clock(*values):
+    """A clock returning the given values in order, repeating the last."""
+    seq = iter(values)
+    last = [values[-1]]
+
+    def tick():
+        try:
+            value = next(seq)
+        except StopIteration:
+            return last[0]
+        last[0] = value
+        return value
+
+    return tick
+
+
+def test_progress_reports_how_long_each_stage_took(capsys):
+    stage = progress.StageProgress(clock=_clock(0.0, 2.5, 2.5, 42.0))
+    stage("Fetching spells from the grimoire")
+    stage("Crafting the prompt")
+    stage.done()
+    out = capsys.readouterr().out
+    assert "done: Fetching spells from the grimoire (2.5s)" in out
+    assert "done: Crafting the prompt (39.5s)" in out
+
+
+def test_progress_formats_minutes(capsys):
+    stage = progress.StageProgress(clock=_clock(0.0, 72.0))
+    stage("Scribing the Books of Shadows")
+    stage.done()
+    assert "(1m 12s)" in capsys.readouterr().out
+
+
+def test_progress_shows_an_estimate_when_history_exists(capsys):
+    """A known stage advertises roughly how long it will take."""
+    stage = progress.StageProgress(
+        estimates={"Scribing the Books of Shadows": 38.0},
+        clock=_clock(0.0, 1.0),
+    )
+    stage("Scribing the Books of Shadows")
+    stage.done()
+    out = capsys.readouterr().out
+    assert "(~38.0s)" in out
+
+
+def test_progress_invents_no_estimate_without_history(capsys):
+    """With no stored runs there is nothing to base an estimate on."""
+    stage = progress.StageProgress(clock=_clock(0.0, 1.0))
+    stage("Crafting the prompt")
+    stage.done()
+    assert "~" not in capsys.readouterr().out
+
+
+def test_progress_estimates_only_apply_to_known_stages(capsys):
+    stage = progress.StageProgress(
+        estimates={"Scribing the Books of Shadows": 38.0},
+        clock=_clock(0.0, 1.0, 1.0, 2.0),
+    )
+    stage("Scribing the Books of Shadows")
+    stage("Crafting the prompt")
+    stage.done()
+    out = capsys.readouterr().out
+    assert out.count("(~") == 1
+
+
+def test_progress_total_never_goes_backwards():
+    """The total is the sum of completed stages, so an open stage must not count yet."""
+    stage = progress.StageProgress(clock=_clock(0.0, 3.0))
+    stage("fetching")
+    assert stage.elapsed_total == 0.0
+    stage.done()
+    assert stage.elapsed_total == 3.0
+
+
+def test_progress_report_names_every_stage():
+    stage = progress.StageProgress(clock=_clock(0.0, 2.0, 2.0, 5.0, 5.0))
+    stage("fetching")
+    stage("crafting")
+    stage.done()
+    report = stage.report()
+    assert "fetching: 2.0s" in report
+    assert "crafting: 3.0s" in report
+    assert "total 5.0s" in report
+
+
+def test_progress_report_is_empty_before_anything_runs():
+    assert progress.StageProgress().report() == ""
+
+
+def test_progress_total_is_zero_when_disabled(capsys):
+    stage = progress.StageProgress(enabled=False, clock=_clock(0.0, 5.0))
+    stage("fetching")
+    stage.done()
+    assert stage.elapsed_total == 0.0
+    assert capsys.readouterr().out == ""
+
+
+def test_silent_progress_reports_nothing():
+    """API callers must get no timing output they have to ignore."""
+    assert progress.SilentProgress().report() == ""
+    assert progress.SilentProgress().elapsed_total == 0.0
+
+
+def test_short_duration_formatting():
+    assert progress._short(0.0) == "0.0s"
+    assert progress._short(4.25) == "4.2s"
+    assert progress._short(59.9) == "59.9s"
+    assert progress._short(60) == "1m 00s"
+    assert progress._short(125) == "2m 05s"

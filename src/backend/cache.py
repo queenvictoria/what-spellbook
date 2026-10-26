@@ -37,8 +37,10 @@ DEFAULT_CACHE_DIR = ".cache"
 # The shared half of a run lives here; each book gets its own numbered file beside it.
 RUN_FILENAME = "run.json"
 
-# Bump when the entry shape changes, so old entries are recognisable rather than
-# silently misread.
+# Bump when the entry shape changes in a way an old entry cannot survive - a renamed
+# field, a changed meaning, a new required key. An *added* optional key does not need a
+# bump: readers already treat a missing key as "no data", so bumping would throw away
+# every cached run (and every rating) to gain nothing.
 SCHEMA_VERSION = 2
 
 _WORD = re.compile(r"[a-z0-9]+")
@@ -105,21 +107,32 @@ def character_fingerprint(sheet) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
 
 
-def key_parts(*, character: str, level, party, db_version, scenario: str) -> dict:
-    """The cache key: everything that would change the recommendation."""
+def key_parts(*, character: str, level, party, db_version, scenario: str,
+              books: int | None = None) -> dict:
+    """The cache key: everything that would change the recommendation.
+
+    ``books`` belongs here for the same reason ``db_version`` does: asking for two
+    loadouts is a different request from asking for three. Without it a stored run
+    would be replayed for a different request and the caller would silently receive the
+    wrong number of books.
+    """
     return {
         "character": _slug(character),
         "level": level,
         "party": _slug(", ".join(party) if isinstance(party, (list, tuple, set)) else party),
         "db_version": db_version,
         "scenario": scenario_fingerprint(scenario),
+        "books": books,
     }
 
 
 def key_dir(key: dict) -> str:
-    """Directory name for a key: level, party, database version, scenario hash."""
+    """Directory name for a key: level, party, database version, book count, hash."""
     return "-".join(
-        str(part) for part in (key["level"], key["party"], key["db_version"], key["scenario"])
+        str(part) for part in (
+            key["level"], key["party"], key["db_version"],
+            key.get("books"), key["scenario"],
+        )
     )
 
 
@@ -214,18 +227,21 @@ def save_run(
     prompts: dict | None = None,
     model: str | None = None,
     character_fingerprint: str | None = None,
+    timings: dict | None = None,
+    book_count: int | None = None,
 ) -> list[Path]:
     """Write a run to the cache: one shared file plus one file per book.
 
-    The prompt, sheet and pool are identical for all three books, so storing them per
-    book copied ~35KB three times per run. They live once in ``run.json``; each book
-    file holds only what is specific to that book.
+    The prompt, sheet and pool are identical for all the books, so storing them per
+    book copied ~35KB each time. They live once in ``run.json``; each book file holds
+    only what is specific to that book.
 
     A book file is the unit of rating, so its rating is written to its own file and a
     regeneration never disturbs a sibling's rating. Returns the paths written.
     """
     parts = key_parts(
-        character=character, level=level, party=party, db_version=db_version, scenario=scenario
+        character=character, level=level, party=party, db_version=db_version,
+        scenario=scenario, books=book_count,
     )
     directory = entry_dir(cache_dir, parts)
     books = split_books(answer)
@@ -246,6 +262,8 @@ def save_run(
         "prompt": prompts or {},
         "response": answer,
         "model": model,
+        # Per-phase wall-clock breakdown, so slow runs can be averaged and attributed.
+        "timings": timings or {},
     }
     run_path.write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -313,6 +331,7 @@ def find_run(
     db_version,
     scenario: str,
     character_fingerprint: str | None = None,
+    book_count: int | None = None,
 ) -> dict | None:
     """Return ``{"run": ..., "books": [...]}`` for these exact inputs, or None.
 
@@ -321,7 +340,8 @@ def find_run(
     of replaying advice for a character that no longer exists.
     """
     parts = key_parts(
-        character=character, level=level, party=party, db_version=db_version, scenario=scenario
+        character=character, level=level, party=party, db_version=db_version,
+        scenario=scenario, books=book_count,
     )
     directory = entry_dir(cache_dir, parts)
     if not directory.is_dir():
@@ -376,6 +396,110 @@ def load_entries(cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -
     pattern = f"{_slug(character)}/*/*.json" if character else "*/*/*.json"
     paths = [p for p in root.glob(pattern) if p.name != RUN_FILENAME]
     return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
+
+
+def load_runs(cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -> list[dict]:
+    """Every cached run, newest first, as ``{path, key, timings, book_count, ...}``.
+
+    ``load_entries`` lists *books*, which is the unit of rating; this lists *runs*,
+    which is the unit of reading - a scenario's books taken together. Reopening a
+    stored recommendation needs the run, because the books only make sense beside the
+    scenario and sheet that produced them.
+
+    A run whose ``run.json`` is missing or unreadable is skipped rather than reported
+    as an empty entry.
+    """
+    root = Path(cache_dir)
+    if not root.is_dir():
+        return []
+    pattern = f"{_slug(character)}/*/{RUN_FILENAME}" if character else f"*/*/{RUN_FILENAME}"
+
+    runs = []
+    for path in root.glob(pattern):
+        data = _read(path)
+        if not data or data.get("response") is None:
+            continue
+        key = data.get("key") or {}
+        books = [
+            p for p in path.parent.glob("*.json")
+            if p.name != RUN_FILENAME and (_read(p).get("output") or {}).get("book_name")
+        ]
+        runs.append({
+            "path": str(path),
+            "directory": str(path.parent),
+            "key": key,
+            "scenario": key.get("scenario_text", ""),
+            "character": key.get("character"),
+            "level": key.get("level"),
+            "created_at": data.get("created_at"),
+            "model": data.get("model"),
+            "timings": data.get("timings") or {},
+            "book_count": len(books),
+            "book_names": [
+                (_read(p).get("output") or {}).get("book_name") for p in sorted(books)
+            ],
+        })
+    return sorted(runs, key=lambda r: r.get("created_at") or "", reverse=True)
+
+
+def find_run_dir(reference: str, cache_dir=DEFAULT_CACHE_DIR,
+                 *, character: str | None = None) -> Path | None:
+    """Resolve a reference from ``/history`` to the run directory it names.
+
+    Accepts an explicit path, a run directory, a full or trailing scenario hash, or a
+    distinctive fragment of the scenario text - so a number from the listing is enough.
+    """
+    candidate = Path(reference)
+    if candidate.is_dir() and (candidate / RUN_FILENAME).is_file():
+        return candidate
+    if candidate.is_file() and candidate.name == RUN_FILENAME:
+        return candidate.parent
+
+    runs = load_runs(cache_dir, character=character)
+    if not runs:
+        return None
+
+    needle = reference.strip().lower().replace("\\", "/")
+    if not needle:
+        return None
+
+    for run in runs:
+        directory = run["directory"]
+        if str(directory).lower().endswith(needle):
+            return Path(directory)
+    for run in runs:
+        if (run.get("key") or {}).get("scenario") == needle:
+            return Path(run["directory"])
+    for run in runs:
+        if needle in run["scenario"].lower() or needle in run["directory"].lower():
+            return Path(run["directory"])
+    return None
+
+
+def load_run(directory, *, cache_dir=DEFAULT_CACHE_DIR) -> dict | None:
+    """Re-open a stored run as ``{"run": ..., "books": [...]}``, exactly like a hit.
+
+    Deliberately the same shape ``find_run`` returns, so the caller replays a stored
+    run and a freshly cached one through one code path.
+    """
+    directory = Path(directory)
+    run = _read(directory / RUN_FILENAME)
+    if not run or run.get("response") is None:
+        return None
+
+    books = []
+    for path in directory.glob("*.json"):
+        if path.name == RUN_FILENAME:
+            continue
+        book = _read(path)
+        if not book or book.get("output") is None:
+            continue
+        book["_path"] = str(path)
+        books.append(book)
+
+    books.sort(key=lambda b: b.get("output", {}).get("book_index", 0))
+    run["_path"] = str(directory / RUN_FILENAME)
+    return {"run": run, "books": books}
 
 
 def find_book(reference: str, cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -> Path | None:

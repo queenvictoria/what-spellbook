@@ -173,7 +173,7 @@ def test_history_shows_a_recorded_rating(loaded_shell, capsys):
 
 def test_history_is_empty_before_any_scenario(shell, cache_dir, capsys):
     shell.onecmd("/history")
-    assert "No cached books yet" in capsys.readouterr().out
+    assert "No runs cached yet" in capsys.readouterr().out
 
 
 def test_history_finds_entries_written_by_a_previous_session(
