@@ -152,6 +152,15 @@ def rank_book_candidates(db, query: str, *, exclude_names, cantrips: int, ritual
     return ranked
 
 
+# The labels the pool is split by. The system prompt names these to the model, so they
+# live here rather than being spelled out twice and drifting apart - which is how the
+# prompt came to instruct the model about a section that no longer existed.
+CANTRIP_SECTION = "CANTRIP OPTIONS - the ONLY cantrips you may put in the book"
+RITUAL_SECTION = "LEVEL 1 RITUAL OPTIONS - the ONLY rituals you may put in the book"
+MATCHED_SECTION = "SCENARIO-MATCHED OPTIONS (a hint for ranking, still legal)"
+AVAILABLE_SECTION = "ALREADY AVAILABLE - do NOT choose these as book picks"
+
+
 def format_pool(bucket: dict, slot_level: int | None, limit: int | None = None,
                  character: dict | None = None) -> str:
     """Render the book candidate pool handed to the model.
@@ -165,13 +174,13 @@ def format_pool(bucket: dict, slot_level: int | None, limit: int | None = None,
 
     if bucket.get("cantrips"):
         sections.append(
-            "=== CANTRIP OPTIONS - the ONLY cantrips you may put in the book "
+            f"=== {CANTRIP_SECTION} "
             f"(choose {spells.BOOK_CANTRIP_PICKS} per book) ===\n"
             f"{spells.describe_pool(bucket['cantrips'])}"
         )
     if bucket.get("rituals"):
         sections.append(
-            "=== LEVEL 1 RITUAL OPTIONS - the ONLY rituals you may put in the book "
+            f"=== {RITUAL_SECTION} "
             f"(choose {spells.BOOK_RITUAL_PICKS} per book) ===\n"
             f"{spells.describe_pool(bucket['rituals'])}"
         )
@@ -181,10 +190,7 @@ def format_pool(bucket: dict, slot_level: int | None, limit: int | None = None,
     ranked = [spells.spell_from_metadata(d.metadata) for d in bucket.get("ranked", [])]
     if ranked and limit:
         rendered = "\n".join(spells.describe_pool(ranked).splitlines()[:limit])
-        sections.append(
-            "=== SCENARIO-MATCHED OPTIONS (a hint for ranking, still legal) ===\n"
-            f"{rendered}"
-        )
+        sections.append(f"=== {MATCHED_SECTION} ===\n{rendered}")
 
     if not sections:
         return "(no spells matched the eligibility filter)"
@@ -229,7 +235,7 @@ def format_already_have(character: dict | None) -> str:
         return ""
 
     lines = [
-        "=== ALREADY AVAILABLE - do NOT choose these as book picks ===",
+        f"=== {AVAILABLE_SECTION} ===",
         "The character already has these prepared or always available "
         "(including from species, background and feats):",
     ]

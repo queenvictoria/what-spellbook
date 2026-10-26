@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import config
+from . import config, retrieval
 
 # Rule files that always apply, regardless of class.
 BASE_CONTEXT_FILES = ("spells.md",)
@@ -124,9 +124,9 @@ def system_prompt() -> str:
         "- Book of Shadows picks are 3 cantrips and 2 level 1 rituals. Never exceed those "
         "counts and never put a levelled non-ritual or a non-level-1 spell in the book.\n"
         "- The pool is split into labelled sections. Book picks may come ONLY from the "
-        "cantrip and level 1 ritual sections. Spells in the 'can you cast' section are "
-        "levelled spells and must never be listed as a book pick, however well they fit "
-        "the scenario.\n"
+        f"'{retrieval.CANTRIP_SECTION}' and '{retrieval.RITUAL_SECTION}' sections. The "
+        f"'{retrieval.MATCHED_SECTION}' section ranks options and is not a separate "
+        "source of picks; the spells in it are drawn from the two sections above.\n"
         "- The rules context lists spells the character always has prepared (for example "
         "a patron's granted spells). Those are NOT book options either - they cannot be "
         "put in the book and must never appear in a book's pick list.\n"

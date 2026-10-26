@@ -7,7 +7,9 @@ for a character without hard-coding a class.
 
 import pytest
 
-from backend.libs import prompts
+from conftest import FakeDoc
+
+from backend.libs import prompts, retrieval, spells
 
 
 LOIS = {
@@ -154,6 +156,38 @@ def test_system_prompt_forbids_already_prepared_spells():
 def test_system_prompt_warns_about_uniform_slot_level():
     """This is the single most common model error for Warlocks."""
     assert "same level" in prompts.system_prompt()
+
+
+def test_every_pool_section_the_prompt_names_is_actually_emitted():
+    """The prompt and the pool are written in two places, so they must be checked.
+
+    The prompt once forbade book picks from a "'can you cast'" section that had long since
+    been removed, so the model was given a rule about a section it could not see - and the
+    constraint it was meant to state went unstated. Every section label quoted in the
+    prompt is now asserted to appear in ``format_pool``'s own output.
+    """
+    pool = retrieval.format_pool(
+        {
+            "cantrips": [spells.Spell(name="Acid Splash", filename="a.md", level=0)],
+            "rituals": [spells.Spell(name="Detect Magic", filename="d.md", level=1,
+                                     is_ritual=True)],
+            # Ranked results and a prepared spell are what make the hint and the
+            # do-not-pick sections appear at all; without them the pool is two-thirds of
+            # itself and the test would pass vacuously on the sections that remain.
+            "ranked": [FakeDoc(page_content="x", spell_name="Acid Splash", level=0)],
+        },
+        3,
+        limit=5,
+        character={**LOIS, "Always Prepared Spells": "Guiding Bolt"},
+    )
+    system = prompts.system_prompt()
+    # Each constant is quoted into the prompt, so each must be findable in the pool.
+    for label in (retrieval.CANTRIP_SECTION, retrieval.RITUAL_SECTION,
+                  retrieval.MATCHED_SECTION, retrieval.AVAILABLE_SECTION):
+        assert label in pool, f"pool does not emit a section labelled {label!r}"
+        assert label in system or label == retrieval.AVAILABLE_SECTION, (
+            f"{label!r} is emitted by the pool but never named to the model"
+        )
 
 
 # --- full prompt ---
