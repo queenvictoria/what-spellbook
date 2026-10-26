@@ -129,13 +129,10 @@ Tactics:
   details above were taken from the 2024 class data instead)
 
 Caution: the **2024 SRD ships only the Fiend Patron**, so Celestial has no free SRD
-page. The 2014 Celestial patron differs in ways that matter:
+page. The mechanics above are therefore drawn from the 2024 class data (`XPHB` source)
+rather than an SRD page.
 
-| Feature | 2014 | 2024 |
-| --- | --- | --- |
-| Healing Light | Gained at **level 1**; heals *one creature* | Gained at **level 3**; heals *yourself or one creature* |
-| Radiant Soul | Same bonus, described per damage roll | **Once per turn** wording made explicit |
-| Celestial Resilience | Triggers on a **rest** only | Also triggers on **Magical Cunning** |
-| Searing Vengeance | **Self only**; you spring back to your feet | Can target **an ally within 60 ft**; also **Blinds** creatures within 30 ft |
-
-This file follows 2024.
+This file follows the 2024 (5.5e) rules. Earlier printings of the Celestial differ in
+ways that matter — most notably Healing Light arrived at level 1 rather than level 3,
+and Searing Vengeance could not target an ally — so do not "correct" anything here from
+a 2014 source.

@@ -1,10 +1,14 @@
 data
-node_modules/
-package-lock.json
 .env
 .venv
 _retired/
 __pycache__/
+
 # Generated books, cached per character/level/party/DB version/scenario. User data,
 # like data/, and never a build artefact.
 .cache/
+
+# Root-level Node leftovers from the retired browser-only RAG plan. Scoped to the root
+# with a leading slash so the front end, which has to commit its lockfile, still can.
+/node_modules/
+/package-lock.json

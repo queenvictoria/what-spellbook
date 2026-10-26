@@ -7,15 +7,17 @@ records development learnings for anyone (human or agent) working on the reposit
 
 ### What this project actually is
 
-A **Python CLI** (a `cmd.Cmd` REPL) that recommends D&D 5.5e (2024) spells for a
-scenario. Retrieval is a local **Chroma** vector store of spell markdown files; the
-model is reached through **LangChain** with OpenRouter or Ollama backends.
+A **Python core** that recommends D&D 5.5e (2024) spells for a scenario, with three
+front ends over it: a `cmd.Cmd` REPL, a FastAPI HTTP API, and a React UI. Retrieval is a
+local **Chroma** vector store of spell markdown files; the model is reached through
+**LangChain** with OpenRouter or Ollama backends.
 
-The TypeScript interfaces later in this file describe the **intended web app shape**
-(see `ARCHITECTURE.md` / `ROADMAP.md`, both aspirational - no front end exists yet).
-Treat them as the target interface, not as the current implementation.
+The TypeScript interfaces later in this file describe the **agent configuration shape**
+from the original design. Where they disagree with the implementation, the
+implementation wins - the wire contract the UI actually depends on is
+`src/api/schemas.py`, mirrored by hand in `frontend/src/api/types.ts`.
 
-### Layout: a backend, a CLI, and a shim
+### Layout: one backend, three front ends
 
 ```
 src/
@@ -27,6 +29,9 @@ src/
     retrieval.py    candidate collection and prompt-block rendering
     prompts.py      prompt templates + context-file resolution
     cache.py        per-run/per-book result cache
+    lookup.py       deterministic sheet answers (/c), duplicate-spell origins
+    rules.py        2024 SRD retrieval for /? (host allow-list, heading match, cache)
+    timing.py       per-phase aggregation behind the ETA
     llm.py          backend selection, response normalisation, typed errors
     service.py      SpellbookService - the application layer
     watching.py     corpus file watcher
@@ -35,19 +40,23 @@ src/
     shell.py        the cmd.Cmd REPL
     progress.py     Claude-style stage display
     render.py       markdown -> styled terminal output
+  api/            HTTP only - routing and wire schemas
+    main.py         create_app(), the routes, error mapping
+    schemas.py      the wire contract (pydantic)
+frontend/         React UI - its own package.json, vite.config.ts, tsconfig
 main.py           compatibility shim (re-exports the old names)
 ```
 
-**The rule that keeps this honest: `src/backend` must not import `src/cli`.** A test
-enforces it (`test_service_imports_without_a_terminal`). If the backend ever needs a
-terminal, an HTTP handler cannot reuse it.
+**The rule that keeps this honest: `src/backend` must not import `src/cli` or
+`src/api`.** A test enforces it (`test_service_imports_without_a_terminal`). If the
+backend ever needs a terminal or a request object, the other surfaces cannot reuse it.
 
 `SpellbookService` is the seam. It does the work and returns dataclasses
-(`Generation`, `Book`); it never prints, prompts or exits. The REPL renders those
-objects, and an API would serialise the same ones. Errors are typed
+(`Generation`, `Book`, `Answer`); it never prints, prompts or exits. The REPL renders
+those objects; the API serialises them; the UI draws them. Errors are typed
 (`NoEligibleSpells`, `llm.EmptyCompletion`, `llm.LLMUnavailable`,
-`CharacterNotFound`, `IndexUnavailable`) so each surface decides how to report them -
-which is why the library no longer calls `sys.exit`.
+`CharacterNotFound`, `RulesUnavailable`, `IndexUnavailable`) so each surface decides how
+to report them - which is why the library no longer calls `sys.exit`.
 
 **Prefer the packages over the shim.** `main.py` exists so existing habits,
 `python main.py` and older imports keep working; new code should use
@@ -390,27 +399,67 @@ client, the REPL and the entry point. Pulling it apart surfaced traps worth reco
 - Anything that writes must be redirected. Cache tests monkeypatch `main.CACHE_DIR`;
   without that the suite writes `.cache/` into the working tree.
 
-### Sources: 2014 vs 2024 SRD
+### Sources: 2024 only
 
-The editions disagree in ways that silently corrupt recommendations:
+**This project is 2024 rules only.** Every context file, prompt and ruling must cite the
+2024 (5.5e) edition. The two editions disagree in ways that silently corrupt
+recommendations, and a mixed corpus is worse than either one alone because the model
+cannot tell which it is reading.
 
 | Source | Edition | Note |
 | --- | --- | --- |
 | `5e24srd.com/classes/warlock.html` | **2024** | Correct. The `.html` extension is required - the extension-less URL 403s |
-| `5thsrd.org` | **2014** | Its own banner points at 5e24SRD.com |
-| `dndbeyond.com` | both | Subclass text is behind a subscription |
+| `5e24srd.com/spells/spell-descriptions.html` | **2024** | The spell text `/?` is grounded in |
+| `5thsrd.org` | **2014** | **Do not use.** Its own banner points at 5e24SRD.com |
+| `dndbeyond.com` | mixed | Subclass text is behind a subscription |
 
-Concrete divergence at level 5: 2014 gives **3 invocations and Pact of the Tome free**;
-2024 gives **5 invocations with Pact of the Tome costing one**. The progression shape
-differs too - 2014 grants **0 invocations at level 1** and uses "Spells Known", while
-2024 grants **1 invocation at level 1** and uses "Prepared Spells". Cite the edition
-whenever a rule is written into a context file.
+`5thsrd.org` is the trap: it ranks well for "5e SRD" searches and looks authoritative,
+but it serves the 2014 SRD 5.1. Do not cite it and do not fetch from it.
+
+The divergence is not cosmetic. At level 5, 2014 gives **3 invocations with Pact of the
+Tome free**, while 2024 gives **5 invocations with Pact of the Tome costing one**. The
+progression shape differs too - 2014 grants **0 invocations at level 1** and uses
+"Spells Known", while 2024 grants **1 invocation at level 1** and uses "Prepared
+Spells". A single 2014 number silently invalidates a whole recommendation.
 
 The 2024 SRD contains **only the Fiend Patron**. Other 2024 subclasses (Celestial,
 Archfey, Great Old One) have no free SRD page; use the 2024 class data (`XPHB` source)
-rather than a wiki. Note that patron features do move between editions - the 2014
-Celestial lists Healing Light at level 1 and Searing Vengeance as self-only, whereas
-2024 moves Healing Light to level 3 and lets Searing Vengeance rescue an ally.
+rather than a wiki. Patron features do move between editions - the 2014 Celestial lists
+Healing Light at level 1 and Searing Vengeance as self-only, whereas 2024 moves Healing
+Light to level 3 and lets Searing Vengeance rescue an ally.
+
+### The 2024 SRD is not the whole 2024 rulebook
+
+`5e24srd.com` carries SRD 5.2, and large parts of the 2024 rules are *not in it*. Verified
+by crawling every page and checking headings directly:
+
+| Rule | In the SRD? |
+| --- | --- |
+| Cover, Hiding, Difficult Terrain, Travel Pace, Dropping Prone | yes, under its own heading |
+| **Short Rest / Long Rest** | **no** - mentioned only in passing, including "Attune during a Short Rest" |
+| **The Grappled condition** | **no** |
+| **The Rules Glossary** | **no** - pages cross-reference it, but it is absent |
+
+This matters for `/?`: the SRD is not a reference the model can ask questions of and
+expect answers to. Two failure modes were observed live and both are now handled:
+
+- **A passing mention looked like the rule.** "What is a short rest?" matched *"mounts
+  need a Short or Long Rest before they can move"* in a travel-pace sentence, and later
+  *"Attune during a Short Rest"* in the magic-items page. A sentence using the term is
+  not the rule.
+- **An equipment entry looked like a rule.** "How does grappling work?" matched
+  **Grappling Hook** in a price list, because the rulebook says "Grappled" and the tool
+  is named "Grappling Hook".
+
+The fix is structural, not a better score: **match on sections and require the section
+heading to be about the question.** A rule in the SRD is defined under a heading that
+names it. Anything else - a mention, a cross-reference, an equipment row - is refused.
+Excluding equipment headings also needs the price pattern (`Grappling Hook (2 GP)`), or
+the tool still wins on heading text alone.
+
+Refusing is the honest outcome and is what `RulesUnavailable` reports. Do not "improve"
+the matcher by lowering the heading requirement: a plausible-looking wrong paragraph is
+worse than admitting the SRD does not contain the rule, because the user cannot tell.
 
 ### Verify rule numbers programmatically
 
@@ -427,12 +476,30 @@ before "fixing" the document.
 - **Files may change between turns.** Re-read a file before concluding a failure is a
   bug in your code; the user edits during the session.
 - `data/` is gitignored, so the character sheet and the Chroma index are untracked.
-- `context/` is currently **not loaded into any prompt** by `main.py`. The files are
-  inert until retrieval/loading is wired up. Do not assume editing them changes output.
+- `.cache/` is gitignored too, and is **user data** - never delete it, and never let a
+  test write into it.
 - Spell corpus: 544 markdown files, indexed as ~1280 chunks.
 - `markdown-it-py` needs `MarkdownIt("commonmark").enable("table")` to validate GFM
   tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
   not installed`.
+
+### Front end tooling
+
+- **Vite + React + TypeScript + Tailwind v4 + shadcn-style components**, in `frontend/`
+  with its own `package.json`. It is a separate npm project, not a workspace.
+- **Tailwind v4 has no `tailwind.config.js`** - the palette and base layer live in
+  `src/index.css` under `@theme`. Adding a colour means adding a token there, not a
+  config entry.
+- **`baseUrl` is gone in TypeScript 7.** Path aliases work from `paths` alone; adding
+  `baseUrl` fails the build with `TS5101`. The alias must also be mirrored in
+  `vite.config.ts`, since Vite does not read `tsconfig.json` for resolution.
+- **`erasableSyntaxOnly` is on**, so a constructor parameter property
+  (`constructor(readonly x: T)`) is a build error. Declare the field and assign it.
+- **The root `.gitignore` Node patterns are anchored with a leading `/`.** They existed to
+  keep the retired root-level `node_modules` out; unanchored, they also ignored
+  `frontend/package-lock.json`, which a front end must commit.
+- Lint with `npx eslint src`, typecheck and build with `npm run build` (`tsc -b && vite
+  build`). Both are clean and should stay that way.
 
 ### Retrieval: filter first, rank second
 
@@ -612,6 +679,63 @@ the answer is printed, because it is the record used for post-play ratings, and 
 - **Reading must not depend on this session.** `/read <n>` falls back to resolving the
   number against the store when `/history` has not been run yet, because requiring a
   listing first would make the common case ("read the last one") fail confusingly.
+
+### The API is transport, and only transport
+
+`src/api/main.py` validates input, calls one service method, and maps a typed error to a
+status code. Nothing else. A rule that lived in a route handler would be a rule the CLI
+does not have, and the two front ends would drift within a week.
+
+- **The real work is testable without a server.** `create_app(vector_db=, backend=,
+  character_name=, cache_dir=)` takes its collaborators, so `TestClient(create_app(...))`
+  exercises real routing, real serialisation and real error mapping against a fake index
+  and a fake model. Without injection every API test would need the live index.
+- **A wrong status code is a contract bug the front end hits**, and testing the service
+  directly cannot catch it. There is one API test per error mapping for that reason.
+- **4xx means "your request cannot work"; 5xx means "try again".** Retrying a 422
+  (`NoEligibleSpells`) is pointless; retrying a 502 is not. Collapsing them into one code
+  throws away the only thing the caller acts on.
+- **Do not hand a browser a filesystem path.** `/api/history` first returned the run's
+  cache directory, which a browser cannot use and which publishes the cache layout for no
+  gain. A run is now identified by an opaque `id` (the directory name) that `GET /api/runs`
+  resolves back. Reopening still accepts a scenario fragment too, so a caller that already
+  knows what it wants can skip the listing.
+- **Keep the CORS origin list explicit.** `allow_origins=["*"]` with
+  `allow_credentials=True` is both rejected by browsers and a decision that should be
+  made deliberately at deployment rather than inherited from a dev convenience.
+- **The UI calls the API directly rather than through a Vite proxy.** A proxy would hide
+  the CORS setup from the dev loop and only fail once deployed. Testing against the real
+  origin means the CORS config is exercised every day.
+- **Never let a smoke test write into real user data.** Exercising `POST
+  /api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
+  you touched, and prefer a request that only reads.
+
+### Where a fake would hide the thing under test, keep the real path
+
+`test_rules_answers_are_grounded_and_cached` stubs `rules.fetch_page`, not
+`rules.gather`, because replacing `gather` would replace the cache lookup the test exists
+to verify - the test would pass while proving nothing. Check what a patch removes before
+using it. The same trap in another shape: a fake `LLM` that never raises means the
+error-mapping tests never run.
+
+### A front end must show where an answer came from
+
+The most important piece of chrome in the UI is the source badge. A `sheet` answer is read
+verbatim from the character YAML and cannot be wrong; a `model` answer is generated and
+can be; a `rules` answer is quoted from the 2024 SRD. Showing one as another would let a
+plausible guess look like a recorded fact, which is the exact failure the two-stage lookup
+exists to prevent. `Answer.source` carries it and every screen renders it.
+
+Two consequences worth keeping:
+
+- **Do not fabricate data to satisfy a form.** The outcome row originally defaulted a
+  rating to 3 when none was set, so selecting "won" recorded a score the user never gave.
+  It now requires the rating first and says so.
+- **Render the model's markdown; do not print it.** A history preview showing
+  `**Book 1 — “X”**` reads as corruption, not as a preview. The renderer is hand-written
+  for the subset actually emitted (headings, bold, italics, lists) rather than pulling in
+  a general parser, because a general parser needs `dangerouslySetInnerHTML` and would put
+  raw model output into the page as HTML.
 
 ### Choosing the model: one setting, inferred backend
 

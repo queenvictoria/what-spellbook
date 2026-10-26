@@ -1,389 +1,171 @@
-# RAG-Based Architecture for Spellbook Recommendations
+# Architecture
 
-## Overview
-
-This document outlines the architecture for the RAG-based MVP implementation of the D&D spell recommender system.
-
-## Frontend: React + Vite
-
-### Why React + Vite?
-
-1. **AI/Accelerated Development**: React has the largest ecosystem for AI/ML web apps
-2. **TypeScript Support**: Strong typing for complex spell recommendation logic
-3. **Component-Based**: Easy to build modular spell/character UI components
-4. **Vite**: Lightning-fast dev server and build tool
-5. **Mobile-Optimized**: React Native alternatives exist if needed later
-
-### Project Structure
+## Shape of the system
 
 ```
-what-spellbook/
-├── src/
-│   ├── components/
-│   │   ├── CharacterSelector.tsx
-│   │   ├── SpellRecommender.tsx
-│   │   ├── SpellList.tsx
-│   │   ├── HistoryView.tsx
-│   │   ├── Editor.tsx
-│   │   └── ui/ (common UI components)
-│   ├── services/
-## Backend Strategy: Client-Side Only (MVP)
+                 ┌──────────────────┐        ┌──────────────────┐
+                 │   CLI (rich)     │        │  React front end │
+                 │   src/cli/       │        │  frontend/       │
+                 └────────┬─────────┘        └────────┬─────────┘
+                          │                           │ HTTP
+                          │                           ▼
+                          │                  ┌──────────────────┐
+                          │                  │  FastAPI         │
+                          │                  │  src/api/        │
+                          │                  └────────┬─────────┘
+                          └───────────┬───────────────┘
+                                      ▼
+                          ┌───────────────────────────┐
+                          │  backend.service          │
+                          │  SpellbookService         │
+                          └─────────────┬─────────────┘
+                                        │
+        ┌───────────┬───────────┬───────┴────┬───────────┬──────────┐
+        ▼           ▼           ▼            ▼           ▼          ▼
+   retrieval   characters   prompts      cache       lookup      rules
+   (Chroma)     (YAML)     (context/)   (files)     (sheet)    (5e24srd)
+```
 
-### Why No Backend?
+The single rule this diagram encodes: **logic lives in `backend/`, and only
+`backend/` talks to the index, the model or the disk.** The CLI and the API are both
+transport. A rule that lives in a route handler is a rule the CLI does not have, and
+vice versa.
 
-1. **Simpler Deployment**: Single HTML file, no server setup
-2. **Faster Development**: Remove API gateway and server orchestration
-3. **Data Privacy**: User's spell list and scenarios never leave their device
-4. **Easier for Players**: No server configuration needed
-5. **Lower Latency**: Direct browser API calls for RAG
+That is enforced by a test (`test_service_imports_without_a_terminal`) which asserts the
+service imports without pulling in `cli`.
 
-### Architecture: Browser-First RAG
+## Layers
+
+### `src/backend/` - the core
+
+| Module | Responsibility |
+| --- | --- |
+| `service.py` | `SpellbookService`: `scenario`, `refine`, `find_cached`, `replay`, `history`, `validate`, `ask_character`, `ask_rules`, plus `Timer`, `Generation`, `Book`, `Answer` |
+| `retrieval.py` | Two-stage retrieval: filter the pool by what the character can legally cast, then rank against the scenario |
+| `indexing.py` | The Chroma collection: build, open, version |
+| `prompts.py` | Prompt construction for books, character questions and rules questions |
+| `characters.py` | YAML sheet loading and rendering to prompt text |
+| `cache.py` | The run cache: keys, layout, read/write, ratings |
+| `lookup.py` | Deterministic sheet answers (`/c`) and duplicate-spell origins |
+| `rules.py` | 2024 SRD retrieval for `/?`: host allow-list, HTML to text, heading matching, question cache |
+| `timing.py` | Per-phase aggregation driving the ETA and the log summary |
+| `spells.py`, `watching.py`, `llm.py`, `config.py` | Spell parsing, index staleness, model handle, environment |
+
+Nothing here prints, prompts or exits. A failure is a typed exception:
+`NoEligibleSpells`, `EmptyCompletion`, `LLMUnavailable`, `CharacterNotFound`,
+`CharacterNotLoaded`, `RulesUnavailable`.
+
+### `src/cli/` - the terminal front end
+
+`shell.py` is the REPL: `/scenario`, `/ask`, `/books`, `/rate`, `/history`, `/read`,
+`/c`, `/?`, `/config`. `progress.py` owns the live progress line, `render.py` the
+markdown-to-terminal formatting, `app.py` argument parsing.
+
+`ALIASES` in `shell.py` maps short forms (`c` -> `character`, `?` -> `rules`) for both
+dispatch and completion, so the two cannot drift apart.
+
+### `src/api/` - the HTTP front end
+
+`main.py` routes; `schemas.py` is the wire contract. No logic: each endpoint validates,
+calls one service method, and maps the result or a typed error to a status code.
+
+### `frontend/` - the browser front end
+
+Hand-written typed client in `src/api/client.ts` mirroring `schemas.py`. Screens for
+scenario, history, character and rules.
+
+## Two decisions worth stating
+
+### The cache key is a directory path
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                         Browser                             │
-│  ┌─────────────┐    ┌──────────────┐    ┌──────────────┐    │
-│  │ Character   │───▶│ Spell Parser │───▶│ Ruleset     │    │
-│  │ Selection   │    │              │    │ Manager     │    │
-│  └─────────────┘    └──────────────┘    └──────────────┘    │
-│         │                                                      │
-│         │                                                      │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │               RAG Pipeline                           │    │
-│  │  ┌─────────────┐    ┌──────────────┐    ┌─────────────┐│    │
-│  │  │ Embeddings  │───▶│ Vector Store │───▶│ Retrieval   ││    │
-│  │  │ (ST.js)     │    │ (ChromaDB)   │    │ (Similarity)││    │
-│  │  └─────────────┘    └──────────────┘    └─────────────┘│    │
-│  └──────────────────────────────────────────────────────┘    │
-│         │                                                      │
-## RAG Components
-
-### 1. Embeddings Layer
-
-**Tool**: SentenceTransformers.js (onnxruntime-web or @xenova/transformers)
-
-```typescript
-// src/services/rag/embeddings.ts
-import { pipeline, env } from '@xenova/transformers';
-
-// Auto-download models once
-env.allowLocalModels = false;
-### 2. Vector Store
-
-**Tool**: ChromaDB (browser version via jsbindings)
-
-```typescript
-// src/services/rag/vectorStore.ts
-import { ChromaClient } from 'chromadb';
-
-const client = new ChromaClient({ path: '/chromadb' });
-
-export async function createSpellCollection(spells: Spell[]) {
-  const collection = await client.getOrCreateCollection({
-    name: 'spells',
-    metadata: { description: 'D&D spells with embeddings' }
-  });
-
-  const embeddings = await Promise.all(
-    spells.map(async (spell) => {
-      const embedding = await getEmbedding(spell.description, embeddingModel);
-### 3. Retrieval Strategy
-
-**Hybrid Approach**: Semantic + Rule-based
-
-```typescript
-// src/services/rag/retriever.ts
-import { retrieveSpells } from './vectorStore';
-
-export async function retrieveRelevantSpells(
-  query: string,
-  context: {
-    character: Character;
-    ruleset: Ruleset;
-    availableSpells: Spell[];
-  }
-) {
-  // 1. Semantic retrieval for context
-### 4. LLM Integration
-
-**API**: GLM-4.7-flash (via ZhipuAI SDK or direct fetch)
-
-```typescript
-// src/services/rag/llmService.ts
-interface LLMConfig {
-  apiKey: string;
-  model: 'glm-4.7-flash';
-}
-
-interface RAGPrompt {
-  query: string;
-  retrievedContext: string;
-  characterContext: string;
-  ruleset: string;
-}
-
-export async function generateRecommendations(prompt: RAGPrompt) {
-  const messages = [
-    {
-      role: 'system',
-## Knowledge Graph Considerations
-
-### Notes for Future Enhancement
-
-The following knowledge graph concepts are noted for future consideration:
-
-| Concept | Description | Implementation Approach |
-|---------|-------------|--------------------------|
-| **Spell Ontology** | Hierarchical structure of spells (cantrips, 1st level, etc.) | RDF/JSON-LD with properties like `is_child_of`, `belongs_to_class` |
-| **Rule Relationships** | Dependencies between rules and spell effects | Graph nodes with edge types: `causes`, `prevents`, `modifies` |
-| **Class/Background Graph** | Connections between classes and backgrounds | Knowledge graph with `character_of`, `background_of`, `subclass_of` |
-| **Item Spell Synergy** | How magic items affect spell selection | Edge types: `enables`, `requires`, `enhances`, `limits` |
-| **Scenario Clustering** | Group similar scenarios for template recommendations | Graph clustering for pattern recognition |
-
-### Potential Graph Schema
-
+.cache/<character>/<level>-<party>-<dbversion>-<books>-<scenario hash>/
+    run.json                    sheet, key, context, prompt, response, timings
+    1-<book-name>.json          text, picks, rating
+    2-<book-name>.json
 ```
-[Spell] --(has_level)--> [Level]
-[Spell] --(of_class)--> [Class]
-[Spell] --(with_tag)--> [Tag]
-## Development Priorities (MVP)
 
-### Phase 1: Core RAG Setup
-1. Initialize React + Vite project
-2. Set up TypeScript configuration
-3. Configure ChromaDB in browser
-4. Load SentenceTransformers.js embedding model
-5. Create spell parser for markdown rulesets
+The path *is* the key, so a lookup is a `stat` and there is no index to keep in sync.
+`run.json` holds what is shared across the run; each book holds what belongs to it.
 
-### Phase 2: RAG Pipeline
-1. Build vector store with spell embeddings
-2. Implement similarity retrieval
-3. Create retrieval filters (level, class, tags)
-4. Test with sample spell lists
+Consequences that have bitten before:
 
-### Phase 3: LLM Integration
-1. Set up GLM-4.7-flash API calls
-2. Build RAG prompt construction
-3. Handle response parsing and validation
-## Storage Strategy
+- **`books` must be in the key.** Without it, asking for 2 books would replay a stored
+  3-book run and silently return 3.
+- **An added optional field must not bump `SCHEMA_VERSION`.** Bumping it for `timings`
+  invalidated a user's cached run and cost a fresh 40-second model call.
+- **A rating belongs to the book *slot*, not the filename.** Regenerating renames books.
+- **`.cache/` is user data.** It is git-ignored and never cleaned.
 
-### LocalStorage Schema
+### Retrieval is two stages, not one
 
-```typescript
-// src/services/storage.ts
-interface StorageData {
-  characters: Character[];
-  rulesets: Ruleset[];
-  spellLists: SpellList[];
-  scenarios: ScenarioHistory[];
-  userPreferences: {
-    theme: 'light' | 'dark';
-    defaultRuleset: string;
-## Key Files to Create
+A single embedding query returns spells the character cannot cast - a level-9 spell is a
+perfect semantic match for "stop the dragon" and completely illegal for a level-5
+warlock. So:
 
-- `package.json` - Dependencies and scripts
-- `src/services/rag/` - RAG implementation
-- `src/components/` - UI components
-- `src/stores/` - State management
-- `src/utils/` - Utilities and constants
-- `.env.example` - API key configuration
+1. **Filter** by rules: class list, level slots, pact boon, ritual access.
+2. **Rank** what remains against the scenario.
 
-## Migration Path
+Stage 1 is deterministic and cheap; stage 2 is where the model's judgement is used. This
+keeps the model reasoning about *choice* rather than about *legality*, which it is bad at
+and which the rules files already encode.
 
-### From MVP to Full System
+## Error mapping (API)
 
-1. **Server-Side RAG**: Move vector database to server for larger spell lists
-2. **API Gateway**: Create REST API for client-server communication
-3. **Cloud Sync**: Implement encrypted sync with cloud storage
-4. **Knowledge Graph**: Add Neo4j for complex spell relationships
-5. **Multi-Agent**: Separate agents for different recommendation tasks
+| Exception | Status | Meaning |
+| --- | --- | --- |
+| `ValueError` | 400 | Bad input the caller can fix |
+| `CharacterNotFound` | 404 | No such character sheet |
+| `rules.RulesUnavailable` | 404 | The 2024 SRD has no rule for the question |
+| `CharacterNotLoaded` | 409 | The request needs a character and none is loaded |
+| `NoEligibleSpells` | 422 | The character's rules allow no book picks |
+| `llm.EmptyCompletion` | 502 | The model returned nothing |
+| `llm.LLMUnavailable` | 503 | The model could not be reached |
+
+4xx means "your request cannot work"; 5xx means "the server could not do it just now".
+Retrying a 422 is pointless; retrying a 502 is not.
+
+## Rules source policy
+
+**Only 5e24srd.com.** `rules.check_host` refuses anything else before a request is made,
+and `rules.load_cached` rejects a cached answer whose source is not that host.
+
+This is not pedantry. 5thsrd.org carries the **2014** rules, whose own banner points at
+5e24srd.com, and several warlock rules differ between editions: 2014 grants three
+Eldritch Invocations and a free Pact of the Tome, while 2024 grants five invocations with
+the Tome costing one. A recommendation built on the wrong edition is wrong in a way
+nobody notices until the table.
+
+The 2024 SRD is also **not the whole 2024 rulebook**. Verified by crawling every page:
+Cover, Hiding, Difficult Terrain, Travel Pace and Dropping Prone have their own headings;
+Short Rest, Long Rest, the Grappled condition and the Rules Glossary are **absent**. When
+the rule is missing the honest outcome is to say so, which is why `/?` can return 404 and
+why its prompt instructs the model to report the gap rather than guess.
+
+## Model and embedding configuration
+
+`LLM_MODEL` selects the model; OpenRouter or a local Ollama endpoint is chosen by the
+model name. Embeddings run locally through Ollama, so retrieval needs no network.
+
+The model is configuration rather than architecture: nothing in the retrieval path
+depends on which model answers, so changing it changes cost and quality, not behaviour.
+
+## Testing
+
+657 pytest tests. The two that carry the most weight:
+
+- `test_service_imports_without_a_terminal` - guards the layering rule above.
+- An API test per error mapping - a wrong status code is a contract bug the front end
+  will hit, and testing the service directly cannot catch it.
+
+Where a fake would otherwise hide the thing under test, the real path is kept.
+`test_rules_answers_are_grounded_and_cached` stubs `rules.fetch_page` rather than
+`rules.gather`, because replacing `gather` would replace the cache lookup the test exists
+to verify.
+
+Tests use `create_app(vector_db=FakeDB(), backend=FakeLLM())`, so routing, serialisation
+and error mapping are all real while the index and the model are not.
 
 ---
 
-*Last updated: 2024-10-22*
-## Dependencies (Proposed)
-
-```json
-{
-  "dependencies": {
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "zustand": "^4.4.7",
-    "@xenova/transformers": "^2.15.0",
-    "chromadb": "^0.4.22",
-    "@tanstack/react-query": "^5.12.0"
-  },
-  "devDependencies": {
-    "vite": "^5.0.0",
-    "@types/react": "^18.2.0",
-    "typescript": "^5.3.0"
-  }
-}
-```
-    maxHistory: number;
-  };
-}
-```
-
-### JSON Export/Import
-
-```typescript
-export function exportData() {
-  const data = getStorageData();
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  // Trigger download
-}
-
-export async function importData(file: File) {
-  const text = await file.text();
-  const data = JSON.parse(text);
-  // Validate and save to localStorage
-}
-```
-4. Implement caching for frequent queries
-
-### Phase 4: UI Integration
-1. Character selector and editor
-2. Scenario input and history
-3. Recommendation display with cheatsheets
-4. Storage (localStorage) with JSON export
-
-### Phase 5: Polish
-1. Mobile optimization
-2. Error handling and fallbacks
-3. Performance tuning
-4. Documentation and testing
-[Class] --(has_subclass)--> [Subclass]
-[Class] --(compatible_with)--> [Background]
-[Background] --(affects)--> [Ability]
-[Item] --(with_tag)--> [Tag]
-[Item] --(affects)--> [Spell]
-[Rule] --(applies_to)--> [Spell]
-```
-      content: `You are a D&D 5.5e spell recommendation assistant...
-
-Your task: Analyze the scenario and recommend appropriate spells.
-
-Context from RAG: ${prompt.retrievedContext}
-Ruleset: ${prompt.ruleset}
-Character: ${prompt.characterContext}
-
-Format your response as JSON with:
-- recommendations: array of spells
-- rationale: string
-- cheatsheet: object
-`
-    },
-    {
-      role: 'user',
-      content: prompt.query
-    }
-  ];
-
-  const response = await fetch('https://open.bigmodel.cn/api/paas/v4/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: 'glm-4.7-flash',
-      messages,
-      temperature: 0.3,
-      max_tokens: 4000
-    })
-  });
-
-  return await response.json();
-}
-```
-  const retrieved = await retrieveSpells(query, 10);
-
-  // 2. Rule-based filtering
-  const availableIds = context.availableSpells.map(s => s.id);
-  const matchedSpells = retrieved.filter(spell => 
-    availableIds.includes(spell.id)
-  ).slice(0, 5);
-
-  // 3. Apply character-level constraints
-  return matchedSpells.filter(spell => 
-    canCharacterCast(spell, context.character)
-  );
-}
-```
-      return { id: spell.id, embedding, metadata: spell };
-    })
-  );
-
-  await collection.add({ embeddings });
-}
-
-export async function retrieveSpells(query: string, k: number = 5) {
-  const queryEmbedding = await getEmbedding(query, embeddingModel);
-  const results = await collection.query({ queryEmbeddings: [queryEmbedding], nResults: k });
-  return results.documents[0];
-}
-```
-env.useBrowserCache = true;
-
-export async function loadEmbeddingModel() {
-  return await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-}
-
-export async function getEmbedding(text: string, model: any): Promise<number[]> {
-  const output = await model(text, { pooling: 'mean', normalize: true });
-  return output.data as number[];
-}
-```
-│         │                                                      │
-│  ┌──────────────────────────────────────────────────────┐    │
-│  │               LLM Integration                         │    │
-│  │  ┌─────────────┐    ┌──────────────┐    ┌─────────────┐│    │
-│  │  │ RAG Context │───▶│ Prompt      │───▶│ LLM API     ││    │
-│  │  │ (Retrieved) │    │ Construction│    │ (GLM-4.7)   ││    │
-│  │  └─────────────┘    └──────────────┘    └─────────────┘│    │
-│  └──────────────────────────────────────────────────────┘    │
-│         │                                                      │
-│         ▼                                                      │
-│  ┌─────────────┐                                              │
-│  │   Response  │                                              │
-│  └─────────────┘                                              │
-└─────────────────────────────────────────────────────────────┘
-         │
-         ▼
-  ┌─────────────┐
-  │ LocalStorage│
-  └─────────────┘
-```
-│   │   ├── rag/
-│   │   │   ├── embeddings.ts (SentenceTransformers.js)
-│   │   │   ├── vectorStore.ts (ChromaDB)
-│   │   │   ├── retriever.ts
-│   │   │   └── llmService.ts (GLM-4.7-flash API)
-│   │   ├── storage.ts (localStorage)
-│   │   └── types.ts
-│   ├── stores/
-│   │   ├── characterStore.ts
-│   │   ├── historyStore.ts
-│   │   └── uiStore.ts
-│   ├── utils/
-│   │   ├── spellParser.ts
-│   │   ├── rulesetManager.ts
-│   │   └── constants.ts
-│   └── App.tsx
-├── public/
-│   ├── rulesets/
-│   └── embeddings/
-├── package.json
-└── vite.config.ts
-```
-## Architecture Decision Summary
-
-| Decision | Recommendation | Rationale |
-|----------|----------------|-----------|
-| **Frontend Framework** | React + Vite | Mature ecosystem, great TypeScript support, fast dev experience |
-| **Backend** | Client-side only (MVP) | Simpler deployment, faster iteration, data privacy |
-| **Vector Database** | ChromaDB (embedded) | Easy to use, browser-compatible, good performance |
-| **Embeddings** | SentenceTransformers.js | Lightweight, good quality, runs in browser |
-| **LLM API** | GLM-4.7-flash directly from client | No server needed, simple integration |
-| **State Management** | Zustand | Simple, TypeScript-friendly, no boilerplate |
+*Last updated: 2026-10-26*

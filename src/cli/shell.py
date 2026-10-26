@@ -25,7 +25,7 @@ except ImportError:  # Windows has no readline; cmd merely loses TAB completion 
     readline = None
 
 from backend import cache as cache_store
-from backend import characters, config, llm, service, timing
+from backend import characters, config, llm, rules as rules_mod, service, timing
 
 from . import progress as progress_mod
 from . import render
@@ -33,7 +33,7 @@ from . import render
 
 class SpellbookShell(cmd.Cmd):
     # Bare command names; the '/' prefix is added by the REPL and TAB completion.
-    COMMANDS = ("scenario", "ask", "read", "rate", "history", "exit")
+    COMMANDS = ("scenario", "ask", "read", "rate", "history", "character", "rules", "exit")
 
     intro = (
         "\n🔮 Tome Warlock Spellbook Generator Initialised.\n"
@@ -41,6 +41,8 @@ class SpellbookShell(cmd.Cmd):
         "  /scenario <text> - Set a new tactical scenario and generate books.\n"
         "  /ask <text>      - Ask a follow-up or refining question about the current books.\n"
         "  /read <n>        - Read a previous run's books (see /history).\n"
+        "  /c <question>    - Ask about your character (e.g. /c perception).\n"
+        "  /? <question>    - Look up a 2024 rule (e.g. /? how does cover work).\n"
         "  /rate <n> [n]    - Rate generated books 1-5, optionally naming a book.\n"
         "  /history         - List previous runs, newest first.\n"
         "  /exit            - Close the session.\n"
@@ -140,11 +142,27 @@ class SpellbookShell(cmd.Cmd):
         if stats.get("samples", 0) > 1:
             logging.info(timing.format_summary(stats, prefix="Typical: "))
 
+    # Commands whose user-facing form differs from the method name. Kept as the reverse
+    # of ALIASES so what is offered to complete and what dispatches cannot drift apart.
+    DISPLAY = {"character": "c", "rules": "?"}
+
     def completenames(self, text, *ignored):
         """Offer '/<command>' for a leading-slash token, the bare command otherwise."""
         if text.startswith("/"):
-            return [f"/{name} " for name in self.COMMANDS if f"/{name}".startswith(text)]
+            offered = []
+            for name in self.COMMANDS:
+                # Offer the short form the user actually types ('/c', '/?'), not the
+                # internal method name ('/character', '/rules').
+                display = self.DISPLAY.get(name, name)
+                if f"/{display}".startswith(text):
+                    offered.append(f"/{display} ")
+            return offered
         return super().completenames(text, *ignored)
+
+    # Typed aliases -> the method cmd.Cmd will dispatch to. '?' is not an identifier
+    # character, and '/?' style lookups are what users expect, so both are translated
+    # rather than being spelled out as '/rules'.
+    ALIASES = {"c": "character", "?": "rules", "h": "history", "r": "read"}
 
     def parseline(self, line):
         """Accept the '/command' form by dropping one leading slash.
@@ -154,7 +172,12 @@ class SpellbookShell(cmd.Cmd):
         """
         stripped = line.lstrip()
         if stripped.startswith("/"):
-            line = stripped[1:]
+            stripped = stripped[1:]
+            # '/c perception' -> 'character perception', '/? cover' -> 'rules cover'.
+            word, _, rest = stripped.partition(" ")
+            if word in self.ALIASES:
+                stripped = f"{self.ALIASES[word]} {rest}".rstrip()
+            line = stripped
         return super().parseline(line)
 
     def do_help(self, arg):
@@ -341,6 +364,73 @@ class SpellbookShell(cmd.Cmd):
         if 1 <= index <= len(runs):
             return runs[index - 1]["directory"]
         return reference
+
+    def do_character(self, arg):
+        """Ask anything about your character: /c <question>
+
+        Answers a sheet fact exactly ("/c perception" -> the recorded 12) without a model
+        call, and falls back to the model for questions the sheet cannot resolve.
+        """
+        try:
+            with self.progress:
+                answer = self.spellbook.ask_character(arg)
+        except ValueError as e:
+            logging.error(str(e))
+            return
+        except service.CharacterNotLoaded as e:
+            logging.error(str(e))
+            return
+        except llm.EmptyCompletion:
+            logging.error("The model returned an empty response.")
+            return
+        except llm.LLMUnavailable as e:
+            logging.error(f"LLM request failed: {e}")
+            print(f"Request to the model failed: {e}")
+            return
+
+        self._show_answer(answer)
+
+    def do_rules(self, arg):
+        """Look up a 2024 rule: /? <question>
+
+        Grounded in the 2024 SRD. When the SRD does not contain the rule it says so,
+        rather than answering from memory across editions.
+        """
+        try:
+            with self.progress:
+                answer = self.spellbook.ask_rules(arg)
+        except ValueError as e:
+            logging.error(str(e))
+            return
+        except rules_mod.RulesUnavailable as e:
+            logging.error(str(e))
+            print(str(e))
+            return
+        except llm.EmptyCompletion:
+            logging.error("The model returned an empty response.")
+            return
+        except llm.LLMUnavailable as e:
+            logging.error(f"LLM request failed: {e}")
+            print(f"Request to the model failed: {e}")
+            return
+
+        self._show_answer(answer)
+
+    def _show_answer(self, answer: service.Answer):
+        """Print an answer with its provenance, so a guess cannot look like a fact."""
+        labels = {
+            "sheet": "from your character sheet",
+            "model": "read from your character sheet by the model",
+            "rules": "from the 2024 SRD",
+        }
+        where = labels.get(answer.source, answer.source)
+        cached = " (cached)" if answer.from_cache else ""
+        render.banner(f"💬 {where}{cached}", self.console)
+        render.render(answer.answer, self.console)
+        if answer.field_name:
+            logging.info(f"Answer sourced from sheet field(s): {answer.field_name}")
+        for citation in answer.citations:
+            logging.info(f"Source: {citation}")
 
     def do_exit(self, arg):
         """Exit the script cleanly."""

@@ -1,0 +1,54 @@
+@import 'tailwindcss';
+
+/* Tailwind v4 reads the config from CSS, so there is no tailwind.config.js.
+   The palette is a dark "arcane tome" scheme: it is a tool you read for a long
+   time at a table, in low light, and an all-white page glares. */
+@theme {
+  --color-parchment: oklch(0.94 0.02 85);
+  --color-ink: oklch(0.2 0.02 275);
+
+  --color-void-950: oklch(0.16 0.02 275);
+  --color-void-900: oklch(0.2 0.025 275);
+  --color-void-800: oklch(0.26 0.03 275);
+  --color-void-700: oklch(0.33 0.035 275);
+
+  --color-arcane-300: oklch(0.82 0.12 300);
+  --color-arcane-400: oklch(0.72 0.16 300);
+  --color-arcane-500: oklch(0.62 0.19 300);
+
+  --color-radiant-400: oklch(0.82 0.15 85);
+  --color-radiant-500: oklch(0.75 0.16 75);
+
+  --color-verdant-400: oklch(0.78 0.14 155);
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-void-950 text-parchment/90 antialiased;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+  }
+  /* The spell text is dense prose meant to be read, so it gets a reading measure and
+     slightly larger type than the surrounding chrome. */
+  .prose-spell {
+    @apply text-[0.95rem] leading-7 text-parchment/85;
+  }
+  .prose-spell strong {
+    @apply font-semibold text-parchment;
+  }
+  .prose-spell h3,
+  .prose-spell h4 {
+    @apply mt-4 mb-2 font-semibold text-arcane-300;
+  }
+  .prose-spell ul {
+    @apply my-2 list-disc space-y-1 pl-5;
+  }
+  .prose-spell ol {
+    @apply my-2 list-decimal space-y-1 pl-5;
+  }
+  .prose-spell p {
+    @apply my-2;
+  }
+}

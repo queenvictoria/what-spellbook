@@ -25,17 +25,74 @@ https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
 
 ### Front end
 
-Framework: React + Vite
-Status: not started. Planned in ARCHITECTURE and ROADMAP
+Framework: React + Vite + Tailwind v4 + shadcn-style components
+Status: working — scenario, history, character and rules screens
 
-### Backend
+```bash
+cd frontend
+npm install
+npm run dev            # http://localhost:5173
+```
 
-None as yet
+The API must be running first (below). The dev server talks to `http://localhost:8000`
+directly rather than proxying, because the API allows that origin explicitly — a proxy
+would hide the CORS setup from the dev loop and only fail in a real deployment.
+`VITE_API_BASE` overrides the address for a build.
+
+The one thing the UI is careful about: an answer's `source` is always visible. A `sheet`
+answer is read verbatim from the character file and cannot be wrong, a `model` answer is
+generated and can be, and a `rules` answer is quoted from the 2024 SRD. Showing one as
+another would let a plausible guess look like a recorded fact.
+
+### Backend API
+
+Framework: FastAPI + uvicorn
+Status: working
+
+```bash
+uvicorn api.main:get_app --factory --app-dir src --port 8000
+```
+
+Interactive docs are at `http://localhost:8000/docs`. The API contains no logic: every
+route validates its input, calls one `SpellbookService` method, and maps the result or a
+typed error to a status code. That is what keeps the CLI and the API from drifting apart.
+
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/health` | Liveness, loaded model, index version |
+| `GET /api/characters` | Sheet names on disk, for a picker |
+| `GET /api/character` | The loaded sheet |
+| `GET /api/character/ask?question=` | The `/c` command |
+| `GET /api/sheet-keys` | Every value `/c` can look up |
+| `POST /api/scenario` | Generate, or replay the stored run for the same key |
+| `GET /api/cached?scenario=` | The stored run, or `null` — a miss is not an error |
+| `POST /api/ask?scenario=` | The `/ask` command |
+| `GET /api/history` | Every stored run, newest first |
+| `GET /api/runs/{id}` | One run reopened for reading |
+| `POST /api/runs/{id}/rate` | Record an outcome rating |
+| `GET /api/rules?question=` | The `/?` command, grounded in the 2024 SRD |
+
+Errors are mapped deliberately, because the distinction a client acts on is whether
+retrying could help:
+
+| Exception | Status |
+| --- | --- |
+| `ValueError` | 400 — bad input the caller can fix |
+| `CharacterNotFound`, `RulesUnavailable` | 404 |
+| `CharacterNotLoaded` | 409 |
+| `NoEligibleSpells` | 422 — the rules allow no picks; retrying is pointless |
+| `EmptyCompletion` | 502 — the model returned nothing; retrying may help |
+| `LLMUnavailable` | 503 |
+
+A run is identified by an opaque `id` (the cache directory name), never by a filesystem
+path: a browser cannot use a server path, and publishing the cache layout leaks
+information for no gain. Reopening also accepts a scenario fragment, so a caller that
+already knows what it wants can skip the listing.
 
 ### CLI
 
 Framework: Python and langchain
-Status: Backend/CLI split complete; API not built
+Status: working
 
 Run it with:
 
@@ -74,16 +131,19 @@ styling is skipped automatically when output is redirected.
 ### Layout
 
 ```
-src/backend/    rules, retrieval, prompting, caching, index, watcher
+src/backend/    rules, retrieval, prompting, caching, index, watcher, lookup, timing
 src/cli/        REPL, arguments, progress, markdown rendering
+src/api/        FastAPI routes and wire schemas
+frontend/       React UI calling the API
 main.py         compatibility shim (re-exports the old names)
 ```
 
-The rule that keeps the split honest: **`src/backend` never imports `src/cli`**, so the
-same code can power an API. `backend.service.SpellbookService` is that seam — it does
-the work and returns `Generation`/`Book` dataclasses, and never prints, prompts or exits.
-The REPL just renders those objects; an HTTP handler could serialise the same ones
-(`dataclasses.asdict()`). See `ROADMAP.md` for the remaining API work.
+The rule that keeps the split honest: **`src/backend` never imports `src/cli` or
+`src/api`**. `backend.service.SpellbookService` is the seam — it does the work and
+returns `Generation`/`Book`/`Answer` dataclasses, and never prints, prompts or exits.
+The REPL renders those objects; the API serialises the same ones. A test asserts the
+layering holds, so a rule that leaked into a transport layer would fail the suite rather
+than quietly existing in only one front end.
 
 ### How a recommendation is built
 
@@ -264,15 +324,25 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-The suite covers `/slash` command parsing and TAB completion, character sheet
-loading, spell parsing and eligibility rules, prompt assembly, the retrieval
-lanes, book-pick validation, the result cache, the service layer, and terminal
-rendering/progress. It never builds a vector index, contacts a model, or touches
-`data/chroma_db`; anything that writes is redirected to a temp directory.
+657 tests. The suite covers `/slash` command parsing and TAB completion, character
+sheet loading, spell parsing and eligibility rules, prompt assembly, the retrieval lanes,
+book-pick validation, the result cache, the service layer, sheet and rules lookup, timing
+aggregation, every API endpoint and its error mapping, and terminal rendering/progress.
+It never builds a vector index, contacts a model, or touches `data/chroma_db`; anything
+that writes is redirected to a temp directory.
 
-Two tests guard the layering rather than the behaviour: one asserts `backend`
-imports without `cli` (so an API stays possible), and one asserts the CLI turns a
-missing character into an exit code (so the library stays exception-based).
+Three tests guard structure rather than behaviour, because these are the failures that
+would otherwise go unnoticed:
+
+- `backend` imports without `cli` or `api`, so the layering stays intact.
+- The CLI turns a missing character into an exit code, so the library stays
+  exception-based.
+- The API's error mappings hold. A wrong status code is a contract bug the front end
+  hits, and testing the service directly cannot catch it.
+
+Where a fake would hide the thing under test, the real path is kept. The rules cache test
+stubs `rules.fetch_page` rather than `rules.gather`: replacing `gather` would replace the
+cache lookup the test exists to verify.
 
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
@@ -288,7 +358,12 @@ missing character into an exit code (so the library stays exception-based).
 - [ ] Add /character command to switch characters
 - [x] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
 - [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
-- [ ] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
+- [x] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
+- [x] Build the React/Vite/Tailwind/shadcn front end
+- [x] Create the backend API
+- [ ] Restructure the book prompt: fold the item pairings into each book, make the
+      invocations one run-level line, promote the gotchas into their own block. Section 4
+      is ~38% of all prose and its invocation half repeats identically in every book.
 
 ### Choosing the model
 

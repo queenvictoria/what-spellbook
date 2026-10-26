@@ -20,3 +20,11 @@ python-dotenv==*
 PyYAML==6.0.3
 watchdog==*
 rich==15.0.0
+
+# API. fastapi brings starlette; uvicorn was already present for the dev server.
+fastapi==0.121.2
+uvicorn==0.54.0
+
+# Outbound HTTP for /? (2024 SRD lookups). Pinned because httpx 0.28 changed some
+# client defaults, and a silent major bump is not worth debugging from a rules answer.
+httpx==0.28.1

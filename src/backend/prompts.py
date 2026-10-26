@@ -204,6 +204,65 @@ After the {word} books, add:
 """
 
 
+def character_prompt(*, question: str, character_text: str, rule_context: str = "") -> str:
+    """Prompt for a question about the character that the sheet lookup could not answer.
+
+    The sheet is supplied in full and the model is told to say so when the sheet does not
+    contain the answer. Without that instruction a model asked "why do I have two Light
+    spells?" will invent a rule rather than report that the sheet does not explain it,
+    and the user has no way to tell a quoted field from a plausible fabrication.
+    """
+    return f"""You are answering a player's question about their own D&D 5.5e (2024) character.
+
+=== CHARACTER SHEET ===
+{character_text}
+
+=== RULES CONTEXT ===
+{rule_context or "(no rule files loaded)"}
+
+=== QUESTION ===
+{question}
+
+Rules for your answer:
+- Base every claim on the character sheet above. Quote the sheet's own wording when it
+  answers the question directly.
+- If the sheet does not contain the information needed, say exactly that. Do not infer a
+  value, and do not generalise from what such a character "usually" has.
+- If the question concerns why the character has something twice, explain which sheet
+  fields grant it. Check each field before answering.
+- Be brief: two or three sentences, plus a short bullet list only if it genuinely helps.
+"""
+
+
+def rules_prompt(*, question: str, rule_text: str, rule_context: str = "") -> str:
+    """Prompt for a rules question, grounded in fetched 2024 SRD text.
+
+    The rule text is the only permitted source. A model asked a rules question answers
+    from memory across editions, which is precisely how a 2014 invocation count ends up
+    in a 2024 recommendation - so it is told to use the passage and nothing else.
+    """
+    return f"""You are answering a D&D 5.5e (2024) rules question for a player.
+
+=== RETRIEVED 2024 RULES TEXT ===
+{rule_text}
+
+=== CHARACTER CONTEXT ===
+{rule_context or "(no character context loaded)"}
+
+=== QUESTION ===
+{question}
+
+Rules for your answer:
+- Answer ONLY from the retrieved rules text above. It is from the 2024 SRD.
+- The 2014 rules differ in ways that matter (invocation counts, whether Pact of the Tome
+  costs an invocation). Do not fill a gap from memory or from the earlier edition.
+- If the retrieved text does not answer the question, say so plainly and say which part
+  is missing. That is a better answer than a guess.
+- Quote the rule's own wording where it settles the question.
+- Be brief and concrete. Two or three sentences is usually enough.
+"""
+
+
 def refine_prompt(
     *,
     question: str,

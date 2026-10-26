@@ -13,12 +13,13 @@ returned value.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import cache, characters, config, llm, prompts, retrieval, spells
+from . import cache, characters, config, llm, lookup, prompts, retrieval, rules, spells
 
 
 @dataclass
@@ -108,6 +109,31 @@ class Timer:
 
 class NoEligibleSpells(RuntimeError):
     """Raised when the character's rules allow no book picks at all."""
+
+
+@dataclass
+class Answer:
+    """A reply to a question about the character or the rules.
+
+    ``source`` says where the answer came from so the UI can be honest about it: a
+    ``sheet`` lookup is exact and instant, ``model`` is the LLM reasoning over the sheet,
+    and ``rules`` is grounded in fetched 2024 SRD text. Showing a model's guess as
+    though it were a sheet value is the failure this distinction exists to prevent.
+    """
+
+    question: str
+    answer: str
+    source: str
+    # The sheet field the answer was quoted from. Named ``field_name`` rather than
+    # ``field`` because a dataclass attribute called ``field`` shadows the ``field()``
+    # helper inside the class body, which breaks the next default_factory.
+    field_name: str | None = None
+    citations: list[str] = field(default_factory=list)
+    from_cache: bool = False
+
+
+class CharacterNotLoaded(RuntimeError):
+    """Raised when a character question is asked with no sheet loaded."""
 
 
 class SpellbookService:
@@ -295,8 +321,87 @@ class SpellbookService:
             pool=previous.pool,
         )
 
+    def ask_character(self, question: str, progress=None) -> Answer:
+        """Answer a question about the character sheet: ``/c <question>``.
+
+        Two-stage on purpose. A question whose answer is already a field on the sheet
+        ("what's my passive perception?") is resolved by lookup, because a model adds
+        latency and a chance of being wrong about a fact we hold verbatim. Anything else
+        ("why do I have two Light spells?") is answered by the model *with the sheet in
+        context*, so it is grounded rather than recalled.
+
+        A duplicate-spell question is resolved by lookup too, since the sheet records
+        which field granted each spell and that is the whole answer.
+        """
+        if not question.strip():
+            raise ValueError("Please provide a question about your character.")
+        if not self.character:
+            raise CharacterNotLoaded("No character is loaded, so there is nothing to ask about.")
+
+        # Duplicate spell: the sheet already names the granting fields.
+        duplicate = re.match(
+            r"\s*why\s+(?:do\s+i\s+)?(?:have\s+)?(?:\w+\s+){0,3}?(?:two|2|multiple|duplicate)"
+            r"\s+(?P<spell>[A-Za-z' ]+?)(?:\s+spells?)?\s*\??\s*$",
+            question, re.IGNORECASE,
+        )
+        if duplicate:
+            name = duplicate.group("spell").strip()
+            origins = lookup.spell_origins(self.character, name)
+            if len(origins) > 1:
+                return Answer(
+                    question=question,
+                    answer=(
+                        f"You have {name} from {len(origins)} separate sources: "
+                        + "; ".join(origins) + "."
+                    ),
+                    source="sheet",
+                    field_name=", ".join(origins),
+                )
+
+        found = lookup.answer(question, self.character)
+        if found is not None:
+            return Answer(question=question, answer=found["answer"], source="sheet",
+                          field_name=found.get("field"))
+
+        emit = progress or (lambda _message: None)
+        emit("Reading the character sheet")
+        prompt = prompts.character_prompt(
+            question=question,
+            character_text=self.character_text,
+            rule_context=self.rule_context,
+        )
+        return Answer(question=question, answer=llm.invoke(self.llm, prompt),
+                      source="model")
+
+    def ask_rules(self, question: str, progress=None) -> Answer:
+        """Answer a rules question from the 2024 SRD: ``/? <question>``.
+
+        Grounded in fetched text rather than model recall, because a rules answer is
+        checkable and a wrong one silently corrupts a recommendation. Raises
+        ``rules.RulesUnavailable`` when the SRD has no matching rule, which the caller
+        reports rather than answering from memory.
+        """
+        if not question.strip():
+            raise ValueError("Please provide a rules question.")
+
+        emit = progress or (lambda _message: None)
+        emit("Consulting the 2024 SRD")
+        retrieved = rules.gather(question, cache_dir=self.cache_dir)
+        if retrieved["from_cache"] and (cached := rules.load_cached(question, self.cache_dir)):
+            return Answer(question=question, answer=cached["answer"], source="rules",
+                          citations=[cached["url"]], from_cache=True)
+
+        emit("Reading the rules")
+        prompt = prompts.rules_prompt(
+            question=question, rule_text=retrieved["text"], rule_context=self.rule_context,
+        )
+        answer = llm.invoke(self.llm, prompt)
+        rules.save_cached(question, answer, passages=retrieved["passages"],
+                          url=retrieved["url"], cache_dir=self.cache_dir)
+        return Answer(question=question, answer=answer, source="rules",
+                      citations=[retrieved["url"]])
+
     def history(self) -> list[dict]:
-        """Every stored run, newest first, for a history listing."""
         try:
             return cache.load_runs(self.cache_dir)
         except OSError as e:

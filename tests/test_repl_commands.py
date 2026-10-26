@@ -85,6 +85,8 @@ def test_slash_s_completes_to_scenario(shell):
         ("/e", ["/exit "]),
         ("/r", ["/read ", "/rate "]),
         ("/h", ["/history "]),
+        ("/c", ["/c "]),
+        ("/?", ["/? "]),
     ],
 )
 def test_slash_prefix_completions(shell, prefix, expected):
@@ -92,7 +94,9 @@ def test_slash_prefix_completions(shell, prefix, expected):
 
 
 def test_bare_slash_offers_every_command(shell):
-    assert _complete(shell, "/") == [f"/{name} " for name in COMMANDS]
+    """The bare slash lists every command under the form the user types."""
+    expected = [f"/{shell.DISPLAY.get(name, name)} " for name in COMMANDS]
+    assert _complete(shell, "/") == expected
 
 
 @pytest.mark.parametrize("prefix", ["/x", "/zzz"])
@@ -106,9 +110,15 @@ def test_bare_prefix_still_uses_cmd_completion(shell):
 
 
 def test_every_command_is_completable(shell):
-    """Each advertised command must actually be reachable by TAB."""
+    """Each advertised command must be reachable by TAB.
+
+    The offered text is the *typed* form ('/c'), not the method name ('/character'), so
+    the check is that every command appears under its display name.
+    """
+    offered = _complete(shell, "/")
     for name in COMMANDS:
-        assert f"/{name} " in _complete(shell, "/")
+        display = shell.DISPLAY.get(name, name)
+        assert f"/{display} " in offered
 
 
 def test_completion_matches_dispatch_after_space_stripped(shell):
