@@ -4,7 +4,10 @@ Both must degrade to plain text when the output is not a terminal, so a redirect
 or a captured test still contains the model's answer verbatim rather than ANSI escapes.
 """
 
+import io
+
 import pytest
+from rich.console import Console
 
 from cli import progress, render
 
@@ -52,9 +55,52 @@ class _FakeConsole:
     def __init__(self, is_terminal=True):
         self.is_terminal = is_terminal
         self.printed = []
+        self._live_renderable = None
 
     def print(self, value, *args, **kwargs):
         self.printed.append(value)
+
+    # `rich.Live` calls back into the console, so a stand-in has to offer these too or
+    # starting a Live against it raises rather than being testable.
+    def set_live(self, live):
+        self._live_renderable = getattr(live, "renderable", None)
+        return True
+
+    def clear_live(self, live):
+        self._live_renderable = None
+
+    # rich's Live drives the cursor directly, so a stand-in needs these as well.
+    def show_cursor(self, show=True):
+        return None
+
+    def hide_cursor(self):
+        return None
+
+    def status(self, message, *args, **kwargs):
+        return _FakeStatus(message)
+
+
+class _FakeStatus:
+    def __init__(self, message):
+        self.message = message
+        self.started = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.started = False
+
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.stop()
+        return False
+
+
+
 
 
 def test_render_uses_markdown_styling_on_a_terminal():
@@ -240,3 +286,219 @@ def test_short_duration_formatting():
     assert progress._short(59.9) == "59.9s"
     assert progress._short(60) == "1m 00s"
     assert progress._short(125) == "2m 05s"
+
+
+# --- percentage and ETA ---
+
+
+@pytest.mark.parametrize(
+    ("elapsed", "expected", "want"),
+    [
+        (0.0, 100.0, 0),
+        (25.0, 100.0, 25),
+        (50.0, 100.0, 50),
+        (99.9, 100.0, 99),
+    ],
+)
+def test_percent_is_the_fraction_of_the_estimate(elapsed, expected, want):
+    assert progress._percent(elapsed, expected) == want
+
+
+def test_percent_never_reports_a_finished_stage_as_complete():
+    """100% while still running reads as 'finished' and makes the next pause look hung."""
+    assert progress._percent(150.0, 100.0) == 99
+    assert progress._percent(100.0, 100.0) == 99
+
+
+def test_percent_is_zero_without_an_estimate():
+    """No estimate means no basis for a percentage, so none is claimed."""
+    assert progress._percent(10.0, 0.0) == 0
+
+
+def test_expected_total_is_the_whole_run_from_the_start():
+    """A fixed denominator, so the bar cannot jump backwards when a stage begins."""
+    stage = progress.StageProgress(
+        estimates={"fetching": 2.0, "crafting": 1.0, "scribing": 40.0},
+        clock=_clock(0.0, 2.0, 2.0, 3.0),
+    )
+    assert stage.expected_total == 43.0
+    stage("fetching")
+    assert stage.expected_total == 43.0
+    stage("crafting")
+    assert stage.expected_total == 43.0
+
+
+def test_expected_total_ignores_stages_with_no_estimate():
+    stage = progress.StageProgress(estimates={"fetching": 2.0}, clock=_clock(0.0, 2.0))
+    stage("unknown stage")
+    # Only the stage with a known time contributes.
+    assert stage.expected_total == 2.0
+
+
+def test_expected_total_is_zero_when_nothing_ran():
+    assert progress.StageProgress().expected_total == 0.0
+    assert progress.SilentProgress().expected_total == 0.0
+
+
+# --- the live line ---
+
+
+def test_live_line_shows_elapsed_estimate_and_percent():
+    """The three things the user asked for: elapsed, estimate, percentage."""
+    ticks = [0.0]
+
+    def clock():
+        return ticks[0]
+
+    stage = progress.StageProgress(estimates={"fetching": 10.0}, clock=clock)
+    stage("fetching")
+    ticks[0] = 4.0
+    rendered = stage._line_text()
+
+    assert "fetching" in rendered
+    assert "4.0s" in rendered
+    assert "10.0s" in rendered
+    assert "40%" in rendered
+    assert "6.0s left" in rendered
+
+
+def test_live_line_carries_the_total_across_stages():
+    """The bar tracks the whole run, so it does not restart at zero each stage."""
+    ticks = [0.0]
+
+    def clock():
+        return ticks[0]
+
+    stage = progress.StageProgress(
+        estimates={"fetching": 2.0, "crafting": 38.0}, clock=clock
+    )
+    stage("fetching")
+    ticks[0] = 2.0
+    stage("crafting")
+    ticks[0] = 22.0
+    rendered = stage._line_text()
+
+    # 2s done + 20s into a 40s total.
+    assert "22.0s" in rendered
+    assert "40.0s" in rendered
+    assert "55%" in rendered
+
+
+def test_live_line_omits_the_clock_without_an_estimate():
+    stage = progress.StageProgress(clock=_clock(0.0, 5.0))
+    stage("unknown stage")
+    rendered = stage._line_text()
+    assert "unknown stage" in rendered
+    assert "%" not in rendered
+    assert "left" not in rendered
+
+
+def test_live_line_shows_no_negative_time_left():
+    """Overshooting the estimate must not print '~-3s left'."""
+    ticks = [0.0]
+
+    def clock():
+        return ticks[0]
+
+    stage = progress.StageProgress(estimates={"fetching": 10.0}, clock=clock)
+    stage("fetching")
+    ticks[0] = 25.0
+    rendered = stage._line_text()
+    assert "left" not in rendered
+    assert "99%" in rendered
+
+
+def _terminal_console():
+    """A real console that believes it is a terminal, writing to a buffer.
+
+    Faking rich's console protocol is not worth it - `Live` calls `set_live`,
+    `push_render_hook`, `show_cursor` and more - so the branch is exercised with the real
+    thing, and only the read-only checks use the lightweight stand-in.
+    """
+    return Console(file=io.StringIO(), force_terminal=True, width=90)
+
+
+def test_live_line_is_offered_once_an_estimate_exists():
+    stage = progress.StageProgress(
+        estimates={"fetching": 10.0}, console=_terminal_console(), clock=_clock(0.0, 1.0)
+    )
+    stage("fetching")
+    assert stage.wants_live_line is True
+    # The status line is not started, so the two displays cannot overlap.
+    assert stage._status is None
+    stage.done()
+
+
+def test_no_live_line_without_an_estimate():
+    """A bar counting towards an unknown total is worse than a plain spinner."""
+    stage = progress.StageProgress(console=_FakeConsole(), clock=_clock(0.0, 1.0))
+    stage("fetching")
+    assert stage.wants_live_line is False
+    assert stage._status is not None
+    stage.done()
+
+
+def test_done_clears_both_displays():
+    """A display left running would keep overwriting the answer as it prints."""
+    stage = progress.StageProgress(
+        estimates={"fetching": 10.0}, console=_terminal_console(), clock=_clock(0.0, 1.0)
+    )
+    stage("fetching")
+    assert stage._live is not None
+    stage.done()
+    assert stage._live is None
+    assert stage._status is None
+
+
+def test_the_live_line_shows_a_real_progress_bar():
+    """A rendered terminal run must contain a bar, not just the numbers."""
+    console = _terminal_console()
+    stage = progress.StageProgress(
+        estimates={"fetching": 10.0}, console=console, clock=_clock(0.0, 4.0)
+    )
+    stage("fetching")
+    console.print(progress._StageLine(stage).__rich__())
+    stage.done()
+
+    out = console.file.getvalue()
+    assert "fetching" in out
+    assert "40%" in out
+    assert "━" in out  # the bar itself
+
+
+def test_progress_line_advances_during_the_longest_stage():
+    """The bug this guards: elapsed must include the running stage, not just finished ones.
+
+    `elapsed_total` counts completed stages only, so a live line built on it would sit at
+    0% for the whole of the slowest stage - precisely when it is being watched.
+    """
+    ticks = [0.0]
+
+    def clock():
+        return ticks[0]
+
+    stage = progress.StageProgress(estimates={"scribing": 40.0}, clock=clock)
+    stage("scribing")
+    assert "0%" in stage._line_text()
+
+    ticks[0] = 30.0
+    assert "75%" in stage._line_text()
+
+    # The log figure is unchanged: it still reports only completed work.
+    assert stage.elapsed_total == 0.0
+    assert stage.elapsed_live == 30.0
+
+
+def test_redirected_output_never_gets_a_live_line(capsys):
+    """Redirected output must stay line-based, so no ANSI and no Live."""
+    stage = progress.StageProgress(
+        estimates={"fetching": 10.0},
+        console=_FakeConsole(is_terminal=False),
+        clock=_clock(0.0, 1.0),
+    )
+    stage("fetching")
+    stage.done()
+    assert stage._live is None
+    out = capsys.readouterr().out
+    assert "\x1b" not in out
+    assert "done: fetching (1.0s)" in out
