@@ -219,7 +219,7 @@ missing character into an exit code (so the library stays exception-based).
 - [x] Move character/s to JSON/YAML file in `data/characters`
 - [x] Filter retrieval by what the character can legally prepare
 - [x] Ground prompts in `context/` rules files
-- Move remaining config to .env file
+- [ ] Move remaining config to .env file (`CHARACTER` and `LLM_MODEL` are wired; paths are not)
 - [x] Cache input, context, and responses so we can learn from the previous outputs
 - [x] Reuse the cache when the character and scenario are unchanged
 - [x] Rate a generated book after the scenario is played
@@ -229,9 +229,33 @@ missing character into an exit code (so the library stays exception-based).
 - [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
 - [ ] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, where the stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception or /? short rest
 
-LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
+### Choosing the model
+
+`LLM_MODEL` in `.env` selects the reasoning model for both backends. Which backend it
+means is inferred from the name, because the two conventions are unambiguous — an
+OpenRouter id is `vendor/model` (contains `/`), an Ollama name is `name:tag` (does not):
+
+| `LLM_MODEL` | Backend used |
+| --- | --- |
+| unset, `OPENROUTER_API_KEY` set | OpenRouter, `deepseek/deepseek-v4.1-flash-1017` |
+| unset, no key | Ollama, `qwen3.5:4b` |
+| `deepseek/deepseek-v4.1-flash-1017` | OpenRouter |
+| `qwen2.5-coder:7b-instruct` | Ollama — **even with a key present** |
+
+That last row is the point: it lets a key stay in `.env` for occasional use while
+running locally by default. A remote model id with no key falls back to Ollama and says
+so, rather than silently swapping models.
+
+```bash
+LLM_MODEL=qwen2.5-coder:7b-instruct python main.py   # local, one-off
+LLM_MODEL=openai/gpt-4o-mini python main.py          # OpenRouter, one-off
+```
+
+`OLLAMA_MODEL` also overrides the local default (`qwen3.5:4b`) when `LLM_MODEL` is unset.
+The embeddings model stays on Ollama regardless — `nomic-embed-text` is local-only.
 
 Note: `qwen3.5:4b` is a _thinking_ model. It can spend its whole token budget on
 internal reasoning and return an empty response, so the CLI reports an empty
 completion as a failure rather than printing nothing. For local work a slightly
-larger non-thinking model gives more reliable structured output.
+larger non-thinking model gives more reliable structured output
+(`LLM_MODEL=qwen2.5-coder:7b-instruct`).

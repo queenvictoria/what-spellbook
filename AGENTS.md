@@ -558,6 +558,31 @@ the answer is printed, because it is the record used for post-play ratings, and 
 
 `.cache/` is gitignored: it is user data, like `data/`.
 
+### Choosing the model: one setting, inferred backend
+
+`LLM_MODEL` picks the reasoning model for both backends. Which backend it means is
+**inferred from the name**, not configured separately, because the conventions are
+unambiguous: an OpenRouter id is `vendor/model` and always contains `/`, an Ollama name
+is `name:tag` and never does.
+
+- One setting is less to explain and less to get wrong than `LLM_MODEL` +
+  `LLM_BACKEND`, which can contradict each other.
+- An Ollama name wins **even when `OPENROUTER_API_KEY` is set**. That is the feature:
+  a key can stay in `.env` for occasional use while local runs stay local and free.
+- A remote id with no key cannot work, so it falls back to Ollama **and logs why**.
+  Silently swapping models makes a typo look like a backend failure.
+- `.env` values get stripped of quotes and whitespace - hand-edited files are commonly
+  quoted, and a quoted name would otherwise be sent to the server verbatim.
+
+The bug this replaced is worth remembering: the OpenRouter branch read the requested
+model but the Ollama branch hard-coded `config.OLLAMA_MODEL`, so `LLM_MODEL` worked for
+one backend and was **silently ignored** for the other. When one function handles two
+paths, check both - and prefer threading the resolved value through over letting each
+branch re-read the config.
+
+Embeddings deliberately stay on Ollama: `nomic-embed-text` is local-only, so changing
+the reasoning model must not change how the index was built.
+
 ### Ollama thinking models return empty responses
 
 `qwen3.5:4b` is a *thinking* model. On a large prompt it can emit thousands of tokens

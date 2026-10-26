@@ -52,6 +52,49 @@ OLLAMA_MODEL = "qwen3.5:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
 
 
+def select_model(env=None) -> tuple[str, str]:
+    """Return ``(backend, model)`` for the reasoning model.
+
+    ``LLM_MODEL`` is the single override, and which backend it means is inferred from
+    the name rather than from a second setting - the two conventions are unambiguous:
+    an OpenRouter id is ``vendor/model`` (always contains a slash) while an Ollama name
+    is ``name:tag`` (never does). So:
+
+      LLM_MODEL unset          -> the default for whichever backend the key allows
+      LLM_MODEL=deepseek/x     -> OpenRouter
+      LLM_MODEL=qwen3.5:4b     -> Ollama, even when an OpenRouter key is present
+
+    That last case is the point: it lets a key be kept in ``.env`` for occasional use
+    while running locally by default. If a remote model is requested with no key there
+    is nothing to fall back to but Ollama, so that is reported rather than silently
+    swapping models.
+    """
+    import os
+
+    env = os.environ if env is None else env
+
+    def _clean(value):
+        # .env values are often quoted, and an empty or whitespace value means unset.
+        return (value or "").strip().strip('"').strip("'").strip()
+
+    requested = _clean(env.get("LLM_MODEL"))
+    api_key = _clean(env.get("OPENROUTER_API_KEY"))
+    fallback_model = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
+
+    if requested:
+        if "/" in requested:
+            if api_key:
+                return "openrouter", requested
+            logging.warning(
+                f"LLM_MODEL='{requested}' looks like an OpenRouter model but "
+                f"OPENROUTER_API_KEY is not set; using Ollama '{fallback_model}'."
+            )
+        else:
+            return "ollama", requested
+
+    return ("openrouter", OPENROUTER_MODEL) if api_key else ("ollama", fallback_model)
+
+
 def resolve(path) -> Path:
     """Turn a configured relative path into an absolute one under the repo root.
 

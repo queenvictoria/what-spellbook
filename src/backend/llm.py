@@ -8,38 +8,46 @@ from . import config
 
 
 def build_llm():
-    """Prefer OpenRouter's DeepSeek V4.1 Flash, fall back to a local Ollama model.
+    """Build the reasoning client chosen by ``config.select_model()``.
 
-    OpenRouter is only attempted when a key is present; any failure to construct the
-    client (bad key format, missing dependency) drops us back to Ollama rather than
-    aborting the session.
+    One ``LLM_MODEL`` setting covers both backends; see ``select_model`` for how the
+    name decides which one. A failure to construct the OpenRouter client (bad key,
+    missing dependency) drops back to Ollama rather than aborting the session.
     """
     import os
 
     from langchain_ollama import OllamaLLM
 
+    backend, model = config.select_model()
     api_key = os.getenv("OPENROUTER_API_KEY")
-    if api_key:
+
+    if backend == "openrouter":
         try:
             from langchain_openai import ChatOpenAI
 
             llm = ChatOpenAI(
-                model=config.OPENROUTER_MODEL,
+                model=model,
                 api_key=api_key,
                 base_url=config.OPENROUTER_BASE_URL,
                 temperature=0.3,
                 max_retries=2,
                 timeout=180,
             )
-            logging.info(f"LLM backend: OpenRouter ({config.OPENROUTER_MODEL})")
+            logging.info(f"LLM backend: OpenRouter ({model})")
             return llm
         except Exception as e:
             logging.warning(
                 f"Could not initialise OpenRouter client ({e}); falling back to Ollama."
             )
+            # A failed construction still falls back to the *Ollama* default, not to the
+            # requested OpenRouter id, which no local server would recognise.
+            fallback = config.OLLAMA_MODEL
+            logging.info(f"LLM backend: Ollama ({fallback})")
+            return OllamaLLM(model=fallback)
 
-    logging.info(f"LLM backend: Ollama ({config.OLLAMA_MODEL})")
-    return OllamaLLM(model=config.OLLAMA_MODEL)
+    # `model` is already the resolved Ollama name, including any LLM_MODEL override.
+    logging.info(f"LLM backend: Ollama ({model})")
+    return OllamaLLM(model=model)
 
 
 def extract_text(response) -> str:
