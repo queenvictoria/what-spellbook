@@ -8,8 +8,9 @@ import pytest
 
 from conftest import FakeDoc
 
+from backend import cache  # noqa: F401
 import main
-import spells
+from backend import spells
 
 
 # --- character sheet interpretation ---

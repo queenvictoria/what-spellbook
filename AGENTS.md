@@ -7,13 +7,51 @@ records development learnings for anyone (human or agent) working on the reposit
 
 ### What this project actually is
 
-A **Python CLI** (`main.py`, `cmd.Cmd`-based REPL) that recommends D&D 5.5e (2024)
-spells for a scenario. Retrieval is a local **Chroma** vector store of spell markdown
-files; the model is reached through **LangChain** with OpenRouter or Ollama backends.
+A **Python CLI** (a `cmd.Cmd` REPL) that recommends D&D 5.5e (2024) spells for a
+scenario. Retrieval is a local **Chroma** vector store of spell markdown files; the
+model is reached through **LangChain** with OpenRouter or Ollama backends.
 
 The TypeScript interfaces later in this file describe the **intended web app shape**
 (see `ARCHITECTURE.md` / `ROADMAP.md`, both aspirational - no front end exists yet).
 Treat them as the target interface, not as the current implementation.
+
+### Layout: a backend, a CLI, and a shim
+
+```
+src/
+  backend/        rules, retrieval, prompting, caching - no terminal, no printing
+    config.py       paths, models, tunables (+ resolve() for repo-relative paths)
+    indexing.py     Chroma build/validate/rebuild
+    characters.py   sheet loading and the rules questions we ask of a sheet
+    spells.py       spell parsing, eligibility filters, book-pick validation
+    retrieval.py    candidate collection and prompt-block rendering
+    prompts.py      prompt templates + context-file resolution
+    cache.py        per-run/per-book result cache
+    llm.py          backend selection, response normalisation, typed errors
+    service.py      SpellbookService - the application layer
+    watching.py     corpus file watcher
+  cli/            terminal only - parsing, completion, progress, formatting
+    app.py          argument parsing, startup, clean shutdown
+    shell.py        the cmd.Cmd REPL
+    progress.py     Claude-style stage display
+    render.py       markdown -> styled terminal output
+main.py           compatibility shim (re-exports the old names)
+```
+
+**The rule that keeps this honest: `src/backend` must not import `src/cli`.** A test
+enforces it (`test_service_imports_without_a_terminal`). If the backend ever needs a
+terminal, an HTTP handler cannot reuse it.
+
+`SpellbookService` is the seam. It does the work and returns dataclasses
+(`Generation`, `Book`); it never prints, prompts or exits. The REPL renders those
+objects, and an API would serialise the same ones. Errors are typed
+(`NoEligibleSpells`, `llm.EmptyCompletion`, `llm.LLMUnavailable`,
+`CharacterNotFound`, `IndexUnavailable`) so each surface decides how to report them -
+which is why the library no longer calls `sys.exit`.
+
+**Prefer the packages over the shim.** `main.py` exists so existing habits,
+`python main.py` and older imports keep working; new code should use
+`from backend import service, characters` and `python -m src.cli.app`.
 
 ### Separation of concerns - two different kinds of document
 
@@ -312,6 +350,33 @@ Adding a command means editing `COMMANDS`, `intro` and `do_<name>`; completion a
 `tests/test_repl_commands.py` only where it asserts an exact completion list - the
 command surface itself is asserted as a superset by design.
 
+### Splitting a god module without breaking the suite
+
+`main.py` held config, indexing, retrieval, prompting, caching, the watcher, the LLM
+client, the REPL and the entry point. Pulling it apart surfaced traps worth recording:
+
+- **Moving code is not renaming it.** Helpers like `known_spells` were reached through
+  `main.` by eight test files, so `main.py` stayed as a shim re-exporting the old names
+  rather than being deleted. A shim is cheaper than a sed across the suite, and it keeps
+  `python main.py` working for the user.
+- **Monkeypatching follows the module, not the shim.** Tests patched `main.CHARACTERS_DIR`
+  and `main.CACHE_DIR`; once the code reads `config.CHARACTERS_DIR`, patching the shim's
+  copy does nothing and the test silently hits the real directory. Fixtures must patch
+  the module that *reads* the value. This is the nastiest class of refactor bug because
+  the test still passes - it just stops testing anything.
+- **`python -m src.cli.app` puts only the repo root on `sys.path`,** so `import backend`
+  fails while `python main.py` works. `src/__init__.py` therefore bootstraps `src/`
+  onto the path itself, so all three launch styles agree.
+- **A library must not call `sys.exit`.** Tests that asserted `SystemExit` were rewritten
+  to assert the typed exception, and the exit code moved to the CLI boundary where
+  `main()` can return it. That is what lets an API reuse the same code path.
+- **Relative paths must resolve against the repo root, not the CWD.** `config.resolve()`
+  exists so launching from another directory does not silently read a different index or
+  character folder.
+- **Keep the private-name aliases.** `_format_pool`, `_db_is_valid`, `_split_names` etc.
+  are still exercised by name; deleting them would have meant touching tests for no
+  behavioural gain.
+
 ### Tests
 
 - Run `.venv/bin/python -m pytest` from the repo root.
@@ -513,3 +578,22 @@ model's window shows up as an empty reply, not an error.
 - **Context Learning**: Agents that learn from user preferences over time
 - **Offline-First**: Agents that work without internet access
 - **Collaborative Play**: Shared history between players in a party
+
+### Terminal output: progress and markdown
+
+The answers are markdown and were being printed raw, so the user saw `### Book 1` and
+`**Cantrips:**`. `cli/render.py` converts them with `rich`.
+
+- **Styling belongs to the CLI, not the backend.** The service returns markdown text;
+  an API would serialise that as-is, so `render.py` is the only place that knows about a
+  terminal.
+- **Always degrade to plain text off a terminal.** `Console.is_terminal` is False when
+  output is redirected, and printing ANSI escapes into a file or a test capture is
+  worse than no styling. Both `render` and `StageProgress` check it.
+- **A silent terminal is indistinguishable from a hang.** Fetching candidates embeds the
+  scenario and generating an answer waits on the model, so `cli/progress.py` announces
+  each stage. The backend takes a plain `emit(message)` callback, so it never imports
+  `rich`.
+- **Stages must be closed, not just opened.** `StageProgress` completes the previous
+  stage on the next call and exposes `done()`/a context manager, so a crash mid-command
+  cannot leave a spinner running.

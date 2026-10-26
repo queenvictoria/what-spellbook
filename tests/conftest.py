@@ -5,8 +5,15 @@ from pathlib import Path
 
 import pytest
 
-# Make the repo root importable so tests can `import main` regardless of cwd.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+# Make `src/` importable so tests can import backend/cli regardless of cwd, and the
+# repo root so they can still use the `main` shim.
+_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(_ROOT / "src"))
+sys.path.insert(0, str(_ROOT))
+
+from backend import cache, characters, config, service  # noqa: E402
+from cli import progress as progress_mod  # noqa: E402
+from cli.shell import SpellbookShell  # noqa: E402
 
 import main  # noqa: E402
 
@@ -119,18 +126,25 @@ def fake_db():
 
 
 @pytest.fixture
-def shell(monkeypatch, fake_db, fake_llm):
+def spellbook(fake_db, fake_llm, tmp_path):
+    """A SpellbookService wired to fakes, with no real LLM or vector store contact."""
+    return service.SpellbookService(
+        fake_db, {}, backend=fake_llm, cache_dir=str(tmp_path / "cache")
+    )
+
+
+@pytest.fixture
+def shell(spellbook, fake_llm):
     """A SpellbookShell wired to fakes, with no real LLM or vector store contact."""
-    monkeypatch.setattr(main, "build_llm", lambda: fake_llm)
-    instance = main.SpellbookShell(vector_db=fake_db, character_context="Class: Warlock")
+    instance = SpellbookShell(spellbook, show_progress=False)
     instance.llm = fake_llm
     return instance
 
 
 @pytest.fixture
 def character_dir(tmp_path, monkeypatch):
-    """Point main.CHARACTERS_DIR at an empty temp directory of character sheets."""
-    monkeypatch.setattr(main, "CHARACTERS_DIR", tmp_path)
+    """Point the character directory at a temp directory of character sheets."""
+    monkeypatch.setattr(config, "CHARACTERS_DIR", str(tmp_path))
     return tmp_path
 
 
@@ -162,20 +176,23 @@ BOOKS_ANSWER = '''### Book 1: "Ambush and Control"
 def cache_dir(tmp_path, monkeypatch):
     """Redirect cache writes to a temp directory so tests never touch the working tree."""
     target = tmp_path / "cache"
-    monkeypatch.setattr(main, "CACHE_DIR", str(target))
+    monkeypatch.setattr(config, "CACHE_DIR", str(target))
     return target
 
 
 @pytest.fixture
 def loaded_shell(shell, cache_dir):
     """A shell with a character sheet and one generated answer already cached."""
-    shell.character = {
+    sheet = {
         "Name": "Lois",
         "Class": "Warlock",
         "Current Level": 5,
         "Party": "Barbarian, Fighter, Druid",
     }
-    shell.character_context = "Name: Lois\nClass: Warlock\nLevel 5"
+    shell.spellbook.character = sheet
+    shell.spellbook.character_text = characters.format_character(sheet)
+    shell.spellbook.cache_dir = str(cache_dir)
+    shell.cache_dir = str(cache_dir)
     shell.llm.response = BOOKS_ANSWER
     shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
     return shell

@@ -8,7 +8,7 @@ rather than an idealised one.
 
 import pytest
 
-import spells
+from backend import spells
 
 
 # --- parsing ---

@@ -9,6 +9,7 @@ Shadows' *current* loadout is deliberately still eligible.
 import pytest
 import yaml
 
+from backend import cache  # noqa: F401
 import main
 
 # Mirrors the shape of data/characters/lois.yaml: every field populated.
@@ -134,7 +135,7 @@ def test_pool_includes_the_already_have_block():
 
 def _bucket():
     """A minimal non-empty pool, since an empty pool short-circuits the render."""
-    from spells import Spell
+    from backend.spells import Spell
 
     spell = Spell(
         name="Light", filename="Light.md", level=0, school="Evocation",
@@ -165,7 +166,7 @@ def test_the_repo_character_sheet_parses(character_dir):
 
 def test_the_repo_sheet_resolves_the_expected_context_files():
     data = dict(FULL_SHEET)
-    from prompts import context_files_for
+    from backend.prompts import context_files_for
 
     assert context_files_for(data) == [
         "spells.md",
@@ -177,7 +178,7 @@ def test_the_repo_sheet_resolves_the_expected_context_files():
 
 def test_the_repo_sheet_is_cached_under_its_species_agnostic_key():
     """Species/background do not key the cache; they are already in the sheet snapshot."""
-    from cache import key_parts
+    from backend.cache import key_parts
 
     key = key_parts(character="Lois", level=5, party="Barbarian, Fighter, Druid",
                     db_version=3, scenario="x")

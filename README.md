@@ -28,7 +28,6 @@ https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
 Framework: React + Vite
 Status: not started. Planned in ARCHITECTURE and ROADMAP
 
-
 ### Backend
 
 None as yet
@@ -36,12 +35,13 @@ None as yet
 ### CLI
 
 Framework: Python and langchain
-Status: Testing in main.py
+Status: Backend/CLI split complete; API not built
 
 Run it with:
 
 ```bash
 python main.py                      # loads data/characters/lois.yaml
+python -m src.cli.app               # same, without the shim
 python main.py --character vax      # loads data/characters/vax.yaml
 CHARACTER=vax python main.py        # same, via environment variable
 python main.py --refresh            # ignore cached books, regenerate everything
@@ -50,6 +50,34 @@ python main.py --refresh            # ignore cached books, regenerate everything
 Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
 rendered as `Key: value` lines for the prompt, and list values are joined with
 commas.
+
+While it works, the CLI reports each stage and styles the answer:
+
+```
+... Fetching spells from the grimoire
+    done: Fetching spells from the grimoire
+... Crafting the prompt
+    done: Crafting the prompt
+... Scribing the Books of Shadows
+    done: Scribing the Books of Shadows
+```
+
+Headings, bold and lists are rendered rather than shown as raw markdown, and the
+styling is skipped automatically when output is redirected.
+
+### Layout
+
+```
+src/backend/    rules, retrieval, prompting, caching, index, watcher
+src/cli/        REPL, arguments, progress, markdown rendering
+main.py         compatibility shim (re-exports the old names)
+```
+
+The rule that keeps the split honest: **`src/backend` never imports `src/cli`**, so the
+same code can power an API. `backend.service.SpellbookService` is that seam — it does
+the work and returns `Generation`/`Book` dataclasses, and never prints, prompts or exits.
+The REPL just renders those objects; an HTTP handler could serialise the same ones
+(`dataclasses.asdict()`). See `ROADMAP.md` for the remaining API work.
 
 ### How a recommendation is built
 
@@ -122,7 +150,7 @@ assembly, no model call:
         └── 3-bridge-hold-defense.json
 ```
 
-The directory path *is* the cache key: character, level, party, database version,
+The directory path _is_ the cache key: character, level, party, database version,
 and a hash of the scenario. A rebuilt index (`INDEX_VERSION`) lands in a new
 directory, so stale entries can never be mistaken for current ones.
 
@@ -162,7 +190,7 @@ model produced.
 python main.py --refresh # ignore the cache, regenerate every scenario
 ```
 
-A rating is attached to a book *slot* and carried across a regeneration, so a
+A rating is attached to a book _slot_ and carried across a regeneration, so a
 `--refresh` that renames all three books does not discard the scoring you already
 did. Because the prompt and response are stored alongside the rating, a rated book
 is labelled training data: it records what was asked, what was suggested, and how
@@ -177,9 +205,13 @@ pytest
 
 The suite covers `/slash` command parsing and TAB completion, character sheet
 loading, spell parsing and eligibility rules, prompt assembly, the retrieval
-lanes, book-pick validation, and the result cache. It imports `main` but never
-builds a vector index, contacts a model, or touches `data/chroma_db`. Cache tests
-redirect writes to a temporary directory.
+lanes, book-pick validation, the result cache, the service layer, and terminal
+rendering/progress. It never builds a vector index, contacts a model, or touches
+`data/chroma_db`; anything that writes is redirected to a temp directory.
+
+Two tests guard the layering rather than the behaviour: one asserts `backend`
+imports without `cli` (so an API stays possible), and one asserts the CLI turns a
+missing character into an exit code (so the library stays exception-based).
 
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
@@ -193,12 +225,13 @@ redirect writes to a temporary directory.
 - [x] Rate a generated book after the scenario is played
 - [ ] Report on rating patterns once enough books are rated
 - [ ] Add /character command to switch characters
-- [ ] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
-- [ ] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
+- [x] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
+- [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
+- [ ] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, where the stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception or /? short rest
 
 LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
 
-Note: `qwen3.5:4b` is a *thinking* model. It can spend its whole token budget on
+Note: `qwen3.5:4b` is a _thinking_ model. It can spend its whole token budget on
 internal reasoning and return an empty response, so the CLI reports an empty
 completion as a failure rather than printing nothing. For local work a slightly
 larger non-thinking model gives more reliable structured output.

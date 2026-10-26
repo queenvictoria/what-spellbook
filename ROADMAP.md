@@ -172,6 +172,34 @@ Tasks:
 
 ## Migration Path: MVP → Full System
 
+### Backend/CLI split (done)
+
+The Python code is now layered so an API can reuse it without a terminal:
+
+```
+src/backend/    rules, retrieval, prompting, caching, index, watcher  (no printing)
+src/cli/        REPL, argument parsing, progress, markdown rendering  (no logic)
+main.py         compatibility shim re-exporting the old names
+```
+
+`backend.service.SpellbookService` is the intended API surface. It takes a vector index
+and a character sheet, exposes `scenario()` / `refine()` / `find_cached()` / `validate()`,
+and returns `Generation` and `Book` dataclasses. It never prints, prompts or exits, and
+a test asserts it imports without pulling in `cli`.
+
+**To add an API, do not move code - wrap the service.** The remaining work is transport,
+not logic:
+
+| Task | Where |
+| --- | --- |
+| Endpoints (`POST /scenario`, `POST /ask`, `GET /history`) | new `src/api/`, calling the service |
+| Serialisation | `dataclasses.asdict(generation)` already produces a JSON-ready dict |
+| Errors -> status codes | map `NoEligibleSpells`->422, `EmptyCompletion`->502, `CharacterNotFound`->404 |
+| Progress | pass a callback, or accept the no-op default (the service takes one either way) |
+| Per-request index/client | the service holds its own index, so one instance per request/session |
+
+Deliberately **not** built yet: no web framework, no auth, no server-side persistence.
+
 ### Future Enhancements
 
 1. **Server-Side RAG**

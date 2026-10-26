@@ -9,6 +9,7 @@ import readline
 
 import pytest
 
+from backend import cache  # noqa: F401
 import main
 
 COMMANDS = main.SpellbookShell.COMMANDS

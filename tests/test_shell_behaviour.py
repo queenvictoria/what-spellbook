@@ -4,6 +4,8 @@ wiring, error handling, and the lazy/import-safe module contract.
 
 import pytest
 
+from backend import cache  # noqa: F401
+from backend import llm  # noqa: E402
 import main
 
 
@@ -11,7 +13,7 @@ import main
 
 
 def test_scenario_sends_character_sheet_into_prompt(shell, fake_llm, fake_db):
-    shell.character_context = "Name: Lois\nClass: Warlock"
+    shell.spellbook.character_text = "Name: Lois\nClass: Warlock"
     shell.onecmd("/scenario a burning tavern")
 
     prompt = fake_llm.prompts[0]
@@ -110,7 +112,9 @@ def test_ask_includes_previous_response_and_original_scenario(shell, fake_llm):
 # --- LLM error handling ---
 
 
-def test_llm_failure_is_reported_not_raised(shell, caplog):
+def test_llm_failure_is_reported_not_raised(shell, caplog, capsys):
+    """A dead backend must not take down the REPL."""
+
     class Boom:
         def invoke(self, prompt):
             raise RuntimeError("backend down")
@@ -119,20 +123,25 @@ def test_llm_failure_is_reported_not_raised(shell, caplog):
     with caplog.at_level("ERROR"):
         shell.onecmd("/scenario anything")
     assert "backend down" in caplog.text
+    assert "backend down" in capsys.readouterr().out
 
 
-def test_llm_failure_clears_last_response(shell):
+def test_llm_failure_leaves_the_previous_answer_intact(shell, capsys):
+    """A failed refine must not wipe the books already on screen."""
+
     class Boom:
         def invoke(self, prompt):
             raise RuntimeError("backend down")
 
     shell.onecmd("/scenario something")
+    before = shell.last.answer
     shell.llm = Boom()
     shell.onecmd("/ask refine it")
-    assert shell.last_response == ""
+    assert shell.last.answer == before
+    assert "backend down" in capsys.readouterr().out
 
 
-# --- _extract_text normalisation ---
+# --- response normalisation (moved to backend.llm) ---
 
 
 @pytest.mark.parametrize(
@@ -143,7 +152,7 @@ def test_llm_failure_clears_last_response(shell):
     ],
 )
 def test_extract_text_normalises_backends(response, expected):
-    assert main.SpellbookShell._extract_text(response) == expected
+    assert llm.extract_text(response) == expected
 
 
 def test_extract_text_prefers_text_attribute():
@@ -153,7 +162,7 @@ def test_extract_text_prefers_text_attribute():
         def __init__(self):
             self.content = "from content"
 
-    assert main.SpellbookShell._extract_text(WithText()) == "from text"
+    assert llm.extract_text(WithText()) == "from text"
 
 
 def test_extract_text_calls_text_when_callable():
@@ -163,11 +172,11 @@ def test_extract_text_calls_text_when_callable():
         def text(self):
             return "from callable"
 
-    assert main.SpellbookShell._extract_text(CallableText()) == "from callable"
+    assert llm.extract_text(CallableText()) == "from callable"
 
 
 def test_extract_text_falls_back_to_str_for_unknown_objects():
-    assert main.SpellbookShell._extract_text(12345) == "12345"
+    assert llm.extract_text(12345) == "12345"
 
 
 # --- import safety ---

@@ -340,7 +340,7 @@ def _iter_books(answer: str):
     Split per book, otherwise the picks from all three books accumulate and the
     per-book pick counts look wildly wrong.
     """
-    import cache
+    from . import cache
 
     for book in cache.split_books(answer):
         if book["text"].strip():

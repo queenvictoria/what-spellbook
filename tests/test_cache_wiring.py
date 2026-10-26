@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-import cache
+from backend import cache, service
+from cli.shell import SpellbookShell
+from backend import cache  # noqa: F401
 import main
 
 
@@ -174,11 +176,15 @@ def test_history_is_empty_before_any_scenario(shell, cache_dir, capsys):
     assert "No cached books yet" in capsys.readouterr().out
 
 
-def test_history_finds_entries_written_by_a_previous_session(loaded_shell, cache_dir, fake_db, fake_llm, monkeypatch):
+def test_history_finds_entries_written_by_a_previous_session(
+    loaded_shell, cache_dir, fake_db, fake_llm
+):
     """The point of the cache: a new process can rate an old book."""
-    monkeypatch.setattr(main, "build_llm", lambda: fake_llm)
-    fresh = main.SpellbookShell(vector_db=fake_db, character_context="x", character={"Name": "Lois"})
-    fresh.llm = fake_llm
+    fresh = SpellbookShell(
+        service.SpellbookService(fake_db, {"Name": "Lois"}, backend=fake_llm,
+                                 cache_dir=str(cache_dir)),
+        show_progress=False,
+    )
     fresh.onecmd("/history")
     assert not fresh.book_files, "a new session should not inherit ratings targets"
     assert cache.load_entries(cache_dir), "but the old books must still be on disk"
@@ -260,7 +266,7 @@ def test_a_cache_hit_revalidates_the_picks(loaded_shell, cache_dir, caplog):
 
 
 def test_refresh_ignores_the_cache(loaded_shell, cache_dir):
-    loaded_shell.refresh = True
+    loaded_shell.spellbook.refresh = True
     before = len(loaded_shell.llm.prompts)
     loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
     assert len(loaded_shell.llm.prompts) == before + 1

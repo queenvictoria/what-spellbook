@@ -192,10 +192,10 @@ def parse_picks(section: str) -> dict:
     Delegates to ``spells._book_picks`` rather than re-implementing the parse. The
     cached picks and the legality check must agree about what was chosen: if they
     diverge, a book can be recorded as legal and validated as illegal (or worse, an
-    unreadable answer passes both). Imported lazily so this module stays dependency
-    free for callers that only need the key helpers.
+    unreadable answer passes both). Imported here rather than at module scope so this
+    stays importable without the parsing layer.
     """
-    import spells
+    from . import spells
 
     return spells._book_picks(section)
 

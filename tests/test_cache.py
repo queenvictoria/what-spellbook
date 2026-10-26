@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-import cache
+from backend import cache
 
 ANSWER = '''### Book 1: "Ambush and Control"
 
@@ -487,10 +487,12 @@ def test_cache_module_is_dependency_free():
     import subprocess
     import sys
 
-    script = "import cache, sys; assert 'langchain' not in sys.modules"
+    script = "import sys; sys.path.insert(0, 'src'); import backend.cache; assert 'langchain' not in sys.modules"
+    root = cache.Path(__file__).resolve().parent.parent
     result = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, cwd=str(cache.Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True, cwd=str(root),
+        env={**__import__("os").environ, "PYTHONPATH": str(root / "src")},
     )
     assert result.returncode == 0, result.stderr
 

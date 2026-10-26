@@ -4,6 +4,7 @@ import os
 
 import pytest
 
+from backend import cache  # noqa: F401
 import main
 
 

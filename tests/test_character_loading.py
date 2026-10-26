@@ -2,6 +2,8 @@
 
 import pytest
 
+from backend import cache  # noqa: F401
+from backend.characters import CharacterNotFound
 import main
 
 
@@ -70,42 +72,48 @@ def test_integers_render_without_yaml_artifacts(character_dir):
 # --- failure modes ---
 
 
-def test_missing_sheet_exits_with_code_1(character_dir):
-    with pytest.raises(SystemExit) as exc:
+def test_missing_sheet_raises_a_typed_error(character_dir):
+    """The loader raises; only the CLI decides to turn that into an exit code."""
+    with pytest.raises(CharacterNotFound):
         main.load_character("nobody")
-    assert exc.value.code == 1
 
 
-def test_missing_sheet_lists_available_names(character_dir, caplog):
+def test_missing_sheet_lists_available_names(character_dir):
     _write(character_dir, "lois", "Class: Warlock\n")
-    with caplog.at_level("CRITICAL"):
-        with pytest.raises(SystemExit):
-            main.load_character("nobody")
-    assert "lois" in caplog.text
+    with pytest.raises(CharacterNotFound) as exc:
+        main.load_character("nobody")
+    assert "lois" in str(exc.value)
 
 
-def test_missing_sheet_on_empty_directory_says_none(character_dir, caplog):
-    with caplog.at_level("CRITICAL"):
-        with pytest.raises(SystemExit):
-            main.load_character("nobody")
-    assert "none" in caplog.text
+def test_missing_sheet_on_empty_directory_says_none(character_dir):
+    with pytest.raises(CharacterNotFound) as exc:
+        main.load_character("nobody")
+    assert "none" in str(exc.value)
 
 
-def test_malformed_yaml_exits_rather_than_raising(character_dir, caplog):
+def test_malformed_yaml_raises_rather_than_crashing(character_dir):
+    """A broken sheet is reported with its cause, not a raw yaml traceback."""
     _write(character_dir, "broken", "Class: [unclosed\n")
-    with caplog.at_level("CRITICAL"):
-        with pytest.raises(SystemExit) as exc:
-            main.load_character("broken")
-    assert exc.value.code == 1
+    with pytest.raises(CharacterNotFound) as exc:
+        main.load_character("broken")
+    assert "Could not parse" in str(exc.value)
 
 
 @pytest.mark.parametrize("content", ["", "   \n", "just a string\n", "- a\n- b\n"])
-def test_non_mapping_sheet_exits(character_dir, content):
+def test_non_mapping_sheet_raises(character_dir, content):
     """A sheet that is not a key/value mapping cannot render a profile block."""
     _write(character_dir, "weird", content)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CharacterNotFound) as exc:
         main.load_character("weird")
-    assert exc.value.code == 1
+    assert "must contain a mapping" in str(exc.value)
+
+
+def test_cli_reports_a_missing_character_as_an_exit_code(character_dir, capsys, fake_db):
+    """The exit code lives at the CLI boundary, which is where main() runs."""
+    from cli import app
+
+    assert app.main(["--character", "nobody"]) == 1
+    assert "nobody" in capsys.readouterr().err
 
 
 # --- real shipped sheet ---
