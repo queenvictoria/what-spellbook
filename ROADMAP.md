@@ -22,7 +22,7 @@ one place.
 | Vector store | ChromaDB (embedded, single collection) | Local, no server, 544 spells as chunks |
 | Embeddings | Ollama (`nomic-embed-text`) | Local, free, no network dependency |
 | LLM | OpenRouter or Ollama via `LLM_MODEL` | Swappable; the model is configuration, not architecture |
-| Rules source | 5e24srd.com only | The 2014 SRD differs in ways that silently corrupt advice |
+| Rules source | Vendored SRD 5.2.1 in `context/srd/` | Works offline, is diffable, and is CC-BY-4.0 so it can be redistributed |
 
 Superseded choices, recorded so they are not reintroduced:
 
@@ -130,7 +130,8 @@ Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGE
 
 - [Architecture Documentation](./ARCHITECTURE.md)
 - [Agent Schema](./AGENTS.md)
-- [2024 SRD](https://5e24srd.com/) - the only rules source used
+- [SRD 5.2.1 (PDF)](https://www.dndbeyond.com/srd) - the official document the vendored
+  Markdown in `context/srd/` derives from. See `context/srd/PROVENANCE.md`.
 - [React + Vite Docs](https://vitejs.dev/)
 - [Tailwind v4 Docs](https://tailwindcss.com/docs)
 - [FastAPI Docs](https://fastapi.tiangolo.com/)

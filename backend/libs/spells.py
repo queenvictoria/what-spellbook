@@ -17,6 +17,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
+from . import config
+
 # The nine class lists a spell can appear on. Anything else in a `(...)` group is
 # not a class list (e.g. a magic item's rarity or attunement note).
 CLASS_NAMES = frozenset(
@@ -78,17 +80,57 @@ _INLINE_LIST_SEPARATOR = re.compile(r"\s*[,;]\s*")
 # items, malformed entries) never have one, so fall back to a bounded prefix.
 _HEADER_FALLBACK_CHARS = 600
 
+# A spell's stats line names a level or a cantrip; a magic item's names a rarity.
+_SPELL_LEVEL = re.compile(r"#(?:Level\d+|Cantrip)\b")
+
+
+def corpus_spell_names(docs_path=None) -> list[str]:
+    """Every spell name in the retrieval corpus, for cross-referencing prose.
+
+    Read from the filenames rather than from the index: this is a list of *names* for
+    matching against generated text, and it must include spells the index has not been
+    rebuilt with. The corpus is the authority on what the model may name, so this is what
+    the front end offers as linkable.
+
+    The corpus's `Spells/` directory also holds 22 magic items - Glamerweave, Armblade,
+    Docent - which are not spells. Offering one would make the front end link it and the
+    lookup then 404, so they are filtered out by their stats line: a spell names a level
+    or a cantrip, an item names a rarity.
+    """
+    root = Path(docs_path) if docs_path is not None else config.DOCS_DIR_PATH
+    if not root.is_dir():
+        return []
+    names = set()
+    for path in root.rglob("*.md"):
+        name = prettify_name(path.stem)
+        if not name:
+            continue
+        try:
+            head = path.read_text(encoding="utf-8")[:400]
+        except OSError:
+            continue
+        if _SPELL_LEVEL.search(head):
+            names.add(name)
+    return sorted(names)
+
 
 def prettify_name(stem: str) -> str:
     """Turn a corpus filename stem into a display name.
 
-    The corpus escapes apostrophes as ``_s`` ("Tenser_s Floating Disk"). A naive
-    ``title()`` produces "Tenser'S", so the apostrophe has to be restored and the
-    following letter lowercased.
+    The corpus escapes apostrophes as ``_s`` ("Tenser_s Floating Disk"), so the escape
+    has to be undone. Nothing else is done to the casing: the stems are already written
+    the way the spell is spelled, and title-casing them is actively wrong. ``title()``
+    capitalises every word, so "Ray of Frost" becomes "Ray Of Frost" - which then never
+    matches the prose, and 77 spells containing a minor word (of, the, and, with, to,
+    from, via, or, into) silently stop being linkable. It also breaks the possessive in
+    "Melf's Acid Arrow" into "Melf'S", and the hyphenated "Abi-Dalzim's" and
+    "Green-Flame" are already correct as written.
+
+    The one stem that is genuinely malformed is "Heroes_ Feast", where the underscore
+    stands in for an apostrophe rather than the ``_s`` escape.
     """
     name = re.sub(r"[_-]s\b", "'s", stem)
-    name = name.title()
-    return re.sub(r"['\u2019]S\b", lambda m: m.group(0)[0] + "s", name)
+    return name.replace("Heroes_ ", "Heroes' ")
 
 
 def header_block(text: str) -> str:

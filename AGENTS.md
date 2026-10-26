@@ -445,13 +445,13 @@ cannot tell which it is reading.
 
 | Source | Edition | Note |
 | --- | --- | --- |
-| `5e24srd.com/classes/warlock.html` | **2024** | Correct. The `.html` extension is required - the extension-less URL 403s |
-| `5e24srd.com/spells/spell-descriptions.html` | **2024** | The spell text `/?` is grounded in |
-| `5thsrd.org` | **2014** | **Do not use.** Its own banner points at 5e24SRD.com |
+| `context/srd/*.md` | **2024** | **The only rules source.** Vendored SRD 5.2.1, CC-BY-4.0 |
+| `5e24srd.com` | 2024 | Superseded, and incomplete. Refused by `rules.check_source` |
+| `5thsrd.org` | **2014** | **Do not use.** Its own banner points at 5e24srd.com |
 | `dndbeyond.com` | mixed | Subclass text is behind a subscription |
 
-`5thsrd.org` is the trap: it ranks well for "5e SRD" searches and looks authoritative,
-but it serves the 2014 SRD 5.1. Do not cite it and do not fetch from it.
+`5thsrd.org` is the trap: it ranks well for "5e SRD" searches and looks authoritative, but
+it serves the 2014 SRD 5.1. Do not cite it and do not fetch from it.
 
 The divergence is not cosmetic. At level 5, 2014 gives **3 invocations with Pact of the
 Tome free**, while 2024 gives **5 invocations with Pact of the Tome costing one**. The
@@ -465,38 +465,70 @@ rather than a wiki. Patron features do move between editions - the 2014 Celestia
 Healing Light at level 1 and Searing Vengeance as self-only, whereas 2024 moves Healing
 Light to level 3 and lets Searing Vengeance rescue an ally.
 
-### The 2024 SRD is not the whole 2024 rulebook
+### Rules text is vendored, not scraped
 
-`5e24srd.com` carries SRD 5.2, and large parts of the 2024 rules are *not in it*. Verified
-by crawling every page and checking headings directly:
+`/?` used to fetch from `5e24srd.com` at query time. Two independent problems ended that:
 
-| Rule | In the SRD? |
-| --- | --- |
-| Cover, Hiding, Difficult Terrain, Travel Pace, Dropping Prone | yes, under its own heading |
-| **Short Rest / Long Rest** | **no** - mentioned only in passing, including "Attune during a Short Rest" |
-| **The Grappled condition** | **no** |
-| **The Rules Glossary** | **no** - pages cross-reference it, but it is absent |
+- **Licensing.** SRD 5.2.1 is **CC-BY-4.0**, which explicitly permits copying,
+  redistribution and adaptation with attribution. Scraping a site that republishes it gave
+  no such permission. `context/srd/PROVENANCE.md` carries the required attribution;
+  **do not remove it**, and do not add an SRD file without recording its source there.
+- **The website is incomplete.** Verified by crawling every page for headings:
+  Short Rest, Long Rest, the Grappled condition and the entire Rules Glossary were
+  **absent**, and the pages that remained cross-referenced the glossary for their
+  definitions. A rules answer drawn from it was systematically incomplete and could not be
+  fixed by crawling harder.
 
-This matters for `/?`: the SRD is not a reference the model can ask questions of and
-expect answers to. Two failure modes were observed live and both are now handled:
+**Use the PDF or the vendored Markdown; never scrape the HTML.** The official document is
+<https://www.dndbeyond.com/srd>. `context/srd/` is the Markdown conversion of it.
 
-- **A passing mention looked like the rule.** "What is a short rest?" matched *"mounts
-  need a Short or Long Rest before they can move"* in a travel-pace sentence, and later
-  *"Attune during a Short Rest"* in the magic-items page. A sentence using the term is
-  not the rule.
+`spells.md`, `classes.md`, `monsters*.md` and `magic-items.md` are deliberately **not**
+vendored: this project's spell corpus and class rules already live in `data/` and
+`context/`, and duplicating them creates two sources of truth that drift.
+
+### The SRD is not the whole 2024 rulebook
+
+It has no subclasses, few feats, and neither two-weapon fighting nor flanking. A rule
+question can therefore have no answer, and refusing is the honest outcome - that is what
+`RulesUnavailable` and an HTTP 404 report. **Do not** "improve" the matcher by lowering the
+heading requirement: a plausible-looking wrong paragraph is worse than admitting the SRD
+does not contain the rule, because the user cannot tell the difference.
+
+### How the matcher decides
+
+The contract is that **the answer is found under a heading that names it**. A rule in the
+SRD is defined under its own heading, so anything else - a mention, a cross-reference, an
+equipment row - is not the rule. Three failures shaped this, all seen live:
+
+- **A passing mention looked like the rule.** "What is a short rest?" matched *"mounts need
+  a Short or Long Rest..."* in a travel-pace sentence, then *"Attune during a Short Rest"*
+  in the magic-items page.
 - **An equipment entry looked like a rule.** "How does grappling work?" matched
-  **Grappling Hook** in a price list, because the rulebook says "Grappled" and the tool
-  is named "Grappling Hook".
+  **Grappling Hook** in a price list, because the rulebook says "Grappled" and the tool is
+  named "Grappling Hook".
+- **A generic word looked like the subject.** "How do I stabilize a creature" matched
+  **Creature**, because a heading naming the generic *object* of the question scored the
+  same as one naming its subject.
 
-The fix is structural, not a better score: **match on sections and require the section
-heading to be about the question.** A rule in the SRD is defined under a heading that
-names it. Anything else - a mention, a cross-reference, an equipment row - is refused.
-Excluding equipment headings also needs the price pattern (`Grappling Hook (2 GP)`), or
-the tool still wins on heading text alone.
+Three mechanisms now prevent these, and each is load-bearing:
 
-Refusing is the honest outcome and is what `RulesUnavailable` reports. Do not "improve"
-the matcher by lowering the heading requirement: a plausible-looking wrong paragraph is
-worse than admitting the SRD does not contain the rule, because the user cannot tell.
+1. **Heading-anchored matching** - a section qualifies only if some heading names it.
+2. **Rarity weighting** (`rules.term_weight`) - terms are weighted by how many sections
+   contain them, so "creature" and "spell" count for almost nothing and "cover" and
+   "shove" identify the rule. Measured over section *bodies*, not headings: "creature" is
+   rare in headings and everywhere in the text.
+3. **A subject requirement** - the SRD must have a heading naming the question's most
+   distinctive term, and that term must be distinctive enough to be a subject at all.
+
+Two consequences worth remembering, because both look like bugs and are not:
+
+- **A catalogue entry is excluded by its price pattern**, `Grappling Hook (2 GP)`. The
+  pattern is deliberately just the price: every keyword tried (`armor`, `weapon`, `tools`)
+  is also a real rule heading, and excluding those silently discarded "Armor Class",
+  "Weapon Attack" and "Improvised Weapons".
+- **Tables are converted, never stripped.** The rules live in them. `### Cover`'s prose
+  only says "as detailed in the Cover table"; the +2 and +5 bonuses are in the markup.
+  A converter that drops `<table>` leaves a confident answer with its numbers missing.
 
 ### Verify rule numbers programmatically
 
@@ -736,6 +768,14 @@ does not have, and the two front ends would drift within a week.
   gain. A run is now identified by an opaque `id` (the directory name) that `GET /api/runs`
   resolves back. Reopening still accepts a scenario fragment too, so a caller that already
   knows what it wants can skip the listing.
+- **A client must rate by `run_id`, never by scenario text.** The backend accepts a
+  scenario fragment as a convenience, and the front end used it — but `api.rate` already
+  encodes its argument, so the screen's own `encodeURIComponent` double-encoded it and the
+  request went to a run named `Three%2520kobolds…`. The star flashed on and off because
+  the optimistic `setRating` was rolled back by the 404. The deeper problem is that a run
+  is keyed on the scenario *and* the character, level and book count, so two runs can share
+  a scenario and the wrong one gets rated. `POST /api/scenario` and `GET /api/runs/{id}`
+  now both return `run_id`, and the UI passes it through.
 - **Keep the CORS origin list explicit.** `allow_origins=["*"]` with
   `allow_credentials=True` is both rejected by browsers and a decision that should be
   made deliberately at deployment rather than inherited from a dev convenience.
@@ -748,11 +788,18 @@ does not have, and the two front ends would drift within a week.
 
 ### Where a fake would hide the thing under test, keep the real path
 
-`test_rules_answers_are_grounded_and_cached` stubs `rules.fetch_page`, not
-`rules.gather`, because replacing `gather` would replace the cache lookup the test exists
-to verify - the test would pass while proving nothing. Check what a patch removes before
-using it. The same trap in another shape: a fake `LLM` that never raises means the
-error-mapping tests never run.
+`test_rules_answers_are_grounded_and_cached` stubs only the model call and runs real
+retrieval, because replacing `gather` (or the file reader beneath it) would replace the
+cache lookup the test exists to verify - the test would pass while proving nothing. Check
+what a patch removes before using it.
+
+There is a subtler version of the same trap, and it cost real time: stubbing the *corpus*
+changes the term-frequency model the matcher ranks headings with, so a test that fakes the
+SRD is not testing the matcher at all. It asserts whatever a one-line corpus implies. Where
+a test needs the corpus, use the real files.
+
+The same trap in another shape: a fake `LLM` that never raises means the error-mapping
+tests never run.
 
 ### A front end must show where an answer came from
 

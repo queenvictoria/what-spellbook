@@ -52,6 +52,69 @@ BOOK_COUNT = 3
 MIN_BOOKS = 1
 MAX_BOOKS = 9
 
+# --- DEV SERVERS ---
+# The API and the Vite dev server are separate processes on separate ports, and more
+# than one person (or one agent) may be running a copy of each on the same machine. So
+# neither port is hard-coded: the API reads API_PORT, the front end reads VITE_PORT, and
+# the API's CORS allow-list is derived from the front end's port rather than fixed.
+API_PORT = 8000
+FRONTEND_PORT = 5173
+
+# Extra browser origins to accept, comma-separated, for the case where the front end is
+# served from somewhere the derived list does not cover (a second dev server, a LAN
+# address, a preview build). The derived origins are always included.
+CORS_ORIGINS = ""
+
+
+def select_port(name: str, default: int, env=None) -> int:
+    """Return a TCP port from ``name``, falling back to ``default``.
+
+    A bad value is a typo in an untracked file, so it is reported and ignored rather
+    than raised: refusing to start over a malformed port would be worse than using the
+    documented default. Out-of-range values are rejected for the same reason - a port
+    outside 1-65535 cannot bind, and failing at bind time with a clear message beats
+    failing here with a stack trace.
+    """
+    import os
+
+    env = os.environ if env is None else env
+    raw = _clean(env.get(name))
+    if not raw:
+        return default
+
+    try:
+        port = int(raw)
+    except ValueError:
+        logging.warning(f"{name}='{raw}' is not a whole number; using {default}.")
+        return default
+
+    if not 1 <= port <= 65535:
+        logging.warning(f"{name}={port} is outside 1-65535; using {default}.")
+        return default
+
+    return port
+
+
+def dev_origins(env=None) -> list[str]:
+    """Return the browser origins the API should accept.
+
+    The Vite dev server is reached as either ``localhost`` or ``127.0.0.1`` depending on
+    how it was opened, and those are distinct origins to a browser, so both spellings of
+    the configured port are allowed. ``CORS_ORIGINS`` adds anything else.
+    """
+    import os
+
+    env = os.environ if env is None else env
+    port = select_port("FRONTEND_PORT", FRONTEND_PORT, env)
+
+    origins = [f"http://localhost:{port}", f"http://127.0.0.1:{port}"]
+    for extra in _clean(env.get("CORS_ORIGINS")).split(","):
+        origin = extra.strip().rstrip("/")
+        if origin and origin not in origins:
+            origins.append(origin)
+    return origins
+
+
 # Primary reasoning model: DeepSeek V4.1 Flash over OpenRouter's OpenAI-compatible API.
 # Local Ollama (same host the embeddings use) remains the offline fallback.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"

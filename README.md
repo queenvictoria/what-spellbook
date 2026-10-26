@@ -41,9 +41,12 @@ recommendation logic.
 
 5.5e SRD has 339 spells. DNDBeyond 400+ (includes legacy and trademarked spells).
 
+Rules text (`/?`) is grounded in the vendored SRD 5.2.1 Markdown under `context/srd/`,
+which is CC-BY-4.0. See `context/srd/PROVENANCE.md` for attribution.
+
 https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
 https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
-https://5e24srd.com/spells/spell-descriptions.html
+https://www.dndbeyond.com/srd
 https://toolsandtaverns.com/spells
 https://dungeonmister.com/guides/classes-in-dungeons-dragons/celestial-warlock-dnd-2024-guide/
 https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
@@ -98,6 +101,8 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/runs/{id}` | One run reopened for reading |
 | `POST /api/runs/{id}/rate` | Record an outcome rating |
 | `GET /api/rules?question=` | The `/?` command, grounded in the 2024 SRD |
+| `GET /api/spell?name=` | One spell's description, for every spell mention in the UI |
+| `GET /api/spells` | Every spell name the UI should link |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
 retrying could help:
@@ -115,6 +120,11 @@ A run is identified by an opaque `id` (the cache directory name), never by a fil
 path: a browser cannot use a server path, and publishing the cache layout leaks
 information for no gain. Reopening also accepts a scenario fragment, so a caller that
 already knows what it wants can skip the listing.
+
+`POST /api/scenario` and `GET /api/runs/{id}` both return that `id` as `run_id`, and it is
+the only handle a client should rate with. Rating by scenario text is ambiguous, because a
+run is keyed on the scenario *and* the character, level and book count — two runs can share
+a scenario, and the wrong one gets rated.
 
 ### CLI
 
@@ -372,8 +382,10 @@ would otherwise go unnoticed:
   hits, and testing the service directly cannot catch it.
 
 Where a fake would hide the thing under test, the real path is kept. The rules cache test
-stubs `rules.fetch_page` rather than `rules.gather`: replacing `gather` would replace the
-cache lookup the test exists to verify.
+stubs only the model call: replacing `gather`, or the file reader beneath it, would replace
+the cache lookup the test exists to verify. Stubbing the corpus is worse than useless - it
+changes the term-frequency model the matcher ranks headings with, so the test asserts
+whatever a one-line fake SRD implies rather than what the real one does.
 
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
@@ -395,6 +407,11 @@ cache lookup the test exists to verify.
 - [ ] Restructure the book prompt: fold the item pairings into each book, make the
       invocations one run-level line, promote the gotchas into their own block. Section 4
       is ~38% of all prose and its invocation half repeats identically in every book.
+- [ ] Each mention of a spell should open the rules tab and display the spell from the vendored repo
+- [ ] Read books should look like a button with a carat
+- [ ] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
+- [ ] Opening in the scenario screen should show the results as well as the prompt.
+- [ ] The rules lookup button should be an icon and shouldn't wrap the text.
 
 ### Choosing the model
 

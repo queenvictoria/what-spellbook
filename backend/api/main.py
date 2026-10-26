@@ -36,7 +36,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.libs import cache as cache_store
-from backend.libs import characters, config, indexing, llm, rules, service
+from backend.libs import characters, config, indexing, llm, rules, service, spells
 
 from . import schemas
 
@@ -88,9 +88,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
 
     # The Vite dev server runs on a different origin, so the browser needs CORS. Scoped
     # to the dev origins rather than '*' so a deployment must make the choice explicitly.
+    # The origins follow FRONTEND_PORT so a second dev server on another port works
+    # without editing this file.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+        allow_origins=config.dev_origins(),
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -268,6 +270,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         return schemas.RunBooksSchema(
             scenario=generation.scenario,
             created_at=(stored.get("run") or {}).get("created_at"),
+            run_id=generation.run_id,
             books=[
                 schemas.BookSchema(index=b.index, name=b.name, text=b.text,
                                    picks=b.picks or {}, cache_path=b.cache_path,
@@ -360,6 +363,37 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             raise _error(503, f"The model could not be reached: {e}")
         except ValueError as e:
             raise _error(400, str(e))
+
+    @app.get("/api/spell", response_model=schemas.SpellSchema, tags=["rules"])
+    def get_spell(name: str = Query(min_length=1,
+                                    description="Spell name, e.g. Fireball")):
+        """One spell's own text, quoted from a vendored file.
+
+        Deterministic - no model is involved, so this cannot hallucinate a damage die. The
+        SRD is tried first and the retrieval corpus second, because the SRD carries only
+        339 of the corpus's 544 spells and the missing ones include cantrips the app
+        recommends. A 404 therefore means neither source has it, which is a real miss
+        rather than a branding difference.
+        """
+        spell = rules.find_spell(name)
+        if spell is None:
+            raise _error(
+                404,
+                f"No spell named '{name}' is in the 2024 SRD or the spell corpus. "
+                "Check the spelling - the corpus uses the name as published, so "
+                "\"Tenser's Floating Disk\" rather than \"Floating Disk\".",
+            )
+        return schemas.SpellSchema(**spell)
+
+    @app.get("/api/spells", response_model=list[str], tags=["rules"])
+    def spell_names():
+        """Every spell name in the retrieval corpus, for linking prose to the SRD.
+
+        Sent from the server rather than hard-coded in the front end so there is one
+        authority on which names exist: the corpus is what the model may pick from, and a
+        spell added to it should become linkable without editing the UI.
+        """
+        return spells.corpus_spell_names()
 
     @app.get("/api/sheet-keys", response_model=list[str], tags=["character"])
     def sheet_keys():

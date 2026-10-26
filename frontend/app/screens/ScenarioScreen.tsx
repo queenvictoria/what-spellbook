@@ -28,6 +28,9 @@ export function ScenarioScreen() {
   const [params] = useSearchParams()
   const [scenario, setScenario] = useState(() => params.get('scenario') ?? '')
   const [generation, setGeneration] = useState<Generation | null>(null)
+  // A run opened from history is not a cache hit: nothing was generated or looked up, the
+  // stored books were read back. Labelling it "from cache" would imply the model ran.
+  const [storedAt, setStoredAt] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>('idle')
   const [error, setError] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
@@ -69,6 +72,43 @@ export function ScenarioScreen() {
       cancelled = true
     }
   }, [])
+
+  // Arriving from history with ?run= means the user asked to read a stored run, not to
+  // start one. Loading it here is what makes the prompt and the results appear together:
+  // seeding the textarea alone left the screen looking like an unrun scenario.
+  const runId = params.get('run')
+
+  useEffect(() => {
+    if (!runId) return
+    let cancelled = false
+    api
+      .run(runId)
+      .then((stored) => {
+        if (cancelled) return
+        setStoredAt(stored.created_at)
+        setGeneration({
+          scenario: stored.scenario,
+          answer: '',
+          books: stored.books,
+          prompt: '',
+          warnings: [],
+          from_cache: true,
+          model: null,
+          timings: { total_seconds: null, phases: {}, unaccounted_seconds: null },
+          // The id we just loaded by, so a book opened from history is rateable too.
+          run_id: runId,
+        })
+        setPhase('done')
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setError(e instanceof ApiError ? e.message : String(e))
+        setPhase('error')
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [runId])
 
   const generate = useCallback(async () => {
     if (!scenario.trim()) return
@@ -122,7 +162,11 @@ export function ScenarioScreen() {
         {phase === 'running' && (
           <Card>
             <CardContent className="pt-4">
-              <StageProgress stage={stage} elapsed={elapsed} estimate={estimate} />
+              {runId ? (
+                <p className="text-sm text-parchment/50">Opening the stored run…</p>
+              ) : (
+                <StageProgress stage={stage} elapsed={elapsed} estimate={estimate} />
+              )}
             </CardContent>
           </Card>
         )}
@@ -142,13 +186,16 @@ export function ScenarioScreen() {
           <Card>
             <CardHeader className="flex-row items-center justify-between">
               <CardTitle>Run</CardTitle>
-              {generation.from_cache ? (
+              {storedAt ? (
+                <Badge tone="muted">Stored run</Badge>
+              ) : generation.from_cache ? (
                 <Badge tone="verdant">Served from cache</Badge>
               ) : (
                 <Badge tone="arcane">Freshly generated</Badge>
               )}
             </CardHeader>
             <CardContent className="space-y-2 text-xs text-parchment/55">
+              {storedAt && <p className="font-mono">{formatDate(storedAt)}</p>}
               <Timings generation={generation} />
               {generation.model && <p className="font-mono">{generation.model}</p>}
               {generation.warnings.length > 0 && (
@@ -166,7 +213,7 @@ export function ScenarioScreen() {
       </div>
 
       <div className="space-y-4">
-        {!generation && phase !== 'running' && (
+        {!generation && phase !== 'running' && !runId && (
           <Card>
             <CardContent className="pt-4 text-sm text-parchment/50">
               Describe the encounter to get books of spells built for it.
@@ -175,7 +222,12 @@ export function ScenarioScreen() {
         )}
 
         {generation?.books.map((book) => (
-          <BookPanel key={book.index} book={book} scenario={generation.scenario} />
+          <BookPanel
+            key={book.index}
+            book={book}
+            scenario={generation.scenario}
+            runId={generation.run_id}
+          />
         ))}
 
         {generation && generation.answer && (
@@ -191,6 +243,17 @@ export function ScenarioScreen() {
       </div>
     </div>
   )
+}
+
+function formatDate(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function Timings({ generation }: { generation: Generation }) {

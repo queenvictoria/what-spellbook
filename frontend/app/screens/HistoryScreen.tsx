@@ -1,12 +1,14 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Star } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star } from 'lucide-react'
 
 import { api, ApiError } from '@/api/client'
 import type { RunSummary } from '@/api/types'
 import { Markdown } from '@/components/Markdown'
 import { formatSeconds } from '@/lib/format'
+import { cn } from '@/lib/utils'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 
 /**
@@ -19,6 +21,10 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 export function HistoryScreen() {
   const [runs, setRuns] = useState<RunSummary[] | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // Which run is open lives here rather than inside each card, because the card's own
+  // width depends on it: an open run takes the full row, and a child cannot widen its
+  // parent. Only one is open at a time, which also keeps the listing scannable.
+  const [openId, setOpenId] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -44,9 +50,17 @@ export function HistoryScreen() {
   return (
     <div className="space-y-3">
       <h2 className="text-lg font-semibold text-parchment">Past runs</h2>
-      <div className="grid gap-3 sm:grid-cols-2">
+      {/* Flex rather than a grid: an opened run needs to take the full width, and a
+          grid cell cannot span its own row without knowing the column count. */}
+      <div className="flex flex-wrap gap-3">
         {runs.map((run) => (
-          <Card key={run.id}>
+          <Card
+            key={run.id}
+            className={cn(
+              'w-full',
+              openId !== run.id && 'sm:w-[calc(50%-0.375rem)]',
+            )}
+          >
             <CardHeader className="flex-row items-start justify-between gap-3">
               <CardTitle className="text-sm leading-6">{run.scenario}</CardTitle>
               <Badge tone="muted">{run.book_count} books</Badge>
@@ -68,7 +82,11 @@ export function HistoryScreen() {
                     : '—'}
                 </span>
               </div>
-              <ViewRun run={run} />
+              <ViewRun
+                run={run}
+                open={openId === run.id}
+                onToggle={() => setOpenId(openId === run.id ? null : run.id)}
+              />
             </CardContent>
           </Card>
         ))}
@@ -77,9 +95,21 @@ export function HistoryScreen() {
   )
 }
 
-/** Re-opens the stored run in place, so reading does not lose the listing. */
-function ViewRun({ run }: { run: RunSummary }) {
-  const [open, setOpen] = useState(false)
+/**
+ * Re-opens the stored run in place, so reading does not lose the listing.
+ *
+ * `open` is owned by the list because it drives the card's width; this component only
+ * fetches the books and reports the toggle.
+ */
+function ViewRun({
+  run,
+  open,
+  onToggle,
+}: {
+  run: RunSummary
+  open: boolean
+  onToggle: () => void
+}) {
   const [books, setBooks] = useState<{ name: string; text: string; rating: number | null }[]>(
     [],
   )
@@ -88,7 +118,7 @@ function ViewRun({ run }: { run: RunSummary }) {
 
   async function toggle() {
     if (open) {
-      setOpen(false)
+      onToggle()
       return
     }
     setLoading(true)
@@ -102,7 +132,7 @@ function ViewRun({ run }: { run: RunSummary }) {
           rating: book.rating?.score ?? null,
         })),
       )
-      setOpen(true)
+      onToggle()
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e))
     } finally {
@@ -112,13 +142,10 @@ function ViewRun({ run }: { run: RunSummary }) {
 
   return (
     <div className="pt-1">
-      <button
-        onClick={toggle}
-        className="text-arcane-300 hover:text-arcane-400 disabled:opacity-50"
-        disabled={loading}
-      >
-        {loading ? 'Opening…' : open ? 'Hide books' : 'Read books'}
-      </button>
+      <Button variant="outline" size="sm" onClick={toggle} disabled={loading}>
+        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+        {loading ? 'Opening…' : 'Read books'}
+      </Button>
       {error && <p className="pt-1 text-red-300">{error}</p>}
       {open && (
         <div className="mt-3 space-y-3 border-t border-void-800 pt-3">
@@ -134,16 +161,13 @@ function ViewRun({ run }: { run: RunSummary }) {
                 )}
               </div>
               {/* Rendered rather than printed raw: the model emits markdown, and a
-                  preview full of ** and # markers reads as corruption. Clipped at the
-                  first section so the card stays a preview. */}
-              <Markdown
-                text={book.text.slice(0, 400)}
-                className="prose-spell mt-1 max-h-32 overflow-hidden text-xs after:from-void-900 after:absolute after:inset-x-0 after:bottom-0 after:h-8 after:bg-gradient-to-t after:content-[''] relative"
-              />
+                  preview full of ** and # markers reads as corruption. Shown in full -
+                  the card is already open, so clipping it only hides what was asked for. */}
+              <Markdown text={book.text} className="prose-spell mt-1 text-xs" />
             </div>
           ))}
           <Link
-            to={`/scenario?scenario=${encodeURIComponent(run.scenario)}`}
+            to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
             className="inline-block text-arcane-300 hover:text-arcane-400"
           >
             Open in the scenario screen →

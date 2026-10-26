@@ -470,3 +470,16 @@ def test_iter_books_yields_something_for_every_layout_it_claims_to_support():
     for heading in ("## Book 1 — Title", "**Book 1: Title**", "**Book 1 — Title**", "Book 1 - Title"):
         answer = f"{heading}\n**Cantrips:** Light, Mending, Fire Bolt\n"
         assert list(spells._iter_books(answer)), f"no section found for {heading!r}"
+
+
+def test_corpus_spell_names_excludes_magic_items():
+    """The corpus's `Spells/` directory holds 22 magic items alongside the spells.
+
+    This list is what the front end links, so an item in it becomes a link that 404s.
+    """
+    names = spells.corpus_spell_names()
+    assert len(names) > 500, f"unexpected corpus size: {len(names)}"
+    assert "Thorn Whip" in names
+    assert "Fireball" in names
+    for item in ("Glamerweave", "Armblade", "Docent", "Earworm"):
+        assert item not in names, f"{item} is a magic item, not a spell"

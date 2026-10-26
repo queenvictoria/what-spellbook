@@ -62,6 +62,10 @@ class Generation:
     model: str | None = None
     pool: dict = field(default_factory=dict)
     timings: dict = field(default_factory=dict)
+    # The stored run's id, when there is one. A client needs it to rate a book: the
+    # scenario text is not a reliable handle, because a run is keyed on the scenario
+    # *and* the character, level and book count, so two runs can share a scenario.
+    run_id: str | None = None
 
     @property
     def summary(self) -> str:
@@ -434,6 +438,7 @@ class SpellbookService:
         pool = self._pool_from_context(run.get("context") or {})
         answer = run.get("response", "")
         return Generation(
+            run_id=Path(directory).name,
             scenario=(run.get("key") or {}).get("scenario_text", ""),
             answer=answer,
             books=[Book.from_cache(entry) for entry in stored["books"]],
@@ -521,6 +526,7 @@ class SpellbookService:
         by_index = {b.index: b for b in generation.books}
         for path in written:
             if Path(path).name == cache.RUN_FILENAME:
+                generation.run_id = Path(path).parent.name
                 continue
             index = int(Path(path).name.split("-", 1)[0]) if Path(path).name[0].isdigit() else 0
             if index in by_index:

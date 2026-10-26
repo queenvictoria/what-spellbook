@@ -1,17 +1,30 @@
-"""Answer rules questions from the 2024 SRD, fetched once and cached.
+"""Answer rules questions from the vendored 2024 SRD text.
 
-The rules text lives at 5e24srd.com. Two things make this more than a wrapper around
-``httpx.get``:
+The rules live in ``context/srd/`` as Markdown, redistributed from SRD 5.2.1 under
+CC-BY-4.0 (see ``context/srd/PROVENANCE.md``). Three things make this more than a grep:
 
-* **Edition.** This project is 2024-only. ``5thsrd.org`` serves the 2014 SRD and ranks
-  well for "5e SRD" searches, so it is explicitly refused rather than silently used - a
-  2014 answer would contradict the 2024 context files the prompts are built on.
-* **Caching.** A rules answer is stable, so the fetched text and the model's answer are
-  both stored under ``.cache/rules/`` keyed by the normalised question. Asking "what is
-  a short rest?" twice must cost one fetch and one model call, not two.
+* **Edition.** This project is 2024-only. The vendored files are SRD 5.2.1, and the
+  spell corpus's legacy naming is a separate, tracked concern - a 2014 answer would
+  contradict the 2024 context the prompts are built on.
+* **Heading-anchored matching.** A rule is defined *under its own heading*. Searching
+  loose paragraphs is how "Grappling Hook" in a price list answered a question about
+  grappling, and how a travel-pace sentence about mounts answered a question about
+  short rests. A section qualifies only if its heading is about the question.
+* **Tables are the rules.** The vendored Markdown carries 51 HTML tables and the SRD
+  genuinely defines things there - the degrees of cover are a table, the actions are a
+  table. The prose around them says "as detailed in the Cover table", so dropping the
+  markup would silently leave a confident answer with its numbers missing.
 
-The cache stores the *source text* alongside the answer, because an answer about a rule
-is only checkable if the passage it came from is kept with it.
+Reading local files rather than fetching a website is not only faster and offline. The
+source previously used, ``5e24srd.com``, **omits large parts of the SRD**: its pages
+cross-reference a "Rules Glossary" it does not publish, so a short-rest or condition
+question could not be answered from it at all. The glossary is vendored here.
+
+**The cache holds the model's answer, not the retrieval.** Retrieval is a local file
+read costing milliseconds, so caching it would trade a staleness risk - an edited file
+would keep serving old text - for no benefit. The expensive part, the model call, is
+cached under ``.cache/rules/`` keyed by the normalised question, and each entry records
+the ``source`` files it used so a stale answer is attributable.
 """
 
 from __future__ import annotations
@@ -20,52 +33,53 @@ import hashlib
 import json
 import logging
 import re
+from functools import lru_cache
 from pathlib import Path
 
 from . import config
 
-# The 2024 SRD. Only hosts on this list may be fetched from; see ``check_host``.
-RULES_HOST = "5e24srd.com"
-RULES_INDEX = f"https://{RULES_HOST}/"
+# The vendored 2024 SRD. Kept as a directory of Markdown files rather than a URL because
+# the rules must keep working offline, must be diffable when the SRD is reissued, and are
+# redistributable: SRD 5.2.1 is CC-BY-4.0. See ``context/srd/PROVENANCE.md``.
+SRD_DIR = "context/srd"
+RULES_SOURCE = "vendored-srd-5.2.1"
 
-# Section indexes. Each lists its own subpages, and the subpages carry the actual rule
-# text - the index pages themselves are navigation only (~300 chars). Crawling these
-# rather than hard-coding every page keeps the lookup working if the site adds or
-# renames a rule, and avoids guessing URLs like /rules/ that 403.
-SECTION_INDEXES = (
-    f"https://{RULES_HOST}/playing-the-game/index.html",
-    f"https://{RULES_HOST}/character-creation/index.html",
-    f"https://{RULES_HOST}/equipment/index.html",
-    f"https://{RULES_HOST}/spells/index.html",
-    f"https://{RULES_HOST}/classes/index.html",
+# Used when a spell is in the retrieval corpus but not the SRD. The distinction is shown
+# in the UI, because the SRD is the 2024 authority and the corpus is not.
+CORPUS_SOURCE = "retrieval-corpus"
+
+# Citation shown when a question matches nothing, so the reply still points somewhere.
+RULES_INDEX = "context/srd/playing-the-game.md"
+
+# Ordered by usefulness to a rules question. The glossary is first because it is where
+# the 2024 SRD defines single terms - rests, conditions, actions, "Cover" - and it is
+# the part the previously-scraped website did not publish at all.
+PREFERRED_FILES = (
+    "rules-glossary.md",
+    "playing-the-game.md",
+    "gameplay-toolbox.md",
+    "equipment.md",
 )
 
-# Pages that are known homes for the rules a player asks about, tried first so the
-# common case costs one fetch instead of a crawl.
-PREFERRED_PAGES = (
-    f"https://{RULES_HOST}/playing-the-game/exploration.html",
-    f"https://{RULES_HOST}/playing-the-game/combat.html",
-    f"https://{RULES_HOST}/playing-the-game/d20-tests.html",
-    f"https://{RULES_HOST}/playing-the-game/actions.html",
-    f"https://{RULES_HOST}/playing-the-game/damage-and-healing.html",
-    f"https://{RULES_HOST}/playing-the-game/rhythm-of-play.html",
-)
-
-# Hosts that must never be used, with the reason, so the refusal is self-documenting.
-BANNED_HOSTS = {
+# Edition guards. A source is refused *before* any text is read, so a 2014 file can never
+# be silently used: this project is 2024-only and a 2014 answer would contradict the 2024
+# context the prompts are built on. A real guard rather than a comment because the
+# sources are files now, and a file is easy to add by mistake.
+BANNED_SOURCES = {
     "5thsrd.org": "serves the 2014 SRD (5.1), not 2024; its own banner says so",
     "www.5thsrd.org": "serves the 2014 SRD (5.1), not 2024; its own banner says so",
+    "5e24srd.com": (
+        "omits the Rules Glossary and most conditions, so it cannot answer rest and "
+        "condition questions at all; superseded by the vendored SRD"
+    ),
 }
 
 _CACHE_SUBDIR = "rules"
 _QUESTION_HASH_LENGTH = 12
 
-# Long enough to clear a nav bar, short enough to be a real answer's neighbourhood.
-MIN_USEFUL_CHARS = 400
-
 
 class RulesUnavailable(RuntimeError):
-    """Raised when a rules page cannot be fetched or yields no usable text."""
+    """Raised when the SRD text cannot be read or nothing in it answers the question."""
 
 
 def normalise(question: str) -> str:
@@ -100,40 +114,184 @@ def cache_dir_path(question: str, cache_dir=None) -> Path:
     return _cache_dir(cache_dir) / f"{slug(question)}-{question_fingerprint(question)}.json"
 
 
-def check_host(url: str) -> None:
-    """Refuse a non-2024 host before any request is made."""
-    host = re.sub(r"^https?://", "", str(url)).split("/")[0].lower()
-    host = host.split(":")[0]
-    if host in BANNED_HOSTS:
-        raise RulesUnavailable(
-            f"{host} is a 2014 source ({BANNED_HOSTS[host]}); this project is 2024 only."
-        )
-    if host and host != RULES_HOST and not host.endswith("." + RULES_HOST):
-        raise RulesUnavailable(f"{host} is not a permitted rules source ({RULES_HOST}).")
+def srd_dir() -> Path:
+    """Absolute path to the vendored SRD directory.
 
-
-def html_to_text(html: str) -> str:
-    """Flatten a rules page to readable text, marking headings.
-
-    Headings are kept with a ``##`` sentinel rather than discarded, because a rule is
-    defined *under its own heading*. That is the difference between the section titled
-    "Cover" and a sentence that merely says "an object that covers the whole target",
-    and without it the matcher cannot tell a rule from a mention.
-
-    Deliberately dependency-free: a rules page is simple markup and adding a parser for
-    it would be a large dependency for one function. Script, style and nav bodies are
-    dropped first, because their contents are not prose.
+    Goes through ``config.resolve`` rather than using ``SRD_DIR`` directly: a bare
+    relative path resolves against the *process* CWD, so running the CLI from another
+    directory would silently find no rules at all.
     """
-    text = re.sub(r"<(script|style|nav|footer|header)[^>]*>.*?</\1>", " ",
-                  html, flags=re.S | re.I)
-    # Mark headings before the generic tag strip, so the marker survives.
-    text = re.sub(r"<h[1-6][^>]*>\s*(.*?)\s*</h[1-6]>", r"\n## \1\n", text,
-                  flags=re.S | re.I)
-    text = re.sub(r"<br\s*/?>|</p>|</li>|</div>", "\n", text, flags=re.I)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = (text.replace("&nbsp;", " ").replace("&amp;", "&")
-                .replace("&lt;", "<").replace("&gt;", ">")
-                .replace("&quot;", '"').replace("&#39;", "'"))
+    return config.resolve(SRD_DIR)
+
+
+def source_files() -> list[Path]:
+    """Every vendored SRD file, preferred ones first.
+
+    Ordering only breaks ties. All files are searched for every question, because a rule
+    can legitimately appear in more than one place and the file holding the *defining*
+    section should win on match quality, not on the order the files were listed.
+    """
+    directory = srd_dir()
+    if not directory.is_dir():
+        return []
+    found = [directory / name for name in PREFERRED_FILES if (directory / name).is_file()]
+    extras = sorted(
+        path for path in directory.glob("*.md")
+        if path.name not in PREFERRED_FILES and path.name != "PROVENANCE.md"
+    )
+    # PROVENANCE.md is the CC-BY-4.0 attribution, not SRD text. Including it would let
+    # licence boilerplate answer a question about "work" or "rights".
+    return found + extras
+
+
+def check_source(source) -> None:
+    """Refuse a 2014 source before any text is read."""
+    text = str(source).lower()
+    for banned, reason in BANNED_SOURCES.items():
+        if banned in text:
+            raise RulesUnavailable(
+                f"{banned} is not a permitted rules source ({reason}); this project is "
+                "2024 only."
+            )
+
+
+def read_srd(path) -> str:
+    """Read one SRD Markdown file, refusing a banned source first."""
+    check_source(path)
+    try:
+        return Path(path).read_text(encoding="utf-8")
+    except OSError as e:
+        raise RulesUnavailable(f"Could not read {path} ({e}).") from e
+
+
+# Group markers that hold rules *within* a section: ``<details>``/``<summary>``, and the
+# bold run-in labels the SRD uses for the parts of a rule ("**Special Feature.**"). They
+# are promoted to headings because the SRD nests real rules this way - the literal string
+# "Actions" appears nowhere in the vendored text, yet the Actions table and every
+# individual action hang off exactly such a group, so without this a question about an
+# action's trigger or limit cannot reach the text that answers it.
+_SUMMARY = re.compile(r"^\s*<summary>\s*(.*?)\s*</summary>\s*$", re.I)
+
+# A whole line of bold or italic: a table caption or a section name.
+_RUN_IN_WHOLE = re.compile(r"^\s*(?:\*\*|_)([^*_]{2,60}?)(?:\*\*|_)\s*$")
+
+# A run-in label followed by its text on the same line. The trailing full stop is required,
+# because that is the convention and without it any sentence opening in bold would be
+# promoted - splitting a paragraph into a bogus heading and a fragment.
+_RUN_IN_INLINE = re.compile(r"^\s*(\*\*|_)([^*_]{2,60})\.\1\s+(.*)$")
+
+
+def _promote_groups(markdown: str) -> str:
+    """Turn ``<details>`` groups and run-in labels into ``###`` headings.
+
+    A label that merely repeats the heading already in force is *not* promoted. The SRD
+    captions each table with the name of the section it belongs to ("**Cover**"), and
+    promoting that caption splits the rule in two - the prose under one heading, the
+    numbers under another - so a retrieval limit of three sections could return the
+    explanation without the table it refers to.
+    """
+    out = []
+    current = None
+    for line in markdown.splitlines():
+        if heading := re.match(r"^#{1,4}\s+(.*)$", line):
+            current = heading.group(1).strip().lower()
+            out.append(line)
+            continue
+        if re.match(r"^\s*</?details[^>]*>\s*$", line, re.I):
+            continue
+        label = rest = None
+        if match := _SUMMARY.match(line):
+            label = re.sub(r"<[^>]+>", "", match.group(1)).strip()
+        elif match := _RUN_IN_WHOLE.match(line):
+            # The whole line is the label, and it takes no full stop: the SRD captions each
+            # table with the name of its section ("**Cover**").
+            label = match.group(1).strip()
+        elif match := _RUN_IN_INLINE.match(line):
+            # A run-in label: the convention the SRD uses throughout for the parts of a
+            # rule ("_Benefits of the Rest._ When you finish...") and for cases within one
+            # ("_Shove._ The target must succeed..."). It is inline - the label and its text
+            # share a line - which is why the standalone pattern above caught exactly one
+            # line in the whole SRD and missed all 240 of these. "Shove" is a rule defined
+            # *only* this way, as the third of three cases under "Unarmed Strike", so
+            # without promoting it "how do I shove a creature" had nowhere to land.
+            label = match.group(2).strip()
+            rest = match.group(3).strip()
+        if label and label.lower() != current:
+            out.append(f"### {label}")
+            if rest:
+                out.append(rest)
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
+_TAG = re.compile(r"<[^>]+>")
+_ENTITY = {"&nbsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+           "&#39;": "'", "&mdash;": "\u2014", "&ndash;": "\u2013"}
+
+
+def _unescape(text: str) -> str:
+    for entity, char in _ENTITY.items():
+        text = text.replace(entity, char)
+    return text
+
+
+def tables_to_text(markdown: str) -> str:
+    """Render the SRD's embedded HTML tables as plain declarative sentences.
+
+    **The rules are in the tables.** The vendored Markdown carries 51 HTML tables and the
+    SRD genuinely defines things there - the degrees of cover are a table, the actions are
+    a table, difficulty classes are a table - while the surrounding prose only says "as
+    detailed in the Cover table". Stripping the markup would leave the answer as the words
+    "Cover" and "Benefit to Target" with every number gone: a confident answer missing the
+    numbers that make it useful.
+
+    Each row becomes ``header: cell; header: cell.`` so a passage reads on its own and can
+    be quoted. ``rowspan``/``colspan`` are not honoured: no SRD table uses them, and
+    guessing at spanning would silently misalign columns.
+    """
+    def render(match):
+        table = match.group(0)
+        headers = [_unescape(_TAG.sub(" ", cell)).strip()
+                   for cell in re.findall(r"<th[^>]*>(.*?)</th>", table, re.S | re.I)]
+        out = []
+        for row in re.split(r"</tr>", table, flags=re.I):
+            cells = [re.sub(r"\s+", " ", _unescape(_TAG.sub(" ", cell))).strip()
+                     for cell in re.findall(r"<td[^>]*>(.*?)</td>", row, re.S | re.I)]
+            cells = [cell for cell in cells if cell]
+            if not cells:
+                continue
+            parts = []
+            for index, cell in enumerate(cells):
+                header = headers[index] if index < len(headers) else ""
+                header = re.sub(r"\s+", " ", header).rstrip(" \u2026").strip()
+                parts.append(f"{header}: {cell}" if header else cell)
+            # A cell often ends in its own full stop; adding another gives "behavior..".
+            row_text = "; ".join(parts)
+            out.append(row_text if row_text.endswith(".") else row_text + ".")
+        return "\n".join(out) if out else ""
+
+    return re.sub(r"<table>.*?</table>", render, markdown, flags=re.S | re.I)
+
+
+def markdown_to_text(markdown: str) -> str:
+    """Flatten SRD Markdown to headings plus prose.
+
+    Headings are re-emitted as ``##`` sentinels because a rule is defined *under its own
+    heading*. That is the whole basis of the matcher: it is the difference between the
+    section titled "Cover" and a sentence that merely says "an object that covers the
+    whole target", and without it nothing can tell a rule from a mention of one.
+    """
+    text = tables_to_text(_promote_groups(markdown))
+    out = []
+    for line in text.splitlines():
+        if heading := re.match(r"^#{2,4}\s*(.+?)\s*$", line):
+            out.append(f"## {heading.group(1)}")
+            continue
+        if line.strip().startswith("```"):
+            continue
+        out.append(_unescape(_TAG.sub(" ", line)))
+    text = "\n".join(out)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n\s*\n\s*\n+", "\n\n", text)
     return text.strip()
@@ -144,18 +302,39 @@ def html_to_text(html: str) -> str:
 # outranks one that actually mentions resting. Question-framing verbs ("how does X
 # work", "what does X mean") are included because they name the question, not the rule.
 _STOPWORDS = frozenset("""
-a about an and are as at be been being by can could did do does doing done for from get
-gets got had has have having how i if in into is it its just like make makes me mean
-means more most much must my need no not of on or other our out over own said same
-should so some such than that the their them then there these they this those to too
-up use used uses using very was way were what when where whether which while who whom
-why will with work works would you your
+a about am an and any are as at be been being but by can could did do does doing done
+for from get gets go got had has have having he her him his how i if in into is it its
+just like make makes me mean means more most much must my need no nor not of ok on or
+rule rules
+other our out over own said same she should so some such than that the their them then
+there these they this those to too up us use used uses using very was way we what when
+where whether which while who whom why will with work works would you your
 """.split())
 
-# A passage must contain this fraction of the question's meaningful terms before it is
-# offered as an answer. Deliberately strict: an irrelevant passage presented as the
-# rule is worse than admitting the rule was not found, because it reads authoritative.
-_COVERAGE_THRESHOLD = 0.6
+# Words that carry no retrieval signal. Without this, "what is a short rest" scores a
+# passage highly for containing "is" and "a", and a passage about *when time is short*
+# outranks one that actually mentions resting. Question-framing verbs ("how does X work",
+# "what does X mean") are included because they name the question, not the rule.
+
+
+def _fold(word: str) -> str:
+    """One canonical form for a word, so every inflection of a root folds together.
+
+    Order matters, and the trailing "e" is the subtlety: "stabilize" and "stabilizing"
+    must fold to the same string or a question using one form cannot match a heading using
+    the other. Stripping "-ing" and "-ed" leaves "stabiliz", which the unsuffixed
+    "stabilize" only meets if its silent "e" is dropped too - which is why "how do I
+    stabilize a creature" missed the section titled "Stabilizing a Character".
+    """
+    if word.endswith("s") and len(word) > 4:        # conditions -> condition
+        word = word[:-1]
+    if word.endswith("ing") and len(word) > 5:      # grappling  -> grappl
+        word = word[:-3]
+    elif word.endswith("ed") and len(word) > 4:     # grappled   -> grappl
+        word = word[:-2]
+    if word.endswith("e") and len(word) > 3:        # stabilize  -> stabiliz
+        word = word[:-1]
+    return word
 
 
 def _terms(question: str) -> set[str]:
@@ -170,46 +349,169 @@ def _terms(question: str) -> set[str]:
     term set ("grappling" produced ``grappl``, ``grappling`` *and* a bogus ``grappll``),
     which then lowered coverage on the page that actually had the rule and let a weaker
     page win.
+
+    Two characters, not three: the rulebook's short words are acronyms - DC, AC, HP, XP -
+    and dropping them let "what is my spell save dc" match a shop entry titled "Spell
+    Scroll (Cantrip, 30 GP)" on the words "spell" and "save" alone, so the answer was
+    simply wrong. The English filler a two-letter match would otherwise admit is already
+    in ``_STOPWORDS``.
     """
-    words = {w for w in re.findall(r"[a-z]{3,}", normalise(question))}
+    words = {w for w in re.findall(r"[a-z]{2,}", normalise(question))}
     words -= _STOPWORDS
-    folded = set()
-    for word in words:
-        if word.endswith("s") and len(word) > 4:          # conditions -> condition
-            word = word[:-1]
-        if word.endswith("ing") and len(word) > 6:        # grappling  -> grappl
-            word = word[:-3]
-        elif word.endswith("ed") and len(word) > 5:       # grappled   -> grappl
-            word = word[:-2]
-        folded.add(word)
-    return folded
+    return {_fold(word) for word in words}
 
 
-# Text the SRD uses to point elsewhere. When a passage says "see the Rules Glossary"
-# and the glossary is not part of the SRD, the passage is a cross-reference, not
-# content - which is how a travel-pace sentence about mounts became an "answer" about
-# short rests.
+def _term_pattern(term: str) -> re.Pattern:
+    """Regex matching ``term`` and the inflections :func:`_fold` collapses.
+
+    The inverse of the folding, spelled out as alternatives, rather than a prefix match.
+    A prefix match with a left word boundary is wrong: ``\brest`` matches "Restrained"
+    and "Restoration", so "what is a long rest" was answered from the Restrained
+    condition, whose heading merely *starts* with the same letters. Anchoring both sides
+    admits exactly what folding removes and nothing more.
+
+    Kept in step with ``_fold`` by mirroring it; ``test_rules.py`` asserts the two are
+    inverse for a sample of inflections, because a silent drift between them is invisible
+    until a question quietly stops matching.
+    """
+    forms = {term, term + "s", term + "es", term + "e", term + "d", term + "ed",
+             term + "ing"}
+    forms = sorted(forms, key=len, reverse=True)
+    return re.compile(r"(?<![a-z])(?:" + "|".join(re.escape(f) for f in forms) + r")(?![a-z])")
+
+
+# Text the SRD uses to point elsewhere: "as defined in \"Rules Glossary\"", "_See also_
+# \"Speed.\"". Demoted, because a pointer is weaker evidence than a definition.
+#
+# This used to be a heavy penalty, applied because the previous source published the
+# pointers but not the Rules Glossary they pointed at, so a pointer could only ever lead
+# nowhere. The glossary is vendored now, so the targets exist and a cross-reference is a
+# genuine hint - but still not the rule itself.
 _CROSS_REFERENCE = re.compile(
-    r"see\s+[“\"']?(rules glossary|equipment|combat|chapter|\w+ rules)", re.I
-)
-
-# Sections whose headings are navigation or lists rather than rule definitions. A
-# price or a "Hook"/"Kit" suffix marks an equipment entry, which is how "Grappling Hook
-# (2 GP)" was offered as the answer to how grappling works.
-_NON_RULE_HEADINGS = re.compile(
-    r"\b(tools?|table|example|sample|trinkets?|equipment|gear|armor|weapons?|coins?|"
-    r"expenses|lodging|hirelings?|mounts?|vehicles?|crafting|lifestyle|hook|kit|"
-    r"focus|supplies|list)\b"
-    r"|\b\d+\s*(gp|sp|cp|lb)\b",
+    r"(see\s+also|see\s+the\s+\w+\s+table|as\s+(?:detailed|defined|described)\s+in"
+    r"|defined\s+in)",
     re.I,
 )
 
+# Sections whose headings are catalogue entries rather than rule definitions.
+#
+# Narrowed from a long keyword list to the price pattern alone. Every keyword tried was
+# also a real heading somewhere in the SRD, and the glossaries are *supposed* to hold
+# single-word definitions, so an exclusion on a word like "Armor" holds the word, not a
+# list: it silently discarded "Armor Class", "Armor Training", "Weapon", "Weapon Attack",
+# "Improvised Weapons", "Spellcasting Focus" and "Tools". "Grappling Hook (2 GP)" is a
+# catalogue entry and the price catches it; "Weapon" is a rule and must not be caught.
+_ITEM_HEADING = re.compile(
+    r"\([^)]*\b\d[\d,]*\s*(?:gp|sp|cp|lb)\b[^)]*\)|\(\s*varies\s*\)", re.I
+)
+
+# Headings that are structure rather than rules: the procedural "step" headings inside
+# character creation, and index-like headings.
+_NON_RULE_HEADINGS = re.compile(
+    r"^\s*\d+:\s|\b(table|example|sample|list|expenses|conventions)\b", re.I
+)
+
+# Two thresholds, and together they are the whole of the decision to answer or refuse.
+#
+# The SRD defines a rule under a heading that names it, so the question is whether some
+# heading names what the question is *about*. Every attempt to measure that as a ratio of
+# matched words failed, because counting words cannot tell a heading that names the subject
+# from one that mentions a word of it: "Cover" and "Combat Encounter Difficulty" both
+# matched their question exactly once, so they competed on nothing but section length and
+# the looser heading sometimes won.
+#
+# What separates them is how much each matched term tells you. Nearly every question
+# carries a word that is everywhere in a rulebook - "creature", "spell", "weapon" - and a
+# heading match on one of those is no evidence at all. "Creature" is a glossary entry, so
+# "how do I shove a creature" and "how do I stabilize a creature" both *matched a heading*
+# on it, and the definition of a creature came back as the answer. A heading match only
+# means something when the term is distinctive.
+#
+# So each term is weighted by how few sections of the SRD contain it, and a question is
+# answerable only when the SRD has a heading naming the question's **most distinctive
+# term**, and that term is distinctive enough to be the subject of a rule at all.
+#
+# A floor, not the main guard. A term absent from the SRD weighs exactly zero, and no
+# question about it can be answered - "how does a spear work" has no heading to land on and
+# is refused. The floor additionally sets aside the handful of words so generic in a
+# rulebook that a single-word question about one is not really a question: at 0.65,
+# ``spell`` (0.63) is below it while ``swim``, ``skill`` and ``fly`` are above, which
+# matches where the SRD actually defines a term.
+#
+# Deliberately not higher. Setting it at 0.75 read well ("spell is too broad") but also
+# rejected ``condition`` (0.67) and ``bonus action`` (0.72), which name two of the
+# glossary's own entries - refusing the SRD's own rules to keep out one generic word.
+_MIN_SUBJECT_WEIGHT = 0.65
+
+# And the winning heading must account for this fraction of the question's remaining
+# substance. Set at a half: "Hide [Action]" accounts for over half of "can I hide in
+# combat" (the rest is the context the question was asked in), while a heading that
+# accounts for only a third is talking about something the question did not ask about.
+_HEADING_SHARE = 0.5
+
+
+# Built once, lazily, from the vendored files: term -> number of sections containing it.
+_SECTION_FREQUENCY: dict[str, int] | None = None
+_SECTION_TOTAL = 0
+
+
+def section_frequency() -> tuple[dict[str, int], int]:
+    """How many SRD sections contain each folded term, and how many sections there are.
+
+    Counted over section *bodies*, not headings, and that distinction is the whole point.
+    "Creature" appears in only ten headings but in hundreds of sections, so measuring
+    rarity against headings alone rated it almost as distinctive as "Stabilizing" - and
+    "how do I stabilize a creature" was then answered with the glossary's definition of a
+    creature, because a heading naming the generic object of the question looked like a
+    heading naming its subject. Frequency over the text as a whole captures what actually
+    matters: a word the rulebook uses everywhere cannot identify a rule.
+
+    Computed from the vendored files rather than hard-coded, so it stays correct when the
+    SRD is reissued - a term that becomes common automatically loses its power. Cached
+    because it costs a pass over all four files.
+    """
+    global _SECTION_FREQUENCY, _SECTION_TOTAL
+    if _SECTION_FREQUENCY is not None:
+        return _SECTION_FREQUENCY, _SECTION_TOTAL
+
+    counts: dict[str, int] = {}
+    total = 0
+    for path in source_files():
+        try:
+            text = markdown_to_text(read_srd(path))
+        except RulesUnavailable:
+            continue
+        for heading, body in _sections(text):
+            total += 1
+            for word in {_fold(w) for w in re.findall(r"[a-z]{2,}", f"{heading} {body}".lower())}:
+                counts[word] = counts.get(word, 0) + 1
+    _SECTION_FREQUENCY = counts
+    _SECTION_TOTAL = total
+    return counts, total
+
+
+def term_weight(term: str) -> float:
+    """How much a term narrows the search, in ``0.0``-``1.0``.
+
+    Zero for a term that appears in no section at all, because "how does a spear work"
+    would otherwise score infinitely well on ``spear`` - which sounds helpful until you
+    notice the question cannot be answered, since the SRD has no section about spears.
+    Treating an unmatched term as maximally rare turns "not found" into "found", so
+    absence has to be worth nothing.
+    """
+    counts, total = section_frequency()
+    if not total or term not in counts:
+        return 0.0
+    # Normalised document frequency: a term everywhere in the book carries no signal, a
+    # term the book uses once carries almost all of it.
+    return 1.0 - (counts[term] / total) ** 0.5
+
 
 def _sections(text: str) -> list[tuple[str, str]]:
-    """Split marked-up page text into ``(heading, body)`` pairs.
+    """Split flattened text into ``(heading, body)`` pairs.
 
-    Content before the first heading is kept under an empty heading, because plenty of a
-    rules page's introduction is real rule text.
+    Content before the first heading is kept under an empty heading, because the
+    introduction to a chapter is often real rule text.
     """
     parts = re.split(r"^##\s*(.*)$", text, flags=re.MULTILINE)
     # re.split with a capture group yields [lead, head1, body1, head2, body2, ...].
@@ -225,8 +527,134 @@ def _sections(text: str) -> list[tuple[str, str]]:
     return sections
 
 
+def _score_sections(text: str, question: str) -> list[tuple[float, int, str, str]]:
+    """Every section of ``text`` that matches, as ``(score, position, heading, body)``.
+
+    Returned rather than formatted so :func:`gather` can compare matches *across files* on
+    score. Comparing on anything else picks the wrong file: "what is a long rest" was
+    answered from an equipment entry titled "Attune during a Short Rest" merely because
+    that passage happened to be the longest.
+    """
+    terms = _terms(question)
+    if not terms:
+        return []
+    ordered = sorted(terms)
+    patterns = [_term_pattern(term) for term in ordered]
+    weights = [term_weight(term) for term in ordered]
+    total_weight = sum(weights) or 1.0
+
+    scored = []
+    for position, (heading, body) in enumerate(_sections(text)):
+        heading_lower = heading.lower()
+        body_lower = body.lower()
+
+        # A catalogue entry or a structural heading is never the rule. Only applied to
+        # sub-entries: a chapter heading ("Actions") is worth matching, and its children
+        # are where the rules actually live.
+        if heading and (_ITEM_HEADING.search(heading) or _NON_RULE_HEADINGS.search(heading)):
+            continue
+
+        heading_hits = sum(1 for pat in patterns if pat.search(heading_lower))
+        body_hits = sum(1 for pat in patterns if pat.search(body_lower))
+        if not body_hits and not heading_hits:
+            continue
+
+        coverage = max(heading_hits, body_hits) / len(terms)
+        # A heading hit is worth far more than a body hit: it means this section *is* the
+        # rule rather than prose that happens to use the word.
+        #
+        # The bonus scales with *how much of the question the heading covers*, rather than
+        # being all-or-nothing. A flat bonus made "Saving Throws and Damage" tie with
+        # "Death Saving Throws" - both merely contained two of the question's terms - and
+        # the vaguer heading then won on section length.
+        # Weighted so a heading hit on a distinctive word counts for far more than one on a
+        # word the rulebook uses everywhere, and so a heading naming every part of the
+        # question the SRD can speak to beats one naming only part of it: "Attune during a
+        # Short Rest" and the glossary's own "Short Rest" both contain every term of "what
+        # is a short rest", and only match quality should separate them.
+        heading_signal = sum(
+            weight for weight, pat in zip(weights, patterns) if pat.search(heading_lower)
+        )
+        coverage = max(heading_hits, body_hits) / len(terms)
+        score = (2.0 * heading_signal / total_weight
+                 + coverage * (1 + 0.1 * min(body_hits, 5)))
+        # Long sections are diluted: a huge appendix mentioning the term once is less
+        # useful than a short dedicated rule.
+        score /= 1 + len(body) / 2500
+        # A pointer is weaker evidence than a definition.
+        if _CROSS_REFERENCE.search(body) and not heading_hits:
+            score /= 1.5
+        scored.append((score, position, heading, body))
+    return scored
+
+
+def _matched(text: str, question: str):
+    """``(scored sections, folded terms)`` - the shape both entry points work from."""
+    return _score_sections(text, question), _terms(question)
+
+
+def _qualifies(scored, terms) -> list:
+    """The sections that genuinely answer the question, best first.
+
+    Shared by :func:`find_passages` and :func:`gather` so the single-file path and the
+    all-files path cannot drift apart and answer the same question two different ways.
+
+    Three conditions, in order, and each one catches a failure seen in practice:
+
+    1. The question's most distinctive term must be distinctive enough to be a subject
+       (``_MIN_SUBJECT_WEIGHT``). Without it "what is my spell save dc" is answered with
+       the heading "Spell".
+    2. Some section's *heading* must name that term. This is the heading-anchored rule:
+       without it "Hit Points" answered questions about short rests and "Roll Two D20s"
+       answered questions about two-weapon fighting, which the SRD does not contain.
+    3. Among those, the best must account for half the question's remaining substance
+       (``_HEADING_SHARE``). Without it "Combat Encounters" outranked "Hiding" for "can I
+       hide in combat", because the two matched their question equally often.
+
+    Refusing is the honest outcome: the SRD is a subset of the 2024 rulebook, and a
+    plausible-looking paragraph presented as the rule reads as sourced.
+    """
+    if not scored or not terms:
+        return []
+
+    ordered = sorted(terms)
+    weights = {term: term_weight(term) for term in ordered}
+    subject = max(ordered, key=lambda term: weights[term])
+    if weights[subject] < _MIN_SUBJECT_WEIGHT:
+        return []
+
+    pattern = _term_pattern(subject)
+    named = [item for item in scored if item[2] and pattern.search(item[2].lower())]
+    if not named:
+        return []
+
+    named.sort(key=lambda item: (-item[0], item[1]))
+    if _discrimination(named[0][2], set(ordered)) < _HEADING_SHARE:
+        return []
+    return named
+
+
+def _discrimination(heading: str, terms) -> float:
+    """How much of the question's *substance* the heading accounts for, in ``0.0``-``1.0``.
+
+    Each question term is weighted by :func:`term_weight`, and the result is the weight the
+    heading carries over the weight available.
+    """
+    if not heading:
+        return 0.0
+    ordered = sorted(terms)
+    available = sum(term_weight(term) for term in ordered)
+    if available <= 0:
+        return 0.0
+    heading_lower = heading.lower()
+    carried = sum(
+        term_weight(term) for term in ordered if _term_pattern(term).search(heading_lower)
+    )
+    return carried / available
+
+
 def find_passages(text: str, question: str, *, limit: int = 3) -> list[str]:
-    """The page sections most likely to answer ``question``, best first.
+    """The sections most likely to answer ``question``, best first.
 
     Matching works on *sections*, not loose paragraphs, and a section whose heading
     contains the question's terms outranks one that merely mentions them in passing. A
@@ -235,63 +663,21 @@ def find_passages(text: str, question: str, *, limit: int = 3) -> list[str]:
     equipment list and a travel-pace sentence about mounts beat the real rule.
 
     Returns an empty list when nothing qualifies. That is a real outcome, not a failure:
-    much of the 2024 rulebook is not in the SRD, and the caller reports the gap rather
-    than presenting an unrelated passage as the rule.
+    the SRD is a subset of the 2024 rulebook (it has no subclasses and only a few feats,
+    for instance), and the caller reports the gap rather than presenting an unrelated
+    passage as the rule.
     """
-    terms = _terms(question)
-    if not terms:
-        return []
+    scored, terms = _matched(text, question)
+    return _format(_qualifies(scored, terms), limit=limit)
 
-    scored = []
-    for position, (heading, body) in enumerate(_sections(text)):
-        heading_lower = heading.lower()
-        body_lower = body.lower()
 
-        # A heading that is really a list or an equipment table is never the rule.
-        if heading and _NON_RULE_HEADINGS.search(heading):
-            continue
-
-        in_heading = [t for t in terms if re.search(rf"\b{re.escape(t)}", heading_lower)]
-        in_body = [t for t in terms if re.search(rf"\b{re.escape(t)}", body_lower)]
-        if not in_body and not in_heading:
-            continue
-
-        coverage = len(set(in_heading) | set(in_body)) / len(terms)
-        # A heading hit is worth far more than a body hit: it means this section *is*
-        # the rule rather than prose that happens to use the word.
-        heading_bonus = 2.0 if in_heading else 0.0
-        score = heading_bonus + coverage * (1 + 0.1 * min(len(in_body), 5))
-        # Long sections are diluted: a huge appendix mentioning the term once is less
-        # useful than a short dedicated rule.
-        score /= 1 + len(body) / 2500
-        # A cross-reference is not content. Without this the strongest-looking match for
-        # "short rest" was a travel-pace sentence pointing at the Rules Glossary, which
-        # the SRD does not contain.
-        if _CROSS_REFERENCE.search(body) and not in_heading:
-            score /= 3.0
-        scored.append((score, position, heading, body))
-
-    if not scored:
-        return []
-
-    # Require the best section's *heading* to be about the question. The SRD defines a
-    # rule under a heading that names it ("Cover", "Hiding", "Dropping Prone"), so a
-    # section that merely mentions the terms in passing is not the rule - it is how
-    # "Hit Points" became an answer about short rests. Refusing is the honest outcome:
-    # much of the 2024 rulebook (rests, the Rules Glossary, most conditions) is not in
-    # the SRD, and a plausible-looking paragraph is worse than saying so.
-    best = max(scored, key=lambda s: s[0])
-    if not best[2]:
-        return []
-    if not any(re.search(rf"\b{re.escape(t)}", best[2].lower()) for t in terms):
-        return []
-
-    scored.sort(key=lambda s: (-s[0], s[1]))
-    out = []
-    for _score, _pos, heading, body in scored[:limit]:
-        label = f"## {heading}\n" if heading else ""
-        out.append(f"{label}{body}")
-    return out
+def _format(scored, *, limit: int = 3) -> list[str]:
+    """Best sections rendered as passages, each prefixed with its heading."""
+    scored = sorted(scored, key=lambda item: (-item[0], item[1]))
+    return [
+        (f"## {heading}\n" if heading else "") + body
+        for _score, _pos, heading, body in scored[:limit]
+    ]
 
 
 def _read(path: Path) -> dict:
@@ -306,15 +692,19 @@ def load_cached(question: str, cache_dir=None) -> dict | None:
     entry = _read(entry_path(question, cache_dir))
     if not entry or not entry.get("answer"):
         return None
-    if entry.get("source") != RULES_HOST:
-        # A cached answer from a different (older) source is not usable.
+    if entry.get("source") != RULES_SOURCE:
+        # An answer from a different source is not usable. This is what retires the
+        # answers produced from the previously-scraped website: they were written against
+        # a source that omitted the Rules Glossary, so several of them report a rule as
+        # missing that the vendored SRD defines. Served from cache they would outlive the
+        # fix, which is exactly how a "we fixed that" regression happens.
         return None
     return entry
 
 
 def save_cached(question: str, answer: str, *, passages: list[str], url: str,
                 cache_dir=None) -> Path:
-    """Store a rules answer with its source text and URL. Never raises."""
+    """Store a rules answer with the source text it was grounded in. Never raises."""
     from datetime import datetime, timezone
 
     path = entry_path(question, cache_dir)
@@ -324,7 +714,7 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
         "answer": answer,
         "passages": passages,
         "url": url,
-        "source": RULES_HOST,
+        "source": RULES_SOURCE,
         "answered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     try:
@@ -335,82 +725,49 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
     return path
 
 
-def fetch_page(url: str, *, timeout: float = 20.0) -> str:
-    """Fetch a rules page as text. Refuses a non-2024 host before connecting."""
-    check_host(url)
-    try:
-        import httpx
-    except ImportError as e:  # pragma: no cover
-        raise RulesUnavailable(f"httpx is required for rules lookups: {e}") from e
+def candidate_files(*, search_all: bool = True) -> list[Path]:
+    """Every SRD file worth searching, preferred ones first.
 
-    try:
-        response = httpx.get(url, timeout=timeout, follow_redirects=True,
-                             headers={"User-Agent": "what-spellbook/1.0"})
-    except Exception as e:
-        raise RulesUnavailable(f"Could not reach {url} ({type(e).__name__}: {e})") from e
-
-    if response.status_code != 200:
-        raise RulesUnavailable(f"{url} returned HTTP {response.status_code}.")
-
-    text = html_to_text(response.text)
-    if len(text) < MIN_USEFUL_CHARS:
-        raise RulesUnavailable(
-            f"{url} produced only {len(text)} characters of text; the page layout may "
-            "have changed."
-        )
-    return text
-
-
-def section_pages(index_url: str, *, timeout: float = 20.0) -> list[str]:
-    """Subpage URLs listed by a section index.
-
-    Resolves the index's relative links against its own directory, skipping the
-    cross-section navigation links - those point at ``../other-section/index.html``,
-    which would make each section crawl the whole site.
+    The ``search_all`` split is kept from the fetching version so the shape of
+    :func:`gather` is unchanged, but it no longer saves anything: reading four local files
+    costs milliseconds, where the crawl it used to skip cost dozens of HTTP round trips.
     """
-    import httpx
-
-    check_host(index_url)
-    try:
-        response = httpx.get(index_url, timeout=timeout, follow_redirects=True,
-                             headers={"User-Agent": "what-spellbook/1.0"})
-        response.raise_for_status()
-    except Exception as e:
-        logging.warning(f"Could not read the index {index_url} ({type(e).__name__}).")
-        return []
-
-    base = index_url.rsplit("/", 1)[0]
-    pages = []
-    for href in re.findall(r'href="([^"#?]+\.html)"', response.text):
-        if href.startswith(("http://", "https://")) or href.startswith(".."):
-            continue
-        pages.append(f"{base}/{href}")
-    return list(dict.fromkeys(pages))
+    files = source_files()
+    if search_all:
+        return files
+    preferred = set(PREFERRED_FILES)
+    return [path for path in files if path.name in preferred]
 
 
-def candidate_pages(*, timeout: float = 20.0) -> list[str]:
-    """Every page worth searching, known-good ones first.
+def _reference(path) -> str:
+    """Repo-relative path, used as the citation shown with an answer.
 
-    Discovery is lazy: the preferred pages are tried before any index is crawled, so
-    the common question ("what is a short rest?") costs one request, and the crawl is
-    only paid for when the preferred pages miss.
+    Relative rather than absolute so a citation is stable across machines, and a path
+    rather than a URL because the source genuinely is a file now - a URL would look
+    clickable and lead nowhere.
     """
-    pages = list(PREFERRED_PAGES)
-    for index in SECTION_INDEXES:
-        pages.extend(section_pages(index, timeout=timeout))
-    return list(dict.fromkeys(pages))
+    candidate = Path(path)
+    try:
+        return str(candidate.resolve().relative_to(config.ROOT))
+    except (ValueError, OSError):
+        return str(candidate)
 
 
-def gather(question: str, *, urls=None, cache_dir=None, timeout: float = 20.0,
+def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
            search_all: bool = True) -> dict:
-    """Retrieve the rules passages for a question, from cache when possible.
+    """Retrieve the SRD passages for a question, and report any cached answer.
 
     Returns ``{"passages", "url", "text", "from_cache"}``. Raises ``RulesUnavailable``
-    when nothing can be fetched, so the caller can say so rather than answering from
-    model recall and presenting it as sourced.
+    when nothing matches, so the caller can say so rather than answering from model recall
+    and presenting it as sourced.
+
+    ``from_cache`` reports whether a previous *answer* exists, not whether retrieval was
+    skipped - retrieval always runs, because it is a local file read and caching it would
+    mean an edited SRD file kept serving stale text. ``timeout`` is accepted and ignored,
+    and ``files`` overrides discovery, so callers written against the fetching version
+    keep working.
     """
-    cached = load_cached(question, cache_dir)
-    if cached:
+    if (cached := load_cached(question, cache_dir)) is not None:
         return {
             "passages": cached.get("passages") or [],
             "url": cached.get("url", RULES_INDEX),
@@ -418,23 +775,283 @@ def gather(question: str, *, urls=None, cache_dir=None, timeout: float = 20.0,
             "from_cache": True,
         }
 
-    if urls is not None:
-        candidates = urls
-    else:
-        candidates = candidate_pages(timeout=timeout) if search_all else list(PREFERRED_PAGES)
+    candidates = list(files) if files is not None else candidate_files(search_all=search_all)
+    if not candidates:
+        raise RulesUnavailable(
+            f"No SRD text found at {srd_dir()}. The vendored rules are required for "
+            "lookups; see context/srd/PROVENANCE.md."
+        )
 
-    fallback_url = candidates[0] if candidates else RULES_INDEX
-    for url in candidates:
+    # Every file is scored and the best *match* wins, on the matcher's own score - not on
+    # how much text a file happens to contain, which is a different question entirely and
+    # quietly chose the wrong answer.
+    best = None
+    for path in candidates:
         try:
-            text = fetch_page(url, timeout=timeout)
+            text = markdown_to_text(read_srd(path))
         except RulesUnavailable as e:
-            logging.debug(f"Rules fetch failed for {url}: {e}")
+            logging.debug(f"Skipping {path}: {e}")
             continue
-        found = find_passages(text, question)
-        if found:
-            return {"passages": found, "url": url, "text": "\n\n".join(found),
-                    "from_cache": False}
+        scored, terms = _matched(text, question)
+        qualifying = _qualifies(scored, terms)
+        if not qualifying:
+            continue
+        top = qualifying[0][0]
+        if best is None or top > best[0]:
+            best = (top, _reference(path), qualifying)
 
-    raise RulesUnavailable(
-        f"Could not find anything about '{question}' in the {RULES_HOST} rules."
-    )
+    if best is None:
+        raise RulesUnavailable(
+            f"The 2024 SRD has no section matching '{question}'. The SRD covers the core "
+            "rules, not every option in the Player's Handbook."
+        )
+
+    _score, used, scored = best
+    found = _format(scored)
+    return {"passages": found, "url": used, "text": "\n\n".join(found),
+            "from_cache": False}
+
+
+# --- spell descriptions --------------------------------------------------------
+#
+# ``spells.md`` carries 341 spell descriptions alongside the casting rules, so a spell can
+# be shown from the same vendored corpus a rule is. This is a *direct* lookup, not a
+# search: a spell is named exactly and appears once, so nothing needs ranking.
+
+# The spell section of ``spells.md``. Before it are the general rules of spellcasting,
+# which also use ``####`` headings ("Spell Slots", "Using a Higher-Level Spell Slot") and
+# would otherwise be indexed as spells.
+SPELLS_SECTION = "Spell Descriptions"
+
+# A spell's class line: "_Level 3 Evocation (Sorcerer, Wizard)_". Its presence is what
+# distinguishes a spell from the machinery interleaved among them - "Animated Object",
+# "Actions" and "Traits" are ``####`` headings nested inside the spells that reference
+# them, and they have no level line.
+_SPELL_STATS = re.compile(r"^_Level (\d)[^_]*_\s*$", re.M)
+_SPELL_STATS_CANTRIP = re.compile(r"^_([^_]*Cantrip[^_]*)_\s*$", re.M)
+
+
+def _spells_markdown() -> str:
+    """The ``spells.md`` text, or empty string when it has not been vendored."""
+    path = srd_dir() / "spells.md"
+    if not path.is_file():
+        return ""
+    try:
+        return read_srd(path)
+    except RulesUnavailable:
+        return ""
+
+
+def spell_names() -> list[str]:
+    """Every spell in the vendored SRD, sorted.
+
+    Excludes the non-spell headings that appear within the spell section, so a caller can
+    offer these as a list without offering "Actions" as if it were a spell.
+    """
+    return sorted(_spells_index())
+
+
+def _spells_index() -> dict[str, tuple[str, str]]:
+    """``{lowercased name: (name as written, body)}`` for the vendored SRD's spells.
+
+    Keyed by lowercase so lookups can ignore case, but the name is kept as the SRD writes
+    it because the card shows it. The body excludes the ``####`` heading: the caller
+    already has the name, and keeping it here would print the spell's name twice.
+    """
+    markdown = _spells_markdown()
+    if not markdown:
+        return {}
+
+    start = markdown.find(f"## {SPELLS_SECTION}")
+    if start < 0:
+        # The document's shape changed. Returning nothing is right: indexing the whole
+        # file would offer the casting *rules* as spells.
+        logging.warning(f"{SPELLS_SECTION!r} not found in spells.md; no spells indexed.")
+        return {}
+
+    index: dict[str, tuple[str, str]] = {}
+    # Split on ####, keeping the heading with its body: ["lead", head1, body1, ...].
+    parts = re.split(r"^#### (.+)$", markdown[start:], flags=re.MULTILINE)
+    for i in range(1, len(parts) - 1, 2):
+        name = parts[i].strip()
+        body = parts[i + 1].strip()
+        if not _is_spell_body(body):
+            continue
+        # 13 spells - Augury, Confusion, Prismatic Spray and friends - carry their table
+        # inline as HTML. The renderer has no table syntax, so it would print the markup.
+        index[name.lower()] = (name, tables_to_text(body))
+    return index
+
+
+def _is_spell_body(body: str) -> bool:
+    """Whether a ``####`` body is a spell description rather than nested machinery."""
+    return bool(_SPELL_STATS.search(body) or _SPELL_STATS_CANTRIP.search(body))
+
+
+
+
+
+def find_spell(name: str) -> dict | None:
+    """One spell's description, from the SRD if it has it and the corpus if it does not.
+
+    The SRD is preferred because it is the authority on the 2024 rules, and it is what the
+    `/?` answers are quoted from. But it carries only 339 spells, and the corpus carries
+    544: the difference is the supplements. Thorn Whip, Lightning Lure, Gust, Mold Earth
+    and Mind Sliver are all absent from the SRD, and they are exactly the cantrips a Pact
+    of the Tome Warlock leans on. Answering "not in the SRD" for a spell the app itself
+    just recommended would make every link in the books useless, so the corpus fills the
+    gap and the response says which source it came from.
+
+    Matched case-insensitively and on the name as written, because the corpus and the SRD
+    disagree about branding rather than spelling: the corpus carries "Tenser's Floating
+    Disk" where the SRD has "Floating Disk". Those are genuinely different spells in the
+    SRD's eyes - product identity was removed in 2024 - so the SRD is not searched for a
+    renamed equivalent; the corpus entry is returned instead.
+    """
+    wanted = " ".join(str(name).split()).strip().lower()
+    if not wanted:
+        return None
+
+    found = _spells_index().get(wanted)
+    if found is not None:
+        name, body = found
+        return {
+            "name": name,
+            "text": body,
+            "url": _reference(srd_dir() / "spells.md"),
+            "source": RULES_SOURCE,
+        }
+
+    return _corpus_spell(wanted)
+
+
+def _corpus_spell(wanted: str) -> dict | None:
+    """A spell read from the retrieval corpus, or None if the corpus has no such file."""
+    from . import spells as spells_module
+
+    path = _corpus_spell_paths().get(wanted)
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    return {
+        "name": spells_module.prettify_name(path.stem),
+        "text": normalise_corpus_spell(text),
+        "url": _reference(path),
+        "source": CORPUS_SOURCE,
+    }
+
+
+# The corpus writes a spell's title as a markdown link to D&D Beyond, and its level,
+# school and class list as hashtags: `# [Fireball](https://...)` then
+# `#Level3 #Evocation ( #Sorcerer, #Wizard)`.
+_CORPUS_TITLE = re.compile(r"^#\s*\[([^\]]+)\]\([^)]*\)\s*$", re.M)
+# 133 of the corpus's 544 spells write the title as a bare heading instead of a link.
+_CORPUS_PLAIN_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.M)
+# The corpus links rules terms inline - `[Concentration](https://www.dndbeyond.com/...)` -
+# where the SRD writes them as plain words. The renderer has no link syntax, so the URL
+# would show as literal text.
+_CORPUS_INLINE_LINK = re.compile(r"\[([^\]]+)\]\([^)]*\)")
+# 73 of the corpus's spells cross-reference another spell wiki-style, `[[Wall of Force]]`.
+_CORPUS_WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
+# A spell's stats line names a level or a cantrip; a magic item's names a rarity.
+_CORPUS_LEVEL = re.compile(r"#(?:Level\d+|Cantrip)\b")
+# Five of the corpus's spells indent the tags line by one space, and one (Sapping Sting)
+# omits the class list entirely.
+_CORPUS_TAGS = re.compile(
+    r"^[ \t]*#(\w+)\s+#(\w+)\s*(?:\(\s*([^)]*)\))?\s*$", re.M
+)
+_CORPUS_CLASS = re.compile(r"#\s*([\w' ]+)")
+# The corpus bolds its run-in labels as well as italicising them, and puts the full stop
+# inside the emphasis: `**_Cantrip Upgrade._**`. The SRD writes `_Cantrip Upgrade._`, so
+# the bold is dropped and the label left as the group already reads.
+_CORPUS_RUN_IN = re.compile(r"\*\*_([^_]+)_\*\*")
+
+
+def normalise_corpus_spell(text: str) -> str:
+    """Rewrite a corpus spell into the SRD's shape, so one renderer handles both.
+
+    The two sources describe the same thing in different dialects. The SRD writes a stats
+    line as `_Level 3 Evocation (Sorcerer, Wizard)_`; the corpus writes a markdown link
+    title and a line of hashtags. Left alone, the corpus text renders with its markup
+    showing - a heading reading `[Thorn Whip](https://www.dndbeyond.com/...)` and a
+    paragraph of `#Transmutation #Cantrip ( #Druid)`.
+
+    Normalising here rather than teaching the renderer about both dialects keeps the
+    front end with one format to understand, and keeps the corpus's quirks in the module
+    that already knows about the corpus.
+
+    Only presentation is touched. Every number, range and duration is left exactly as
+    written, because those are what a recommendation is built on.
+    """
+    # The title line is dropped rather than kept: the caller renders the name as the
+    # card's heading, and the SRD's body does not repeat it either. Both spellings of the
+    # title are dropped, and the plain one is matched only at the very start so a `#`
+    # heading further down (a spell's own sub-heading) is left alone.
+    text = _CORPUS_TITLE.sub("", text)
+    text = _CORPUS_PLAIN_TITLE.sub("", text, count=1)
+
+    def stats(match: re.Match[str]) -> str:
+        first, second, classes = match.group(1), match.group(2), match.group(3)
+        # One of the two tags is the level ("Level3" or "Cantrip") and the other the
+        # school; which comes first varies, so identify them rather than assume an order.
+        level = first if first.lower().startswith("level") or first == "Cantrip" else second
+        school = second if level is first else first
+        names = ", ".join(_CORPUS_CLASS.findall(classes or ""))
+        # The SRD puts the level first for a levelled spell but the school first for a
+        # cantrip: "Level 3 Evocation", "Evocation Cantrip". Matching that keeps the two
+        # sources reading identically.
+        # A spell with no class list still reads as a stats line, just a shorter one.
+        suffix = f" ({names})" if names else ""
+        if level == "Cantrip":
+            return f"_{school} Cantrip{suffix}_"
+        return f"_{re.sub(r'^Level(\d+)$', r'Level \1', level)} {school}{suffix}_"
+
+    # The SRD leaves a blank line between the stats line and the first stat; the corpus
+    # does not. Matching it keeps the two sources rendering identically.
+    text = _CORPUS_TAGS.sub(lambda m: stats(m) + "\n", text)
+    text = _CORPUS_RUN_IN.sub(lambda m: f"_{m.group(1)}_", text)
+    # Inline links keep their text and lose their target, which is what the SRD writes.
+    # The wiki form is unwrapped first: its inner brackets would otherwise be left behind
+    # by the markdown pattern, which matches the inner `[Wall of Force]` and not the outer.
+    text = _CORPUS_WIKI_LINK.sub(lambda m: m.group(1), text)
+    text = _CORPUS_INLINE_LINK.sub(lambda m: m.group(1), text)
+    # The corpus separates a run-in label from its sentence with a non-breaking space; the
+    # SRD uses a plain one. Left in, it survives into the rendered paragraph.
+    text = text.replace("\xa0", " ")
+    # Dropping the title leaves the blank line that followed it at the top.
+    return text.strip()
+
+
+@lru_cache(maxsize=1)
+def _corpus_spell_paths() -> dict[str, Path]:
+    """Corpus spell files keyed by folded name, built once.
+
+    Keyed on the prettified name so a lookup matches the same spelling the front end links
+    with, and so "Tenser_s Floating Disk" and "Tenser's Floating Disk" are one key.
+
+    The corpus's `Spells/` directory also holds 22 magic items - Glamerweave, Armblade,
+    Docent and friends - which are not spells and must not be offered as any. They are
+    told apart by their stats line: a spell has a level or the word "Cantrip", an item has
+    a rarity.
+    """
+    from . import spells as spells_module
+
+    root = config.DOCS_DIR_PATH
+    if not root.is_dir():
+        return {}
+    found: dict[str, Path] = {}
+    for path in root.rglob("*.md"):
+        name = spells_module.prettify_name(path.stem)
+        if not name:
+            continue
+        try:
+            head = path.read_text(encoding="utf-8")[:400]
+        except OSError:
+            continue
+        if not _CORPUS_LEVEL.search(head):
+            continue
+        found.setdefault(name.lower(), path)
+    return found

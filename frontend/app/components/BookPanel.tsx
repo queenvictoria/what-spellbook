@@ -19,8 +19,21 @@ const OUTCOMES = ['won', 'lost', 'unused', 'partial'] as const
  * A rating belongs to the book *slot*, not to the file, so re-generating a scenario
  * keeps the history of how that approach actually went. That is why the star row is
  * per book and why the notes field exists.
+ *
+ * `scenario` and `runId` are both needed and are not interchangeable: `/api/ask` keys on
+ * the scenario text, while `/api/runs/{id}/rate` needs the run's id. Rating by scenario
+ * text is ambiguous, because a run is keyed on the scenario *and* the character, level
+ * and book count - so two runs can share a scenario and the wrong one gets rated.
  */
-export function BookPanel({ book, scenario }: { book: Book; scenario: string }) {
+export function BookPanel({
+  book,
+  scenario,
+  runId,
+}: {
+  book: Book
+  scenario: string
+  runId: string | null
+}) {
   const [expanded, setExpanded] = useState(true)
   const [rating, setRating] = useState(book.rating?.score ?? null)
   const [saving, setSaving] = useState(false)
@@ -32,12 +45,18 @@ export function BookPanel({ book, scenario }: { book: Book; scenario: string }) 
 
   const picks = Object.entries(book.picks ?? {})
 
+  // A run that was never persisted has no id to rate against. That happens when no
+  // character is loaded, and the honest thing is to disable the control rather than
+  // let a click fail.
+  const rateable = runId !== null
+
   async function saveScore(score: number) {
+    if (!runId) return
     setRating(score)
     setSaving(true)
     setError(null)
     try {
-      await api.rate(scenarioRunId(scenario), {
+      await api.rate(runId, {
         score,
         book: String(book.index),
       })
@@ -91,9 +110,10 @@ export function BookPanel({ book, scenario }: { book: Book; scenario: string }) 
             <button
               key={score}
               onClick={() => saveScore(score)}
-              disabled={saving}
+              disabled={saving || !rateable}
               aria-label={`Rate ${score} out of 5`}
-              className="p-0.5"
+              title={rateable ? undefined : 'This run was not stored, so it cannot be rated'}
+              className={cn('p-0.5', !rateable && 'cursor-not-allowed opacity-40')}
             >
               <Star
                 className={cn(
@@ -114,7 +134,19 @@ export function BookPanel({ book, scenario }: { book: Book; scenario: string }) 
             <div className="flex flex-wrap gap-1.5">
               {picks.map(([group, names]) => (
                 <Badge key={group} tone="arcane">
-                  {group}: {names.join(', ')}
+                  {group}:{' '}
+                  {names.map((name, i) => (
+                    <span key={name}>
+                      {i > 0 && ', '}
+                      <a
+                        href={`/rules?spell=${encodeURIComponent(name)}`}
+                        className="underline decoration-dotted underline-offset-2 hover:text-arcane-200"
+                        title={`Look up ${name} in the rules`}
+                      >
+                        {name}
+                      </a>
+                    </span>
+                  ))}
                 </Badge>
               ))}
             </div>
@@ -144,7 +176,7 @@ export function BookPanel({ book, scenario }: { book: Book; scenario: string }) 
 
           {error && <p className="text-xs text-red-300">{error}</p>}
 
-          <OutcomeRow book={book} scenario={scenario} />
+          <OutcomeRow book={book} runId={runId} />
         </CardContent>
       )}
     </Card>
@@ -156,7 +188,7 @@ export function BookPanel({ book, scenario }: { book: Book; scenario: string }) 
  * different questions: a book can be well built and still lose, and that is exactly the
  * distinction that makes the record worth keeping.
  */
-function OutcomeRow({ book, scenario }: { book: Book; scenario: string }) {
+function OutcomeRow({ book, runId }: { book: Book; runId: string | null }) {
   const [outcome, setOutcome] = useState(book.rating?.outcome ?? null)
   const [notes, setNotes] = useState(book.rating?.notes ?? '')
   const [saved, setSaved] = useState(false)
@@ -165,15 +197,15 @@ function OutcomeRow({ book, scenario }: { book: Book; scenario: string }) {
   // A rating is keyed on a score, so an outcome cannot be stored before one exists.
   // Substituting a default would record a judgement the user never made.
   const score = book.rating?.score ?? null
-  const disabled = score === null
+  const disabled = score === null || runId === null
 
   async function save(next: string) {
-    if (score === null) return
+    if (score === null || !runId) return
     setOutcome(next)
     setSaved(false)
     setFailed(false)
     try {
-      await api.rate(scenarioRunId(scenario), {
+      await api.rate(runId, {
         score,
         book: String(book.index),
         outcome: next,
@@ -219,11 +251,4 @@ function OutcomeRow({ book, scenario }: { book: Book; scenario: string }) {
   )
 }
 
-/**
- * The API identifies a run by an opaque id, but the scenario screen only knows the text
- * it sent. Passing the text is supported by the backend on purpose, so the screen does
- * not have to fetch the history to attach a rating.
- */
-function scenarioRunId(scenario: string) {
-  return encodeURIComponent(scenario)
-}
+

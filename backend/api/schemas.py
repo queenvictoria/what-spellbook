@@ -42,12 +42,16 @@ class GenerationSchema(BaseModel):
     from_cache: bool = False
     model: str | None = None
     timings: TimingsSchema = Field(default_factory=TimingsSchema)
+    # The stored run's id, so a client can rate a book without re-deriving it. Null when
+    # the run was not persisted, which is the case with no character loaded.
+    run_id: str | None = None
 
     @classmethod
     def from_generation(cls, generation) -> "GenerationSchema":
         timings = generation.timings or {}
         return cls(
             scenario=generation.scenario,
+            run_id=generation.run_id,
             answer=generation.answer,
             books=[
                 BookSchema(
@@ -90,6 +94,26 @@ class AnswerSchema(BaseModel):
             field_name=answer.field_name, citations=list(answer.citations or []),
             from_cache=answer.from_cache,
         )
+
+
+class SpellSchema(BaseModel):
+    """One spell, quoted verbatim from a vendored file.
+
+    Read straight from the file rather than generated, so this is the one answer in the
+    API that cannot be wrong: there is no model between the text and the caller. That is
+    the point - a spell's damage dice and casting time are the numbers a recommendation is
+    built on, and a paraphrase of them is worse than no answer.
+
+    `source` says which file it came from. The SRD is preferred and is the 2024 authority;
+    the retrieval corpus fills in the ~200 spells the SRD does not carry, which includes
+    cantrips the app itself recommends. The two are not equally authoritative and the
+    caller is told which it got.
+    """
+
+    name: str
+    text: str
+    url: str
+    source: str
 
 
 class ScenarioRequest(BaseModel):
@@ -140,6 +164,8 @@ class RunBooksSchema(BaseModel):
     scenario: str
     created_at: str | None = None
     books: list[BookSchema] = Field(default_factory=list)
+    # Carried so a book opened from history is rateable without a second lookup.
+    run_id: str | None = None
 
 
 class HealthSchema(BaseModel):

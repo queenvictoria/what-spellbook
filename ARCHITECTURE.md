@@ -23,7 +23,7 @@
      ┌──────────┬──────────┬───────┴────┬──────────┬──────────┐
      ▼          ▼          ▼            ▼          ▼          ▼
  retrieval  characters  prompts      cache     lookup     rules
- (Chroma)    (YAML)    (context/)   (files)    (sheet)   (5e24srd)
+ (Chroma)    (YAML)    (context/)   (files)    (sheet)  (context/srd)
 ```
 
 The single rule this diagram encodes: **logic lives in `backend/libs/`, and only
@@ -51,7 +51,7 @@ import its own parent would be a strange thing to write down.
 | `characters.py` | YAML sheet loading and rendering to prompt text |
 | `cache.py` | The run cache: keys, layout, read/write, ratings |
 | `lookup.py` | Deterministic sheet answers (`/c`) and duplicate-spell origins |
-| `rules.py` | 2024 SRD retrieval for `/?`: host allow-list, HTML to text, heading matching, question cache |
+| `rules.py` | 2024 SRD retrieval for `/?` and spell descriptions: source guard, Markdown to text, heading matching, question cache |
 | `timing.py` | Per-phase aggregation driving the ETA and the log summary |
 | `spells.py`, `watching.py`, `llm.py`, `config.py` | Spell parsing, index staleness, model handle, environment |
 
@@ -135,20 +135,89 @@ Retrying a 422 is pointless; retrying a 502 is not.
 
 ## Rules source policy
 
-**Only 5e24srd.com.** `rules.check_host` refuses anything else before a request is made,
-and `rules.load_cached` rejects a cached answer whose source is not that host.
+**Only the vendored SRD**, in `context/srd/`. It is a copy of SRD 5.2.1 converted to
+Markdown, redistributed under **CC-BY-4.0**, which explicitly permits copying and
+redistribution with attribution. `context/srd/PROVENANCE.md` carries the required
+attribution and the exact source.
 
-This is not pedantry. 5thsrd.org carries the **2014** rules, whose own banner points at
-5e24srd.com, and several warlock rules differ between editions: 2014 grants three
+Three guards are kept as real code rather than comments, because there are now two ways to
+introduce the wrong rules - a URL and a file:
+
+* `rules.check_source` refuses a known-wrong source before any text is read, so a 2014 file
+  added by mistake fails loudly instead of answering silently.
+* `rules.load_cached` rejects a cached answer whose `source` is not the vendored corpus.
+* `test_rules.py` asserts both.
+
+The edition guard is not pedantry. 5thsrd.org carries the **2014** rules, whose own banner
+points at 5e24srd.com, and several warlock rules differ between editions: 2014 grants three
 Eldritch Invocations and a free Pact of the Tome, while 2024 grants five invocations with
-the Tome costing one. A recommendation built on the wrong edition is wrong in a way
-nobody notices until the table.
+the Tome costing one. A recommendation built on the wrong edition is wrong in a way nobody
+notices until the table.
 
-The 2024 SRD is also **not the whole 2024 rulebook**. Verified by crawling every page:
-Cover, Hiding, Difficult Terrain, Travel Pace and Dropping Prone have their own headings;
-Short Rest, Long Rest, the Grappled condition and the Rules Glossary are **absent**. When
-the rule is missing the honest outcome is to say so, which is why `/?` can return 404 and
+### Why vendored files rather than the website
+
+`/?` previously fetched from `5e24srd.com`. That site serves SRD 5.2 but **omits large
+parts of it** - verified by crawling every page for headings. Short Rest, Long Rest, the
+Grappled condition and the entire Rules Glossary were **absent**, and the pages that
+remained cross-referenced the glossary for their definitions. So a rules answer drawn from
+the website was systematically incomplete, and could not be fixed by crawling harder.
+
+`context/srd/` removes that gap and the network dependency with it. Scraping is gone:
+`html_to_text`, `fetch_page`, `candidate_pages` and `section_pages` no longer exist.
+
+### How a question is matched
+
+The matcher's contract is that **the answer is found under a heading that names it**. This
+is what keeps a catalogue entry from answering a rule question, and it took several
+measured corrections to make it true:
+
+* Headings are promoted from Markdown `##`-`####`, from `<summary>` groups, and from
+  run-in labels (`_Shove._ The target...`) - the last of which the SRD uses 240-odd times
+  for the parts and cases of a rule.
+* **Tables are converted, not stripped.** The rules genuinely live in them: the degrees of
+  cover are a table, the actions are a table, and the surrounding prose only says "as
+  detailed in the Cover table". Stripping the markup would leave a confident answer with
+  the +2 and +5 bonuses missing.
+* Terms are weighted by how many sections of the SRD contain them, so a heading match on a
+  word the book uses everywhere ("creature", "spell") counts for almost nothing while one
+  on a distinctive word ("cover", "shove") identifies the rule.
+* A question is answerable only when the SRD has a heading naming its most distinctive
+  term. Terms the SRD never uses weigh nothing, because treating absence as maximal rarity
+  would turn "not found" into "found".
+
+The SRD is still **not the whole 2024 rulebook** (no subclasses, few feats, neither
+two-weapon fighting nor flanking), so a rule can legitimately be missing. When it is, the
+honest outcome is to say so, which is why `/?` can return 404 and
 why its prompt instructs the model to report the gap rather than guess.
+
+### Spell descriptions
+
+Every spell mention in the UI links to `/rules?spell=Name`, which is served by
+`GET /api/spell`. The SRD is the authority and is searched first, but it carries only 339
+spells while the retrieval corpus carries 522, and the difference is exactly the
+supplements a Pact of the Tome Warlock leans on: Thorn Whip, Lightning Lure, Gust, Mold
+Earth, Mind Sliver and Sapping Sting are all absent from the SRD. A link that 404s for the
+cantrips the app itself just recommended is worse than no link, so `find_spell` falls back
+to the corpus and the response's `source` says which one answered.
+
+The two sources describe the same thing in different dialects, and `normalise_corpus_spell`
+rewrites the corpus's into the SRD's so one renderer handles both. The corpus's quirks are
+not uniform, which is why the normaliser is measured against all 522 files rather than a
+sample:
+
+* Three title spellings - a markdown link, a bare `# Name`, and one indented tags line.
+* 343 spells link rules terms inline (`[Concentration](https://...)`), 73 cross-reference
+  another spell wiki-style (`[[Wall of Force]]`), and the wiki form must be unwrapped
+  *first* or the markdown pattern matches the inner brackets and leaves the outer behind.
+* Run-in labels are bolded as well as italicised, with the full stop inside the emphasis
+  and a non-breaking space after it.
+* 22 magic items - Glamerweave, Armblade, Docent - sit in the corpus's `Spells/` directory
+  and are told apart by their stats line: a spell names a level or a cantrip, an item names
+  a rarity.
+
+The SRD side needs one conversion of its own: 13 spells carry their table inline as HTML,
+and Confusion's entire behaviour table is one of them. `tables_to_text` renders them as
+sentences, so the numbers survive and no markup reaches the reader.
 
 ## Model and embedding configuration
 
@@ -167,9 +236,11 @@ depends on which model answers, so changing it changes cost and quality, not beh
   will hit, and testing the service directly cannot catch it.
 
 Where a fake would otherwise hide the thing under test, the real path is kept.
-`test_rules_answers_are_grounded_and_cached` stubs `rules.fetch_page` rather than
-`rules.gather`, because replacing `gather` would replace the cache lookup the test exists
-to verify.
+`test_rules_answers_are_grounded_and_cached` stubs only the *model call* and runs real
+retrieval, because the cache is downstream of retrieval - a stubbed retrieval would fake
+the very thing the test exists to verify. An earlier version went further and stubbed the
+file reader too; with a one-line stub corpus the term-frequency model the matcher ranks
+headings with collapses, and the test began asserting a 404 instead of the answer.
 
 Tests use `create_app(vector_db=FakeDB(), backend=FakeLLM())`, so routing, serialisation
 and error mapping are all real while the index and the model are not.

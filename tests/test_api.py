@@ -306,41 +306,81 @@ def test_rating_an_unknown_book_is_404(api):
     assert response.status_code == 404
 
 
+def test_a_generated_run_reports_its_id(api):
+    """The front end rates by id, so a generation has to carry one.
+
+    Rating by scenario text is ambiguous: a run is keyed on the scenario *and* the
+    character, level and book count, so two runs can share a scenario and the wrong one
+    gets rated. The id is the only unambiguous handle.
+    """
+    body = api.post("/api/scenario", json={"scenario": SCENARIO}).json()
+    assert body["run_id"] == _run_id(api)
+
+
+def test_a_replayed_run_reports_its_id(api):
+    """A run reopened from history must be rateable too, so replay carries the id."""
+    api.post("/api/scenario", json={"scenario": SCENARIO})
+    run = _run_id(api)
+    assert api.get(f"/api/runs/{run}").json()["run_id"] == run
+
+
+def test_a_run_id_rates_the_run_it_names(api):
+    """The id from the generation is the one the rate endpoint accepts."""
+    body = api.post("/api/scenario", json={"scenario": SCENARIO}).json()
+    rated = api.post(f"/api/runs/{body['run_id']}/rate",
+                     json={"score": 4, "book": "1"}).json()
+    assert len(rated) == 1
+    assert rated[0]["rating"]["score"] == 4
+
+
+def test_a_run_id_is_not_the_scenario_text(api):
+    """The id must be opaque, or a client could pass the scenario and double-encode it.
+
+    This is the bug this contract exists to prevent: the front end encoded the scenario
+    text and the client encoded it again, so the request went to a run named
+    "Three%2520kobolds..." and 404'd.
+    """
+    body = api.post("/api/scenario", json={"scenario": SCENARIO}).json()
+    assert body["run_id"] != SCENARIO
+    assert "%" not in body["run_id"]
+
+
 # --- rules ---
 
 
 def test_rules_answers_are_grounded_and_cached(api, monkeypatch):
-    """The second ask must be answered from stored rule text, not re-fetched.
+    """The second ask must be answered from the stored answer, not asked again.
 
-    ``rules.fetch_page`` is stubbed rather than ``rules.gather`` on purpose: replacing
-    ``gather`` would replace the cache lookup this test exists to verify.
+    Deliberately *not* stubbing retrieval. The whole point of this test is the cache, and
+    the cache is downstream of retrieval, so a stub that fakes the retrieved text also
+    fakes the thing under test - and worse, a stub corpus changes the term-frequency model
+    the matcher ranks headings with, which is how an earlier version of this test started
+    asserting a 404. Only the model call is stubbed.
     """
-    fetched = []
+    calls = []
 
-    def fake_fetch_page(url, **kwargs):
-        fetched.append(url)
-        return "## Cover\nWalls and trees provide cover."
+    def fake_invoke(*args, **kwargs):
+        calls.append(args)
+        return "Walls, trees and other obstacles provide cover."
 
-    monkeypatch.setattr(rules, "fetch_page", fake_fetch_page)
-    monkeypatch.setattr(
-        rules, "candidate_pages",
-        lambda *a, **k: ["https://5e24srd.com/playing-the-game/combat.html"],
-    )
-    monkeypatch.setattr(
-        "backend.libs.llm.invoke",
-        lambda *a, **k: "Walls and trees provide cover. Note the table is not shown here.",
-    )
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
 
     first = api.get("/api/rules", params={"question": "how does cover work"}).json()
     assert first["source"] == "rules"
-    assert first["citations"] == ["https://5e24srd.com/playing-the-game/combat.html"]
     assert first["from_cache"] is False
-    assert len(fetched) == 1
+    # Either the glossary's one-line "Cover" or the chapter's longer one, whichever the
+    # matcher prefers - both are the rule. What the citation must be is a *file in the
+    # vendored SRD*, not a URL: the source is local now, and a URL here would look
+    # clickable and lead nowhere.
+    assert len(first["citations"]) == 1
+    assert first["citations"][0].startswith("context/srd/")
+    assert first["citations"][0].endswith(".md")
+    assert len(calls) == 1
 
     second = api.get("/api/rules", params={"question": "how does cover work"}).json()
     assert second["from_cache"] is True
     assert second["answer"] == first["answer"]
-    assert len(fetched) == 1, "the second ask must not have hit the network"
+    assert len(calls) == 1, "the second ask must not have reached the model"
 
 
 def test_rules_reports_a_missing_rule_as_404(api, monkeypatch):
@@ -378,3 +418,50 @@ def test_health_still_answers_when_no_character_loads(tmp_path, monkeypatch):
     body = TestClient(app).get("/api/health").json()
     assert body["status"] == "ok"
     assert body["character"] is None
+
+
+def test_spell_returns_the_vendored_text_verbatim(api):
+    """Deterministic, so it cannot hallucinate: no model sits between SRD and caller."""
+    response = api.get("/api/spell", params={"name": "Fireball"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "Fireball"
+    assert "8d6 Fire damage" in body["text"]
+    assert body["url"] == "context/srd/spells.md"
+    assert body["source"] == "vendored-srd-5.2.1"
+
+
+def test_a_spell_in_neither_source_is_a_404_with_the_reason(api):
+    """A 404 now means a genuine miss, not a branding difference.
+
+    The corpus is searched after the SRD, so "Tenser's Floating Disk" resolves from the
+    corpus. Only a name in neither source reaches this branch, and the message has to say
+    so rather than implying the SRD is the only place a spell could be.
+    """
+    response = api.get("/api/spell", params={"name": "Flaming Death Ray"})
+    assert response.status_code == 404
+    assert "Flaming Death Ray" in response.json()["detail"]
+
+
+def test_a_corpus_only_spell_is_served_from_the_corpus(api):
+    """Thorn Whip is absent from the SRD but is a cantrip this app recommends.
+
+    Answering 404 for it would make every spell link in the books useless, so the corpus
+    fills the gap and the response says which source it came from.
+    """
+    response = api.get("/api/spell", params={"name": "Thorn Whip"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["source"] == "retrieval-corpus"
+    assert "1d6 Piercing damage" in body["text"]
+
+
+def test_an_srd_spell_prefers_the_srd(api):
+    """The SRD is the 2024 authority, so it wins when both sources have the spell."""
+    body = api.get("/api/spell", params={"name": "Fireball"}).json()
+    assert body["source"] == "vendored-srd-5.2.1"
+    assert body["url"] == "context/srd/spells.md"
+
+
+def test_spell_requires_a_name(api):
+    assert api.get("/api/spell", params={"name": ""}).status_code == 422

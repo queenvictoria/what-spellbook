@@ -38,6 +38,8 @@ export interface Generation {
   from_cache: boolean
   model: string | null
   timings: Timings
+  /** The stored run's id, for rating a book. Null when the run was not persisted. */
+  run_id: string | null
 }
 
 export interface RunSummary {
@@ -56,6 +58,8 @@ export interface RunBooks {
   scenario: string
   created_at: string | null
   books: Book[]
+  /** The run's id, so a book opened from history is rateable. */
+  run_id: string | null
 }
 
 /**
@@ -70,6 +74,19 @@ export interface Answer {
   field_name: string | null
   citations: string[]
   from_cache: boolean
+}
+
+/**
+ * One spell, quoted from the vendored SRD. Mirrors `SpellSchema`.
+ *
+ * Unlike an `Answer` there is no `source` ambiguity: this is read straight from the SRD
+ * file, so it cannot be a model's guess about what the spell says.
+ */
+export interface Spell {
+  name: string
+  text: string
+  url: string
+  source: string
 }
 
 export interface Character {

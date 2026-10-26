@@ -6,6 +6,7 @@ import type {
   Health,
   RunBooks,
   RunSummary,
+  Spell,
 } from './types'
 
 /**
@@ -113,6 +114,12 @@ export const api = {
     }),
 
   rules: (question: string) => request<Answer>(`/api/rules${query({ question })}`),
+
+  /** One spell's own text. A 404 means the SRD has no spell by that name. */
+  spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),
+
+  /** Every spell name in the corpus, used to decide which prose mentions to link. */
+  spells: () => request<string[]>('/api/spells'),
 
   history: (character?: string) =>
     request<RunSummary[]>(`/api/history${query({ character })}`),
