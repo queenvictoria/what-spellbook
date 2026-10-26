@@ -422,8 +422,8 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [ ] Restructure the book prompt: fold the item pairings into each book, make the
       invocations one run-level line, promote the gotchas into their own block. Section 4
       is ~38% of all prose and its invocation half repeats identically in every book.
-- [ ] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
-- [ ] Opening in the scenario screen should show the results as well as the prompt.
+- [x] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
+- [x] Opening in the scenario screen should show the results as well as the prompt.
 - [ ] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
 - [ ] The pull out drawer of spells should have a search box at the top to search all spells.
 - [ ] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.

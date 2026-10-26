@@ -1,7 +1,7 @@
 import { Loader2 } from 'lucide-react'
 
 import { PHASES, PHASE_LABELS } from '@/api/types'
-import { formatSeconds } from '@/lib/format'
+import { formatSeconds, progressPercent } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
 /**
@@ -22,7 +22,7 @@ export function StageProgress({
   elapsed: number
   estimate: number | null
 }) {
-  const percent = estimate ? Math.min(99, (elapsed / estimate) * 100) : null
+  const percent = progressPercent(elapsed, estimate)
 
   return (
     <div className="space-y-2">
@@ -54,7 +54,8 @@ export function StageProgress({
       <div className="h-1.5 overflow-hidden rounded-full bg-void-800">
         <div
           className="h-full rounded-full bg-arcane-500 transition-[width] duration-500"
-          style={{ width: `${percent ?? 5}%` }}
+          // The bar cannot draw past full, so it caps where the readout keeps counting.
+          style={{ width: `${Math.min(100, percent ?? 5)}%` }}
         />
       </div>
 
@@ -65,10 +66,16 @@ export function StageProgress({
 
 function summary(elapsed: number, estimate: number | null) {
   const parts = [`${formatSeconds(elapsed)} elapsed`]
-  if (estimate !== null) {
-    const percent = Math.min(99, (elapsed / estimate) * 100)
+  if (estimate !== null && estimate > 0) {
+    const percent = (elapsed / estimate) * 100
     parts.push(`${percent.toFixed(0)}%`)
-    parts.push(`${formatSeconds(Math.max(0, estimate - elapsed))} left`)
+    if (percent < 100) {
+      parts.push(`${formatSeconds(estimate - elapsed)} left`)
+    } else {
+      // Past the estimate there is no time left to report, only the overrun. Saying
+      // "0.0s left" would read as "about to finish", which is the opposite of the truth.
+      parts.push(`${formatSeconds(elapsed - estimate)} over`)
+    }
     parts.push(`expected ~${formatSeconds(estimate)}`)
   }
   return parts.join(' · ')
