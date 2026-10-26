@@ -86,8 +86,8 @@ class SpellbookService:
         self.character_text = characters.format_character(self.character)
         self.db_version = config.INDEX_VERSION if db_version is None else db_version
         self.refresh = refresh
-        self.context_dir = context_dir or config.CONTEXT_DIR
-        self.cache_dir = cache_dir or config.CACHE_DIR
+        self.context_dir = context_dir or config.CONTEXT_DIR_PATH
+        self.cache_dir = cache_dir or config.CACHE_DIR_PATH
         self.llm = backend if backend is not None else llm.build_llm()
         self.rule_context = (
             prompts.load_rule_context(self.character, self.context_dir) if self.character else ""

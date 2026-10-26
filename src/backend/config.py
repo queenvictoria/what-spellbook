@@ -36,6 +36,7 @@ INDEX_VERSION = 3
 RETRIEVAL_K = 60
 FULL_TEXT_SPELLS = 12
 CONTEXT_DIR = "context"
+
 # Generated books are cached here, keyed by character/level/party/DB version/scenario.
 CACHE_DIR = ".cache"
 
@@ -98,8 +99,18 @@ def select_model(env=None) -> tuple[str, str]:
 def resolve(path) -> Path:
     """Turn a configured relative path into an absolute one under the repo root.
 
-    A bare relative path would resolve against the process CWD, so running the CLI
-    from another directory would silently read a different index or character folder.
+    A bare relative path resolves against the *process* CWD, so running the CLI from
+    another directory would silently read a different index, character folder, context
+    directory or cache. Every configured path must go through here.
     """
     candidate = Path(path)
     return candidate if candidate.is_absolute() else ROOT / candidate
+
+
+# Resolved once at import so every consumer gets an absolute path regardless of the
+# directory the CLI was launched from. Preferred over the bare constants above.
+DOCS_DIR_PATH = resolve(DOCS_DIR)
+DB_DIR_PATH = resolve(DB_DIR)
+CACHE_DIR_PATH = resolve(CACHE_DIR)
+CONTEXT_DIR_PATH = resolve(CONTEXT_DIR)
+CHARACTERS_DIR_PATH = resolve(CHARACTERS_DIR)

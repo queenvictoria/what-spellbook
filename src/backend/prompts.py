@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from . import config
+
 # Rule files that always apply, regardless of class.
 BASE_CONTEXT_FILES = ("spells.md",)
 
@@ -84,13 +86,13 @@ def context_files_for(character: dict) -> list[str]:
     return wanted
 
 
-def load_rule_context(character: dict, context_dir="context") -> str:
+def load_rule_context(character: dict, context_dir=None) -> str:
     """Read and concatenate the applicable context files.
 
     Returns an empty string when nothing is found, so a missing ``context/``
     directory degrades to "no rules supplied" rather than crashing the REPL.
     """
-    root = Path(context_dir)
+    root = Path(context_dir) if context_dir is not None else config.CONTEXT_DIR_PATH
     if not root.is_dir():
         return ""
 

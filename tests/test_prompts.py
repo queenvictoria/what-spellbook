@@ -122,7 +122,7 @@ def test_load_rule_context_annotates_sources(tmp_path):
 
 def test_repo_context_directory_resolves_for_lois():
     """Guard against the context/ layout drifting away from the templates."""
-    context = prompts.load_rule_context(LOIS, "context")
+    context = prompts.load_rule_context(LOIS)
     assert "Pact of the Tome" in context
     assert "Celestial" in context
 

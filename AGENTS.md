@@ -558,6 +558,22 @@ the answer is printed, because it is the record used for post-play ratings, and 
 
 `.cache/` is gitignored: it is user data, like `data/`.
 
+- **A relative path resolves against the process CWD, not the repo.** `.cache` and
+  `context` were the only configured paths never passed through `config.resolve()`,
+  while the index, docs and character directories were. So launching the CLI from
+  anywhere other than the repo root silently wrote books into *that* directory and
+  loaded an empty rules context — the symptom was "the cache isn't being created",
+  because it was being created elsewhere. Prefer the resolved constants
+  (`CACHE_DIR_PATH`, `CONTEXT_DIR_PATH`, …); the bare names still exist for the
+  import-compatibility shim only.
+- **Test the CWD, not just the code.** No unit test could catch this: every test ran
+  with the repo root as `cwd`. The regression test launches a real subprocess from a
+  `tmp_path` and asserts no `.cache` appears there.
+- **Clean up with `rm -rf .cache` and you destroy the user's history.** It looks like a
+  build artifact, but it is the record of every run and rating — the thing the whole
+  project is trying to accumulate. Verify against a throwaway `--cache-dir`/temp path,
+  and never delete the real one during development.
+
 ### Choosing the model: one setting, inferred backend
 
 `LLM_MODEL` picks the reasoning model for both backends. Which backend it means is
