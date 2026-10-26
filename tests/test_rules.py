@@ -163,7 +163,7 @@ def test_a_table_caption_does_not_split_its_section():
         "### Cover\n\nAs detailed in the Cover table...\n\n"
         "**Cover**\n\n<table><tbody><tr><td>Half</td><td>+2 AC</td></tr></tbody></table>"
     )
-    headings = [heading for heading, _body in rules._sections(rules.markdown_to_text(markdown))]
+    headings = [h for h, _body, _parent in rules._sections(rules.markdown_to_text(markdown))]
     assert headings.count("Cover") == 1
 
 
@@ -178,9 +178,54 @@ def test_run_in_labels_become_sections():
         "_Shove._ The target must succeed on a Strength saving throw.\n\n"
         "_Grapple._ The target must succeed on a Strength saving throw."
     )
-    headings = [heading for heading, _body in rules._sections(rules.markdown_to_text(markdown))]
+    sections = rules._sections(rules.markdown_to_text(markdown))
+    headings = [h for h, _body, _parent in sections]
     assert "Shove" in headings
     assert "Grapple" in headings
+
+
+def test_a_run_in_label_is_recorded_as_a_part_of_its_rule():
+    """Each promoted label points at the rule its heading introduced.
+
+    This link is what lets retrieval return a rule whole. It has to be a real heading:
+    the label is promoted to a *distinct* marker level so the parent is never another
+    label, which would have grouped unrelated rules under whichever part happened to be
+    their nearest neighbour.
+    """
+    markdown = (
+        "#### Grappling\n\nA creature can grapple another creature.\n\n"
+        "_Ending a Grapple._ A Grappled creature can use its action to escape.\n\n"
+        "_Rolling the Die._ A d20 is rolled."
+    )
+    sections = rules._sections(rules.markdown_to_text(markdown))
+    headings = [h for h, _body, _parent in sections]
+    grappling = headings.index("Grappling")
+    parent_of = {heading: parent for heading, _body, parent in sections}
+    assert parent_of["Grappling"] == -1
+    assert parent_of["Ending a Grapple"] == grappling
+    assert parent_of["Rolling the Die"] == grappling
+
+
+def test_a_part_stays_a_part_across_a_nested_case():
+    """A label under a label attaches to the same rule, not to its sibling.
+
+    Conditions define their effects as labels, and effects are labels too, so the parent
+    link must survive two levels of promotion - otherwise "Speed 0" would be grouped with
+    "Grappled [Condition]" only when it happened to be listed first.
+    """
+    markdown = (
+        "#### Prone [Condition]\n\nWhile Prone, you experience these effects.\n\n"
+        "_Speed 0._ Your Speed is 0.\n\n"
+        "_Attacks Affected._ You have Disadvantage.\n\n"
+        "#### Unrelated\n\nA different rule entirely."
+    )
+    sections = rules._sections(rules.markdown_to_text(markdown))
+    headings = [h for h, _body, _parent in sections]
+    prone = headings.index("Prone [Condition]")
+    parent_of = {heading: parent for heading, _body, parent in sections}
+    assert parent_of["Speed 0"] == prone
+    assert parent_of["Attacks Affected"] == prone
+    assert parent_of["Unrelated"] == -1
 
 
 def test_a_bolded_sentence_opening_is_not_promoted():
@@ -190,9 +235,13 @@ def test_a_bolded_sentence_opening_is_not_promoted():
     paragraph is split into a bogus heading and a fragment.
     """
     markdown = "#### X\n\n**Note** this is prose that merely starts boldly."
-    headings = [heading for heading, _body in rules._sections(rules.markdown_to_text(markdown))]
+    sections = rules._sections(rules.markdown_to_text(markdown))
+    headings = [h for h, _body, _parent in sections]
     assert "X" in headings
     assert not any(heading.startswith("Note") for heading in headings)
+    # A promoted label that was skipped must not leave a parent behind for a section that
+    # was never created.
+    assert all(parent in (-1, *range(len(sections))) for _h, _b, parent in sections)
 
 
 # --- term weighting ------------------------------------------------------------
@@ -247,10 +296,21 @@ def test_a_word_absent_from_the_srd_weighs_nothing():
     ],
 )
 def test_a_rule_question_is_answered_from_the_heading_that_names_it(question, heading):
-    """The heading is the contract: the passage is the SRD's text and will change."""
+    """The heading is the contract: the passage is the SRD's text and will change.
+
+    The passage is the top-ranked *rule*, which may be several sections rendered together,
+    so the heading is looked up among them rather than only in the first line. "how does
+    grappling work" returns the whole Grappling rule, whose parts include the heading
+    named here.
+    """
     result = rules.gather(question)
-    first = result["passages"][0].splitlines()[0]
-    assert heading.lower() in first.lower(), f"{question!r} answered from {first!r}"
+    headings = [
+        line.removeprefix("## ")
+        for line in result["passages"][0].splitlines()
+        if line.startswith("## ")
+    ]
+    assert any(heading.lower() in h.lower() for h in headings), \
+        f"{question!r} answered from {headings!r}"
 
 
 @pytest.mark.parametrize(
@@ -344,6 +404,61 @@ def test_the_best_match_wins_over_the_longest_passage():
     assert "long rest" in result["passages"][0].splitlines()[0].lower()
 
 
+def test_a_matched_rule_comes_back_with_its_later_parts():
+    """A rule's parts are retrieved together, not ranked against each other.
+
+    The SRD defines "Grappling" as a lead sentence followed by run-in parts, and the part
+    that says how to *end* a grapple repeats the word far less than the opening does. Ranked
+    independently, the opening three parts filled the passage limit and the escape rules
+    were cut - so "how does grappling work" returned a definition of grappling that stopped
+    before saying what to do about one. Silently: nothing in the passage said it was partial.
+    """
+    text = rules.gather("how does grappling work")["passages"][0]
+    assert "Ending a Grapple" in text
+    assert "escape DC" in text
+
+
+def test_a_condition_comes_back_with_all_of_its_effects():
+    """"Grappled [Condition]" defines its effects as run-in parts, including "Speed 0".
+
+    The effects are the whole of the entry, so returning "While you have the Grappled
+    condition, you experience the following effects." on its own promises effects and
+    supplies none.
+    """
+    passages = rules.gather("how does grappling work")["passages"]
+    condition = next(p for p in passages if p.startswith("## Grappled [Condition]"))
+    for effect in ("Speed 0", "Attacks Affected", "Movable"):
+        assert effect in condition
+
+
+def test_a_part_is_not_folded_into_a_heading_that_is_off_topic():
+    """Its own heading wins when the heading above it does not answer the question.
+
+    The stat block and the wizard's "Spellcasting" feature both contain dozens of promoted
+    parts, and their headings match nothing in the question. Folding on the parent link
+    alone returned the entire stat block for "what is a bonus action" and the whole level 1
+    feature for "what is a wizard's spellbook" - the answer buried in the middle of it.
+    """
+    bonus_action = rules.gather("what is a bonus action")["passages"][0]
+    assert bonus_action.splitlines()[0] == "## Bonus Actions"
+
+    spellbook = rules.gather("what is a wizard's spellbook")["passages"][0]
+    assert spellbook.splitlines()[0] == "## Spellbook"
+    assert "Cantrips" not in spellbook
+
+
+def test_a_part_of_a_rule_is_still_reachable_on_its_own():
+    """Grouping must not undo the promotion: "Shove" is a rule in its own right.
+
+    "Shove" is only ever a run-in label under "Unarmed Strike", so folding it back
+    unconditionally would leave the question with nothing headed "Shove" to match - the
+    exact problem promoting run-in labels solved.
+    """
+    result = rules.gather("how do I shove a creature")
+    assert result["passages"][0].splitlines()[0] == "## Shove"
+    assert "Strength or Dexterity saving throw" in result["passages"][0]
+
+
 # --- caching -------------------------------------------------------------------
 
 
@@ -371,12 +486,38 @@ def test_a_cached_answer_from_the_old_source_is_not_reused(tmp_path):
     assert result["from_cache"] is False
 
 
+def test_an_answer_from_an_older_retrieval_is_not_reused(tmp_path):
+    """Changing *which* passages a question returns must retire its cached answer.
+
+    The source file is untouched and still says ``vendored-srd-5.2.1``, so the source
+    check alone cannot see it. An answer written from the older passages would keep being
+    served with the *new* passages reported alongside it, which is worse than a stale
+    answer on its own: the citation would contradict the text it was meant to support.
+    """
+    import json
+
+    path = rules.entry_path("how does grappling work", tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "question": "how does grappling work",
+        "answer": "A grappled creature has Speed 0.",
+        "passages": ["## Grappling"],          # the pre-grouping, truncated passages
+        "url": "context/srd/rules-glossary.md",
+        "source": rules.RULES_SOURCE,
+        "retrieval_version": rules.RETRIEVAL_VERSION - 1,
+    }))
+
+    assert rules.load_cached("how does grappling work", tmp_path) is None
+    assert rules.gather("how does grappling work", cache_dir=tmp_path)["from_cache"] is False
+
+
 def test_an_answer_is_cached_under_the_current_source(tmp_path):
     rules.save_cached("what is a short rest", "One hour of downtime.", passages=["## Short Rest"],
                       url="context/srd/rules-glossary.md", cache_dir=tmp_path)
     entry = rules.load_cached("what is a short rest", tmp_path)
     assert entry is not None
     assert entry["source"] == rules.RULES_SOURCE
+    assert entry["retrieval_version"] == rules.RETRIEVAL_VERSION
     assert entry["answer"] == "One hour of downtime."
 
 

@@ -44,6 +44,13 @@ from . import config
 SRD_DIR = "context/srd"
 RULES_SOURCE = "vendored-srd-5.2.1"
 
+# The retrieval's own version, distinct from ``RULES_SOURCE``. A cached answer is only
+# as good as the text it was grounded in, so changing *which* text a question retrieves
+# invalidates it just as changing the source file does - and unlike the source, nothing
+# about the file on disk changed to signal it. Bump this whenever the passages a question
+# returns would differ, or the old answers outlive the fix.
+RETRIEVAL_VERSION = 2
+
 # Used when a spell is in the retrieval corpus but not the SRD. The distinction is shown
 # in the UI, because the SRD is the 2024 authority and the corpus is not.
 CORPUS_SOURCE = "retrieval-corpus"
@@ -240,7 +247,13 @@ def _promote_groups(markdown: str) -> str:
             label = match.group(2).strip()
             rest = match.group(3).strip()
         if label and label.lower() != current:
-            out.append(f"### {label}")
+            # Promoted at ``#####``, a level no SRD file uses. It has to be *distinct* from
+            # every heading the source itself writes, because the promotion is what makes a
+            # run-in label a part of the rule above it rather than a rule of its own. The
+            # two are separated again by :func:`markdown_to_text`, which flattens a real
+            # heading to ``##`` and a promoted label to ``###``, and :func:`_sections` reads
+            # that difference as the parent link.
+            out.append(f"##### {label}")
             if rest:
                 out.append(rest)
             continue
@@ -308,8 +321,11 @@ def markdown_to_text(markdown: str) -> str:
     text = tables_to_text(_promote_groups(markdown))
     out = []
     for line in text.splitlines():
-        if heading := re.match(r"^#{2,4}\s*(.+?)\s*$", line):
-            out.append(f"## {heading.group(1)}")
+        if heading := re.match(r"^(#{2,5})\s+(.+?)\s*$", line):
+            # ``#####`` is :func:`_promote_groups`' marker for a run-in label, so it
+            # survives as ``###`` and stays distinguishable from a heading the SRD wrote.
+            depth = "###" if heading.group(1) == "#####" else "##"
+            out.append(f"{depth} {heading.group(2)}")
             continue
         if line.strip().startswith("```"):
             continue
@@ -484,6 +500,11 @@ _HEADING_SHARE = 0.5
 # floor above zero ignores those while still catching "eldritch" at 0.93.
 _MIN_QUALIFIER_WEIGHT = 0.5
 
+# How many rules to hand the model. Passages are *rules*, not fragments: a rule's parts
+# are grouped back under it before this is applied, so four is four rules rather than the
+# three-and-a-half that three fragments used to buy.
+_PASSAGE_LIMIT = 4
+
 
 # Built once, lazily, from the vendored files: term -> number of sections containing it.
 _SECTION_FREQUENCY: dict[str, int] | None = None
@@ -516,7 +537,7 @@ def section_frequency() -> tuple[dict[str, int], int]:
             text = markdown_to_text(read_srd(path))
         except RulesUnavailable:
             continue
-        for heading, body in _sections(text):
+        for heading, body, _parent in _sections(text):
             total += 1
             for word in {_fold(w) for w in re.findall(r"[a-z]{2,}", f"{heading} {body}".lower())}:
                 counts[word] = counts.get(word, 0) + 1
@@ -542,33 +563,64 @@ def term_weight(term: str) -> float:
     return 1.0 - (counts[term] / total) ** 0.5
 
 
-def _sections(text: str) -> list[tuple[str, str]]:
-    """Split flattened text into ``(heading, body)`` pairs.
+def _sections(text: str) -> list[tuple[str, str, int]]:
+    """Split flattened text into ``(heading, body, parent)`` triples.
 
     Content before the first heading is kept under an empty heading, because the
     introduction to a chapter is often real rule text.
+
+    ``parent`` is the index of the section this one belongs to, or ``-1`` for a top-level
+    section. ``###`` marks a run-in label promoted by :func:`_promote_groups`, which the
+    SRD uses for the *parts* of a rule - "Ending a Grapple" inside "Grappling", "Shove"
+    inside "Unarmed Strike" - so each promoted section points at the real heading that
+    introduced it. Without that link the parts read as independent rules: the retrieval
+    limit then filled up with the opening paragraphs and cut the rule's own conclusion,
+    and "how does grappling work" was answered without the rules for escaping a grapple.
+
+    A promoted section two levels deep ("Attacks Affected" inside "Blinded [Condition]")
+    attaches to the nearest real heading above it, whichever depth that is. The level the
+    SRD wrote carries no meaning here, because the flattened text has already lost it.
     """
-    parts = re.split(r"^##\s*(.*)$", text, flags=re.MULTILINE)
-    # re.split with a capture group yields [lead, head1, body1, head2, body2, ...].
-    sections = []
+    # Longest alternative first: as "##|###" the regex matches the first two hashes of a
+    # "###" line and leaves the third in the heading, so every promoted label read as a
+    # top-level heading and no parent link was ever recorded.
+    parts = re.split(r"^(###|##)[ \t]*(.*)$", text, flags=re.MULTILINE)
+    # re.split with capture groups yields [lead, mark1, head1, body1, mark2, head2, ...].
+    marks, heads, bodies = parts[1::3], parts[2::3], parts[3::3]
+
+    sections: list[tuple[str, str, int]] = []
     lead = parts[0].strip()
     if lead:
-        sections.append(("", lead))
-    for i in range(1, len(parts) - 1, 2):
-        heading = parts[i].strip()
-        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
-        if body:
-            sections.append((heading, body))
+        sections.append(("", lead, -1))
+
+    parent = -1
+    for mark, head, body in zip(marks, heads, bodies):
+        heading, body = head.strip(), body.strip()
+        if mark == "##":
+            # Only a real heading can be a parent, and only once it has a body to be one:
+            # a heading whose text all sits under its sub-headings defines nothing itself.
+            parent = -1
+            if body:
+                parent = len(sections)
+                sections.append((heading, body, -1))
+        elif body:
+            sections.append((heading, body, parent))
     return sections
 
 
-def _score_sections(text: str, question: str) -> list[tuple[float, int, str, str]]:
-    """Every section of ``text`` that matches, as ``(score, position, heading, body)``.
+def _score_sections(sections: list[tuple[str, str, int]],
+                    question: str) -> list[tuple[float, int, str, str, int]]:
+    """Every section in ``sections`` that matches, as ``(score, position, heading, body,
+    parent)``.
 
     Returned rather than formatted so :func:`gather` can compare matches *across files* on
     score. Comparing on anything else picks the wrong file: "what is a long rest" was
     answered from an equipment entry titled "Attune during a Short Rest" merely because
     that passage happened to be the longest.
+
+    Each item is ``(score, position, heading, body, parent)``; ``parent`` is the index of
+    the section this one is part of, which :func:`_format` uses to expand a matched rule to
+    its parts rather than returning an opening paragraph with the rule missing.
     """
     terms = _terms(question)
     if not terms:
@@ -579,7 +631,7 @@ def _score_sections(text: str, question: str) -> list[tuple[float, int, str, str
     total_weight = sum(weights) or 1.0
 
     scored = []
-    for position, (heading, body) in enumerate(_sections(text)):
+    for position, (heading, body, parent) in enumerate(sections):
         heading_lower = heading.lower()
         body_lower = body.lower()
 
@@ -619,13 +671,21 @@ def _score_sections(text: str, question: str) -> list[tuple[float, int, str, str
         # A pointer is weaker evidence than a definition.
         if _CROSS_REFERENCE.search(body) and not heading_hits:
             score /= 1.5
-        scored.append((score, position, heading, body))
+        scored.append((score, position, heading, body, parent))
     return scored
 
 
 def _matched(text: str, question: str):
-    """``(scored sections, folded terms)`` - the shape both entry points work from."""
-    return _score_sections(text, question), _terms(question)
+    """``(scored sections, folded terms, every section)`` - both entry points' working set.
+
+    The whole section list is returned alongside the scored one so a matched rule can be
+    rendered together with the parts of it that did not match on their own. A rule's parts
+    are not separately relevant; they are what makes the rule complete, and the ones that
+    go unmentioned often are the operative half - "Ending a Grapple" never repeats the word
+    the question asked in the way the opening sentence does.
+    """
+    sections = _sections(text)
+    return _score_sections(sections, question), _terms(question), sections
 
 
 def _qualifies(scored, terms) -> list:
@@ -746,17 +806,64 @@ def find_passages(text: str, question: str, *, limit: int = 3) -> list[str]:
     for instance), and the caller reports the gap rather than presenting an unrelated
     passage as the rule.
     """
-    scored, terms = _matched(text, question)
-    return _format(_qualifies(scored, terms), limit=limit)
+    scored, terms, sections = _matched(text, question)
+    return _format(_qualifies(scored, terms), limit=limit, sections=sections)
 
 
-def _format(scored, *, limit: int = 3) -> list[str]:
-    """Best sections rendered as passages, each prefixed with its heading."""
-    scored = sorted(scored, key=lambda item: (-item[0], item[1]))
-    return [
-        (f"## {heading}\n" if heading else "") + body
-        for _score, _pos, heading, body in scored[:limit]
-    ]
+def _format(scored, *, limit: int = _PASSAGE_LIMIT, sections=None) -> list[str]:
+    """Best sections rendered as passages, each prefixed with its heading.
+
+    A matched rule is rendered *whole*. A run-in label promoted by :func:`_promote_groups`
+    is a part of the rule its heading introduced, so when that rule is itself about the
+    question the parts come back with it - including the ones that never matched on their
+    own. A rule's opening sentence names its subject far more often than its later parts
+    do, so ranking the parts independently returns a definition that stops before the
+    procedure: "how does grappling work" without "Ending a Grapple", or a condition listed
+    with effects missing and no sign that anything had been dropped.
+
+    The expansion is conditional, and the condition is the whole of the safety. A part is
+    folded into its heading only when that heading *also* answers the question
+    (``qualifying``). Grouping on the parent link alone drowns the answer instead: the
+    promoted parts of the stat block ("Bonus Actions") and of the wizard's Spellcasting
+    feature ("Spellbook") have broad structural headings that match nothing in the
+    question, so "what is a bonus action" would return the entire stat block and "what is
+    a wizard's spellbook" the whole level 1 feature. When the heading is not about the
+    question, the part *is* the rule and is rendered on its own.
+
+    Regrouping happens before the limit is applied, so a rule with four parts occupies one
+    of the slots rather than all of them. ``sections`` supplies the bodies of the parts
+    that did not match; without it every section is rendered on its own.
+    """
+    ranked = sorted(scored, key=lambda item: (-item[0], item[1]))
+    if sections is None:
+        return [_passage(item[2], item[3]) for item in ranked[:limit]]
+
+    qualifying = {item[1] for item in ranked}
+
+    passages: list[str] = []
+    emitted: set[int] = set()
+    for item in ranked:
+        if len(passages) >= limit:
+            break
+        # The rule this section belongs to: itself, unless it is a promoted part of a
+        # heading that answers the question too. "-1" and any non-qualifying parent mean
+        # the section is its own rule.
+        parent = sections[item[1]][2]
+        root = parent if parent in qualifying else item[1]
+        if root in emitted:
+            continue
+        emitted.add(root)
+        passages.append("\n\n".join(
+            _passage(heading, body)
+            for index, (heading, body, _parent) in enumerate(sections)
+            if (index == root or (index != root and _parent == root)) and (body or heading)
+        ))
+    return passages
+
+
+def _passage(heading: str, body: str) -> str:
+    """One section rendered so it reads on its own, under its own heading."""
+    return (f"## {heading}\n" if heading else "") + body
 
 
 def _read(path: Path) -> dict:
@@ -778,6 +885,13 @@ def load_cached(question: str, cache_dir=None) -> dict | None:
         # missing that the vendored SRD defines. Served from cache they would outlive the
         # fix, which is exactly how a "we fixed that" regression happens.
         return None
+    if entry.get("retrieval_version") != RETRIEVAL_VERSION:
+        # The same argument applies to retrieval that changed but left the files alone.
+        # The answer was written from passages this version no longer produces, so it
+        # would keep answering a question the current retrieval answers better - with the
+        # new passages reported alongside it, which is worse, because the citation then
+        # contradicts the answer it is meant to support.
+        return None
     return entry
 
 
@@ -794,6 +908,7 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
         "passages": passages,
         "url": url,
         "source": RULES_SOURCE,
+        "retrieval_version": RETRIEVAL_VERSION,
         "answered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
     try:
@@ -871,13 +986,13 @@ def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
         except RulesUnavailable as e:
             logging.debug(f"Skipping {path}: {e}")
             continue
-        scored, terms = _matched(text, question)
+        scored, terms, sections = _matched(text, question)
         qualifying = _qualifies(scored, terms)
         if not qualifying:
             continue
         top = qualifying[0][0]
         if best is None or top > best[0]:
-            best = (top, _reference(path), qualifying)
+            best = (top, _reference(path), qualifying, sections)
 
     if best is None:
         raise RulesUnavailable(
@@ -885,8 +1000,8 @@ def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
             "rules, not every option in the Player's Handbook."
         )
 
-    _score, used, scored = best
-    found = _format(scored)
+    _score, used, scored, sections = best
+    found = _format(scored, sections=sections)
     return {"passages": found, "url": used, "text": "\n\n".join(found),
             "from_cache": False}
 
