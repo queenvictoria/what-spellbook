@@ -383,11 +383,50 @@ def test_rules_answers_are_grounded_and_cached(api, monkeypatch):
     assert len(calls) == 1, "the second ask must not have reached the model"
 
 
+def test_a_question_no_heading_names_is_answered_as_interpreted(api, monkeypatch):
+    """The fallback must reach the model, and must say it was an interpretation.
+
+    "what is a spell attack" is answered by the glossary's own "Spell Attack" heading, but
+    the precise path refuses it because the question's most distinctive term is the generic
+    "attack". Retrieval is real here for the same reason as the test above: the point is
+    which path ran, and stubbing retrieval would decide that in the stub.
+    """
+    prompts = []
+
+    def fake_invoke(*args, **kwargs):
+        prompts.append(args[1] if len(args) > 1 else kwargs.get("prompt", ""))
+        return "Roll a d20 and add your spell attack bonus."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    body = api.get("/api/rules", params={"question": "what is a spell attack"}).json()
+    assert body["source"] == "rules-inferred"
+    assert body["citations"][0].startswith("context/srd/")
+    # The interpreted prompt is a different prompt, not the quoting one: it has to permit
+    # connecting the retrieved text to the question, which the quoting prompt forbids.
+    assert "not necessarily" in prompts[0]
+
+    # And the label survives the cache, which is the only place it can come from on a hit.
+    again = api.get("/api/rules", params={"question": "what is a spell attack"}).json()
+    assert again["from_cache"] is True
+    assert again["source"] == "rules-inferred"
+    assert len(prompts) == 1, "the second ask must not have reached the model"
+
+
 def test_rules_reports_a_missing_rule_as_404(api, monkeypatch):
+    """A question the SRD does not discuss at all is the caller's request being wrong.
+
+    Both retrieval paths must fail for this to be a 404: the precise path refuses a
+    question no heading names, and the inferred path refuses one whose subject the SRD
+    never mentions. Stubbing only ``gather`` would let the real inferred path answer from
+    the live corpus, and the test would pass while proving nothing.
+    """
+
     def fake_gather(question, **kwargs):
         raise rules.RulesUnavailable("the SRD does not define a Short Rest")
 
     monkeypatch.setattr(rules, "gather", fake_gather)
+    monkeypatch.setattr(rules, "gather_inferred", fake_gather)
     response = api.get("/api/rules", params={"question": "what is a short rest"})
     assert response.status_code == 404
     assert "Short Rest" in response.json()["detail"]

@@ -65,12 +65,14 @@ export interface RunBooks {
 /**
  * `source` is the field that matters most on this type. A `sheet` answer is read
  * verbatim from the character file and cannot be wrong; a `model` answer is generated
- * and can be. The UI must show which one it got.
+ * and can be. `rules` is a rule quoted from the 2024 SRD, and `rules-inferred` is an
+ * answer interpreted from related SRD text when no heading names the question — an
+ * interpretation must not look like a quotation. The UI must show which one it got.
  */
 export interface Answer {
   question: string
   answer: string
-  source: 'sheet' | 'model' | 'rules'
+  source: 'sheet' | 'model' | 'rules' | 'rules-inferred'
   field_name: string | null
   citations: string[]
   from_cache: boolean

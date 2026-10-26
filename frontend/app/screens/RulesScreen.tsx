@@ -21,7 +21,9 @@ const EXAMPLES = [
  * Rules lookup: the `/?` command, and the target of every spell mention in the app.
  *
  * Answers are quoted from the vendored 2024 SRD in `context/srd/` and cached, so
- * repeating a question costs nothing. The 2024 SRD is not the whole 2024 rulebook, and
+ * repeating a question costs nothing. When no heading names the question, the answer is
+ * *interpreted* from the closest related SRD text and the badge says so — an
+ * interpretation is not a quotation. The 2024 SRD is not the whole 2024 rulebook, and
  * several common rules are genuinely absent from it - a Short Rest, for one. When that
  * happens the honest outcome is to say which part is missing rather than to answer from
  * memory, and a 404 is a normal result here, not an error to hide.

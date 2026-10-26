@@ -92,9 +92,32 @@ def test_folding_a_word_matches_its_own_pattern(word):
 
 
 @pytest.mark.parametrize(
+    "verb,noun",
+    [
+        ("concentrate", "Concentration"),
+        ("attune", "Attunement"),
+        ("react", "Reaction"),
+        ("act", "Action"),
+        ("move", "Movement"),
+        ("equip", "Equipment"),
+    ],
+)
+def test_a_verb_folds_to_the_noun_the_rulebook_names_the_rule_with(verb, noun):
+    """A question asks with the verb; the rulebook names the rule with the noun.
+
+    "how do I concentrate on a spell" folded to ``concentrat`` while the glossary's own
+    heading "Concentration" folded to ``concentration``, so the two never met and the SRD's
+    full definition of Concentration could not be found by asking for it. The same gap hid
+    Attunement, Reaction, Action, Movement and Equipment behind their verbs.
+    """
+    assert rules._fold(verb) == rules._fold(noun.lower())
+    assert rules._term_pattern(rules._fold(verb)).search(noun.lower())
+
+
+@pytest.mark.parametrize(
     "word,other",
     [("rest", "Restrained"), ("rest", "Restoration"), ("cover", "coverage"),
-     ("hit", "hitherto"), ("hide", "hideous")],
+     ("hit", "hitherto"), ("hide", "hideous"), ("moment", "momentum")],
 )
 def test_a_stem_does_not_match_a_longer_unrelated_word(word, other):
     """A prefix match is not a match.
@@ -130,10 +153,10 @@ def test_question_framing_words_are_not_terms():
         ("explain advantage", "advantag"),
         ("tell me about opportunity attacks", "opportunity"),
         ("define difficult terrain", "difficult"),
-        ("elaborate on exhaustion", "exhaustion"),
+        ("elaborate on exhaustion", "exhaust"),
         ("walk me through a short rest", "short"),
         ("I want to understand spell slots", "slot"),
-        ("help me understand attunement", "attunement"),
+        ("help me understand attunement", "attun"),
     ],
 )
 def test_an_asking_verb_does_not_outrank_the_subject(question, subject):
@@ -144,6 +167,10 @@ def test_an_asking_verb_does_not_outrank_the_subject(question, subject):
     "explain", and so a question the SRD answers perfectly well was reported as absent.
     The rarer the verb the harder it fails - "elaborate" weighs 0.98 against "exhaustion"
     at 0.93, so the question was refused on the strength of its own phrasing.
+
+    The expected subject is the *folded* stem, because that is what a term is: "exhaustion"
+    folds to ``exhaust`` and "attunement" to ``attun``, and :func:`_term_pattern` reaches
+    the heading back from there.
     """
     terms = rules._terms(question)
     weights = {term: rules.term_weight(term) for term in terms}
@@ -437,6 +464,81 @@ def test_a_class_rule_is_answered_from_the_class_chapter(question, heading):
     result = rules.gather(question)
     assert result["url"] == "context/srd/classes.md"
     assert heading.lower() in result["passages"][0].splitlines()[0].lower()
+
+
+# --- the inferred path ---------------------------------------------------------
+
+
+def test_an_inferred_answer_is_still_anchored_to_a_heading():
+    """The fallback relaxes the subject floor, and nothing else.
+
+    "what is a spell attack" is answered by the glossary's own "Spell Attack" heading, but
+    the question's most distinctive term is the generic "attack", which the precise path's
+    subject floor rejects. Lowering that floor is the whole of the fallback: the heading
+    anchor and the qualifier gate stay, because they are what stop the failures below.
+    """
+    result = rules.gather_inferred("what is a spell attack")
+    headings = [
+        line.removeprefix("## ")
+        for line in result["passages"][0].splitlines()
+        if line.startswith("## ")
+    ]
+    assert any("spell attack" in h.lower() for h in headings), headings
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        # No heading names it, and the SRD has no two-weapon rule at all. Without the
+        # heading anchor this is answered from "The Order of Combat", which is a plausible
+        # paragraph about a different thing.
+        "how does two weapon fighting work",
+        # The Spear lives inside an equipment table with no heading, so the only heading
+        # containing the word is "Eldritch Spear" - a Warlock invocation. The qualifier
+        # gate is what rejects it.
+        "how does a spear work",
+        # The SRD carries no general flanking rule.
+        "how does flanking work",
+    ],
+)
+def test_the_inferred_path_refuses_what_the_precise_path_refuses(question):
+    """A fallback that answers everything is not a fallback, it is a guess with a citation.
+
+    Each of these was a real false positive while the fallback was being built, and each
+    came back when one of the two remaining gates was loosened.
+    """
+    with pytest.raises(rules.RulesUnavailable):
+        rules.gather_inferred(question)
+
+
+def test_the_inferred_path_reports_a_missing_corpus():
+    """It must not answer from nothing when the vendored SRD is absent."""
+    with pytest.raises(rules.RulesUnavailable, match="No SRD text found"):
+        rules.gather_inferred("what is a spell attack", files=[])
+
+
+def test_an_inferred_answer_records_how_it_was_reached(tmp_path):
+    """A cache hit skips retrieval, so the distinction has to be *stored*.
+
+    Recomputing it on read is not possible - the retrieval that decided it does not run -
+    and an interpreted answer served as a quotation is the exact failure the source label
+    exists to prevent.
+    """
+    rules.save_cached("what is a spell attack", "Roll d20 and add your spell attack bonus.",
+                      passages=["## Spell Attack"], url="context/srd/rules-glossary.md",
+                      answer_source="rules-inferred", cache_dir=tmp_path)
+    entry = rules.load_cached("what is a spell attack", tmp_path)
+    assert entry is not None
+    assert entry["answer_source"] == "rules-inferred"
+
+
+def test_a_quoted_answer_defaults_to_the_quoted_label(tmp_path):
+    """The precise path is the common case, so it must not need to say so."""
+    rules.save_cached("what is a short rest", "One hour of downtime.", passages=[],
+                      url="context/srd/rules-glossary.md", cache_dir=tmp_path)
+    entry = rules.load_cached("what is a short rest", tmp_path)
+    assert entry is not None
+    assert entry["answer_source"] == "rules"
 
 
 def test_a_leading_qualifier_is_not_mistaken_for_the_subject():

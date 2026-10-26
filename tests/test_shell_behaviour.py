@@ -181,6 +181,31 @@ def test_extract_text_falls_back_to_str_for_unknown_objects():
     assert llm.extract_text(12345) == "12345"
 
 
+# --- provenance labels ---
+
+
+def test_an_interpreted_rule_is_not_labelled_as_a_quotation(shell, capsys):
+    """The banner is the only place the REPL says where an answer came from.
+
+    "what is a spell attack" is answered by the glossary's own "Spell Attack" heading, but
+    the precise path refuses it, so the answer is the model's reading of related text. The
+    banner must not say "from the 2024 SRD", which would present an interpretation as a
+    quotation - the same failure as showing a model's guess as a sheet value.
+    """
+    shell.onecmd("/? what is a spell attack")
+    out = capsys.readouterr().out
+    assert "interpreted from the 2024 SRD" in out
+    assert "from the 2024 SRD" not in out.replace("interpreted from the 2024 SRD", "")
+
+
+def test_a_quoted_rule_is_labelled_as_one(shell, capsys):
+    """The precise path is unchanged, and its label must stay the plain one."""
+    shell.onecmd("/? how does cover work")
+    out = capsys.readouterr().out
+    assert "from the 2024 SRD" in out
+    assert "interpreted" not in out
+
+
 # --- import safety ---
 
 

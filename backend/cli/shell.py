@@ -422,6 +422,10 @@ class SpellbookShell(cmd.Cmd):
             "sheet": "from your character sheet",
             "model": "read from your character sheet by the model",
             "rules": "from the 2024 SRD",
+            # Not "from the 2024 SRD": the SRD does not define this under a heading, so
+            # the answer is the model's reading of related text. Saying otherwise would
+            # present an interpretation as a quotation.
+            "rules-inferred": "interpreted from the 2024 SRD",
         }
         where = labels.get(answer.source, answer.source)
         cached = " (cached)" if answer.from_cache else ""

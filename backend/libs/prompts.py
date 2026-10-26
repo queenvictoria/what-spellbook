@@ -263,6 +263,42 @@ Rules for your answer:
 """
 
 
+def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = "") -> str:
+    """Prompt for a rules question the SRD does not define under its own heading.
+
+    The retrieved text is related to the question rather than being the rule itself, so
+    the model is told to interpret it and to say what is missing. The distinction matters:
+    the precise prompt forbids going beyond the passage, which is right when the passage
+    *is* the rule, but here the passage is the surrounding text and refusing to connect it
+    would make the fallback useless.
+    """
+    return f"""You are answering a D&D 5.5e (2024) rules question for a player.
+
+The 2024 SRD does not define this under a heading of its own, so the text below is the
+most relevant material it does contain. It is related to the question, not necessarily
+the rule itself.
+
+=== RETRIEVED 2024 SRD TEXT ===
+{rule_text}
+
+=== CHARACTER CONTEXT ===
+{rule_context or "(no character context loaded)"}
+
+=== QUESTION ===
+{question}
+
+Rules for your answer:
+- Answer from the retrieved text above and from what it plainly implies. It is from the
+  2024 SRD.
+- The 2014 rules differ in ways that matter (invocation counts, whether Pact of the Tome
+  costs an invocation). Do not fill a gap from memory or from the earlier edition.
+- Say plainly which part of the answer the retrieved text does not cover. The reader is
+  being told this is an interpretation, so naming the gap is part of the answer.
+- Do not present a guess as a rule. If the text does not support an answer, say so.
+- Be brief and concrete. Two or three sentences is usually enough.
+"""
+
+
 def refine_prompt(
     *,
     question: str,

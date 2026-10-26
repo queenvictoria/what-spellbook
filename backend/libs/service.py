@@ -121,8 +121,10 @@ class Answer:
 
     ``source`` says where the answer came from so the UI can be honest about it: a
     ``sheet`` lookup is exact and instant, ``model`` is the LLM reasoning over the sheet,
-    and ``rules`` is grounded in fetched 2024 SRD text. Showing a model's guess as
-    though it were a sheet value is the failure this distinction exists to prevent.
+    ``rules`` is grounded in fetched 2024 SRD text, and ``rules-inferred`` is an answer
+    interpreted from related SRD text when no heading names the question. Showing a model's
+    guess as though it were a sheet value is the failure this distinction exists to
+    prevent, and an interpretation wearing a quotation's badge is the same failure.
     """
 
     question: str
@@ -384,25 +386,42 @@ class SpellbookService:
         checkable and a wrong one silently corrupts a recommendation. Raises
         ``rules.RulesUnavailable`` when the SRD has no matching rule, which the caller
         reports rather than answering from memory.
+
+        When no heading names the question, the answer is *interpreted* from the closest
+        related text and labelled ``rules-inferred``. That label is the point: an answer
+        assembled from surrounding prose is not a quotation, and letting it wear the
+        ``rules`` badge would present an interpretation as a sourced rule.
         """
         if not question.strip():
             raise ValueError("Please provide a rules question.")
 
         emit = progress or (lambda _message: None)
         emit("Consulting the 2024 SRD")
-        retrieved = rules.gather(question, cache_dir=self.cache_dir)
+        try:
+            retrieved = rules.gather(question, cache_dir=self.cache_dir)
+            source = "rules"
+        except rules.RulesUnavailable:
+            # No heading names the question. Fall back to the best related text, which
+            # raises in turn when the SRD does not discuss the subject at all.
+            retrieved = rules.gather_inferred(question, cache_dir=self.cache_dir)
+            source = "rules-inferred"
+
         if retrieved["from_cache"] and (cached := rules.load_cached(question, self.cache_dir)):
-            return Answer(question=question, answer=cached["answer"], source="rules",
+            return Answer(question=question, answer=cached["answer"],
+                          source=cached.get("answer_source") or source,
                           citations=[cached["url"]], from_cache=True)
 
         emit("Reading the rules")
-        prompt = prompts.rules_prompt(
+        build = (prompts.rules_prompt if source == "rules"
+                 else prompts.rules_inferred_prompt)
+        prompt = build(
             question=question, rule_text=retrieved["text"], rule_context=self.rule_context,
         )
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(question, answer, passages=retrieved["passages"],
-                          url=retrieved["url"], cache_dir=self.cache_dir)
-        return Answer(question=question, answer=answer, source="rules",
+                          url=retrieved["url"], answer_source=source,
+                          cache_dir=self.cache_dir)
+        return Answer(question=question, answer=answer, source=source,
                       citations=[retrieved["url"]])
 
     def history(self) -> list[dict]:

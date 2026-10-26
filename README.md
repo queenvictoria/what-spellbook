@@ -459,6 +459,7 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [x] Asking a question in the rules search like "explain the initiative system to me like I'm 12yo" should respond with a generative answer based on the rules if it can't find a precise rule not "The 2024 SRD has no section matching 'explain the initiative system to me like I'm 12yo'. The SRD covers the core rules, not every option in the Player's Handbook."
 - [ ] When you press the "read books" button it flashes some other text briefly (Open something) and then flips back only changing the caret. It should say something like "hide books".
 - [ ] We have 'Fetching spells from [the] Grimoire' in multiple places. It should be a const or enum.
+- [ ] Switch to Lucide icons
 
 ### Choosing the model
 

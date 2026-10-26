@@ -54,7 +54,10 @@ RULES_SOURCE = "vendored-srd-5.2.1"
 #    ("explain the initiative system to me like I'm 12yo") now retrieves the rule it is
 #    about instead of being refused. Answers cached under 2 were written from the refusal
 #    or from the wrong passage.
-RETRIEVAL_VERSION = 3
+# 4: a verb now folds to the noun the rulebook names the rule with, so "concentrate"
+#    reaches the heading "Concentration". Questions that were refused, or answered from
+#    unrelated prose, now retrieve the rule - so answers cached under 3 are stale.
+RETRIEVAL_VERSION = 4
 
 # Used when a spell is in the retrieval corpus but not the SRD. The distinction is shown
 # in the UI, because the SRD is the 2024 authority and the corpus is not.
@@ -420,6 +423,15 @@ def _fold(word: str) -> str:
         word = word[:-3]
     elif word.endswith("ed") and len(word) > 4:     # grappled   -> grappl
         word = word[:-2]
+    # The rulebook names a rule with the *noun* and a question asks with the *verb*:
+    # "how do I concentrate on a spell" against the heading "Concentration". Folding only
+    # the verb left the question asking for ``concentrat`` while the heading said
+    # ``concentration``, so the glossary's own definition of Concentration could not be
+    # found at all. The remainder must be a real stem, so "moment" does not become "mo".
+    elif word.endswith("ion") and len(word) > 5:    # concentration -> concentrat
+        word = word[:-3]
+    elif word.endswith("ment") and len(word) > 7:   # attunement -> attune
+        word = word[:-4]
     if word.endswith("e") and len(word) > 3:        # stabilize  -> stabiliz
         word = word[:-1]
     return word
@@ -462,8 +474,11 @@ def _term_pattern(term: str) -> re.Pattern:
     inverse for a sample of inflections, because a silent drift between them is invisible
     until a question quietly stops matching.
     """
+    # The nominal forms mirror the "ion"/"ment" stripping in :func:`_fold`, and the plural
+    # of each is needed too: "conditions" folds to ``condit``, so the pattern for
+    # ``condit`` has to reach "conditions" or the fold and its inverse disagree.
     forms = {term, term + "s", term + "es", term + "e", term + "d", term + "ed",
-             term + "ing"}
+             term + "ing", term + "ion", term + "ions", term + "ment", term + "ement"}
     forms = sorted(forms, key=len, reverse=True)
     return re.compile(r"(?<![a-z])(?:" + "|".join(re.escape(f) for f in forms) + r")(?![a-z])")
 
@@ -737,7 +752,7 @@ def _matched(text: str, question: str):
     return _score_sections(sections, question), _terms(question), sections
 
 
-def _qualifies(scored, terms) -> list:
+def _qualifies(scored, terms, *, min_subject_weight: float = _MIN_SUBJECT_WEIGHT) -> list:
     """The sections that genuinely answer the question, best first.
 
     Shared by :func:`find_passages` and :func:`gather` so the single-file path and the
@@ -746,7 +761,7 @@ def _qualifies(scored, terms) -> list:
     Four conditions, in order, and each one catches a failure seen in practice:
 
     1. The question's most distinctive term must be distinctive enough to be a subject
-       (``_MIN_SUBJECT_WEIGHT``). Without it "what is my spell save dc" is answered with
+       (``min_subject_weight``). Without it "what is my spell save dc" is answered with
        the heading "Spell".
     2. Some section's *heading* must name that term. This is the heading-anchored rule:
        without it "Hit Points" answered questions about short rests and "Roll Two D20s"
@@ -760,6 +775,11 @@ def _qualifies(scored, terms) -> list:
 
     Refusing is the honest outcome: the SRD is a subset of the 2024 rulebook, and a
     plausible-looking paragraph presented as the rule reads as sourced.
+
+    ``min_subject_weight`` is the one thing the inferred path relaxes, and it is a
+    parameter rather than a second implementation on purpose: the gates below are the
+    whole of the decision to answer or refuse, and a copy of them would eventually
+    disagree with this one about what a rule is.
     """
     if not scored or not terms:
         return []
@@ -767,7 +787,7 @@ def _qualifies(scored, terms) -> list:
     ordered = sorted(terms)
     weights = {term: term_weight(term) for term in ordered}
     subject = max(ordered, key=lambda term: weights[term])
-    if weights[subject] < _MIN_SUBJECT_WEIGHT:
+    if weights[subject] < min_subject_weight:
         return []
 
     pattern = _term_pattern(subject)
@@ -945,8 +965,15 @@ def load_cached(question: str, cache_dir=None) -> dict | None:
 
 
 def save_cached(question: str, answer: str, *, passages: list[str], url: str,
-                cache_dir=None) -> Path:
-    """Store a rules answer with the source text it was grounded in. Never raises."""
+                answer_source: str = "rules", cache_dir=None) -> Path:
+    """Store a rules answer with the source text it was grounded in. Never raises.
+
+    ``answer_source`` records whether the answer was *quoted* from a rule the SRD defines
+    under its own heading (``rules``) or *interpreted* from related text (``rules-inferred``).
+    It is stored rather than recomputed because a cache hit skips retrieval entirely, so
+    the distinction would otherwise be lost and an interpreted answer would be served as a
+    quotation.
+    """
     from datetime import datetime, timezone
 
     path = entry_path(question, cache_dir)
@@ -957,6 +984,7 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
         "passages": passages,
         "url": url,
         "source": RULES_SOURCE,
+        "answer_source": answer_source,
         "retrieval_version": RETRIEVAL_VERSION,
         "answered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -1052,6 +1080,68 @@ def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
     _score, used, scored, sections = best
     found = _format(scored, sections=sections)
     return {"passages": found, "url": used, "text": "\n\n".join(found),
+            "from_cache": False}
+
+
+# The floor for the inferred path. Lower than ``_MIN_SUBJECT_WEIGHT`` because the inferred
+# path is not claiming the text *is* the rule, only that it bears on the question - so a
+# subject that is merely a bit generic ("attack" at 0.64, which names the glossary's own
+# "Spell Attack") is still worth interpreting, where the precise path refuses it.
+_MIN_INFERRED_WEIGHT = 0.5
+
+
+def gather_inferred(question: str, *, files=None, cache_dir=None) -> dict:
+    """Best-effort passages for a question no heading names, for an interpreted answer.
+
+    The precise path refuses a question the SRD does not define under its own heading, and
+    that refusal is right for a *quoted* rule. It also refuses questions the SRD plainly
+    discusses: "what is a spell attack" is answered by the glossary's own "Spell Attack"
+    heading, but the question's most distinctive term is the generic "attack", which the
+    precise path's subject floor rejects. This runs the same gates with a lower floor, so
+    the model can answer from the text - and the caller labels the result
+    ``rules-inferred``, because an answer assembled from surrounding text is not a
+    quotation and must not wear a quotation's badge.
+
+    Deliberately still heading-anchored, and still refusing a qualified heading. Loosening
+    either one reintroduces a failure the precise path was built to stop: without the
+    heading anchor "how does two weapon fighting work" is answered from "The Order of
+    Combat" (the SRD has no two-weapon rule at all), and without the qualifier gate "how
+    does a spear work" is answered from "Eldritch Spear". The only thing relaxed is the
+    subject floor, which is what lets a generic-but-real subject like "attack" through.
+
+    The gates themselves are :func:`_qualifies`' own, called with a lower floor rather
+    than re-implemented, so the two paths cannot drift apart about what a rule is.
+    """
+    candidates = list(files) if files is not None else candidate_files(search_all=True)
+    if not candidates:
+        raise RulesUnavailable(
+            f"No SRD text found at {srd_dir()}. The vendored rules are required for "
+            "lookups; see context/srd/PROVENANCE.md."
+        )
+
+    best = None
+    for path in candidates:
+        try:
+            text = markdown_to_text(read_srd(path))
+        except RulesUnavailable as e:
+            logging.debug(f"Skipping {path}: {e}")
+            continue
+        scored, terms, sections = _matched(text, question)
+        qualifying = _qualifies(scored, terms, min_subject_weight=_MIN_INFERRED_WEIGHT)
+        if not qualifying:
+            continue
+        if best is None or qualifying[0][0] > best[0][0][0]:
+            best = (qualifying, path, sections)
+
+    if best is None:
+        raise RulesUnavailable(
+            f"The 2024 SRD has no section matching '{question}'. The SRD covers the core "
+            "rules, not every option in the Player's Handbook."
+        )
+
+    qualifying, path, sections = best
+    found = _format(qualifying, sections=sections)
+    return {"passages": found, "url": _reference(path), "text": "\n\n".join(found),
             "from_cache": False}
 
 

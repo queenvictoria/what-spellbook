@@ -1,4 +1,4 @@
-import { BookOpen, ScrollText, Sparkles } from 'lucide-react'
+import { BookOpen, ScrollText, Sparkles, Wand2 } from 'lucide-react'
 
 import { Badge } from '@/components/ui/badge'
 
@@ -7,14 +7,16 @@ import { Badge } from '@/components/ui/badge'
  *
  * This is the most important piece of chrome in the app. A sheet answer is read
  * verbatim from the character file and cannot be wrong; a model answer is generated and
- * can. A rules answer is quoted from the 2024 SRD. Showing one as another would let a
- * plausible guess look like a recorded fact, so the distinction is always visible.
+ * can. A rules answer is quoted from the 2024 SRD, and a rules-inferred answer is
+ * *interpreted* from related SRD text when no heading names the question. Showing one as
+ * another would let a plausible guess look like a recorded fact, so the distinction is
+ * always visible — and an interpretation is deliberately not given the quotation's badge.
  */
 export function SourceBadge({
   source,
   field,
 }: {
-  source: 'sheet' | 'model' | 'rules'
+  source: 'sheet' | 'model' | 'rules' | 'rules-inferred'
   field?: string | null
 }) {
   if (source === 'sheet') {
@@ -30,6 +32,16 @@ export function SourceBadge({
       <Badge tone="radiant">
         <BookOpen className="h-3 w-3" />
         2024 SRD
+      </Badge>
+    )
+  }
+  if (source === 'rules-inferred') {
+    // Deliberately not the radiant tone the quoted badge uses. The text says
+    // "interpreted"; the colour says it too, so the two cannot be confused at a glance.
+    return (
+      <Badge tone="muted">
+        <Wand2 className="h-3 w-3" />
+        2024 SRD — interpreted
       </Badge>
     )
   }

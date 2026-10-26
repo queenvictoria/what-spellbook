@@ -78,6 +78,10 @@ class AnswerSchema(BaseModel):
     ``source`` is exposed because the client must be able to distinguish an exact sheet
     value from a model's reading of it. Presenting a guess with the same styling as a
     quoted field is the failure this field exists to prevent.
+
+    ``rules`` is a rule quoted from the 2024 SRD; ``rules-inferred`` is an answer
+    *interpreted* from related SRD text when no heading names the question. The two are
+    kept apart for the same reason: an interpretation must not look like a quotation.
     """
 
     question: str
