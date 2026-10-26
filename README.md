@@ -50,6 +50,54 @@ Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
 rendered as `Key: value` lines for the prompt, and list values are joined with
 commas.
 
+### How a recommendation is built
+
+Two stages, deliberately separated:
+
+```mermaid
+flowchart LR
+    A[Character sheet] --> C
+    B[Scenario] --> D
+    C[Eligibility filter<br/>class + pact + subclass] --> E[Legal pool<br/>cantrips + L1 rituals]
+    E --> D
+    D[Prompt builder] --> F[Model]
+    G["context/ rules files"] --> D
+    F --> H[3 book loadouts]
+    H --> I{Book pick<br/>validation}
+    I -->|legal| J[Cheatsheet]
+    I -->|illegal| K[Warning to user]
+```
+
+**Stage 1 — build a legal pool.** What a character may prepare is a *rules*
+question, so the scenario is never allowed to widen it. Books of Shadows take
+exactly 3 cantrips and 2 level 1 rituals, so both lanes are fetched
+**exhaustively** from indexed metadata rather than by similarity search — a
+vector search cannot be trusted to return all 48 cantrips. Levelled spells are
+excluded from the pool entirely: a Warlock's prepared list does not change on a
+short rest, so offering them only invited the model to mis-file them as picks.
+
+**Stage 2 — let the model rank.** The scenario ranks the shortlist (deciding
+which spells get their full text included) and drives the tactical write-up.
+
+**Rules grounding.** `context/` is laid out as `context/[class]/[pact|subclass]/`
+and injected by prompt builders, not hard-coded:
+
+| Context file | Applies to |
+| --- | --- |
+| `context/spells.md` | Every character (casting economy) |
+| `context/classes/warlock/base.md` | Any Warlock |
+| `context/classes/warlock/pact/tome.md` | Pact of the Tome |
+| `context/classes/warlock/subclass/celestial.md` | Celestial Patron |
+
+Context files hold **rules only** and never a character's name or level; the
+sheet holds the character's values. Development learnings live in `AGENTS.md`.
+
+**Book pick validation.** After the model answers, every entry in each book's
+cantrip and ritual lists is checked against the eligible pool. Models reliably
+mis-file spells that appear in the rules context but not the pool — a Celestial
+Warlock's always-prepared `Guiding Bolt` is the recurring example — and a wrong
+book is only discovered at the table.
+
 Tests:
 
 ```bash
@@ -58,13 +106,21 @@ pytest
 ```
 
 The suite covers `/slash` command parsing and TAB completion, character sheet
-loading, and prompt assembly. It imports `main` but never builds a vector index,
-contacts a model, or touches `data/chroma_db`.
+loading, spell parsing and eligibility rules, prompt assembly, the retrieval
+lanes, and book-pick validation. It imports `main` but never builds a vector
+index, contacts a model, or touches `data/chroma_db`.
 
 - [x] Switch to /slash+TAB style commands like Claude CLI and Discord
 - Add /test command
 - Add /help command
 - [x] Move character/s to JSON/YAML file in `data/characters`
+- [x] Filter retrieval by what the character can legally prepare
+- [x] Ground prompts in `context/` rules files
 - Move remaining config to .env file
 
 LLM backend: OpenRouter (`deepseek/deepseek-v4.1-flash-1017`) via `OPENROUTER_API_KEY` in a gitignored `.env`, falling back to local Ollama (`qwen3.5:4b`) when no key is present.
+
+Note: `qwen3.5:4b` is a *thinking* model. It can spend its whole token budget on
+internal reasoning and return an empty response, so the CLI reports an empty
+completion as a failure rather than printing nothing. For local work a slightly
+larger non-thinking model gives more reliable structured output.

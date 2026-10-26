@@ -36,14 +36,23 @@ def test_scenario_retrieves_spell_context(shell, fake_llm, fake_db):
     assert "fireball.md" in prompt
 
 
-def test_scenario_retriever_uses_k_30(shell, fake_db):
+def test_scenario_filters_retrieval_by_eligibility(shell, fake_db):
+    """Retrieval now runs through filtered lanes rather than one unfiltered query.
+
+    Every similarity call must carry a filter, so a ranking lane can never widen the
+    pool beyond what the character is allowed to prepare.
+    """
     shell.onecmd("/scenario anything")
-    assert fake_db.search_kwargs == {"k": 30}
+    assert fake_db.as_retriever_calls, "expected at least one filtered retrieval lane"
+    assert all("filter" in kwargs for kwargs in fake_db.as_retriever_calls)
+    filters = [kwargs["filter"] for kwargs in fake_db.as_retriever_calls]
+    assert any({"level": 0} in f["$and"] for f in filters)
+    assert any({"ritual": True} in f["$and"] for f in filters)
 
 
 def test_scenario_queries_retriever_with_scenario(shell, fake_db):
     shell.onecmd("/scenario a duel on a bridge")
-    assert fake_db.retriever.queries == ["a duel on a bridge"]
+    assert "a duel on a bridge" in fake_db.retriever.queries
 
 
 def test_scenario_prompt_asks_for_three_books(shell, fake_llm):
@@ -60,10 +69,13 @@ def test_scenario_without_args_does_not_call_llm(shell, fake_llm, caplog):
     assert "scenario description" in caplog.text
 
 
-def test_scenario_with_no_retrieval_hits_skips_llm(shell, fake_db, fake_llm, caplog):
-    fake_db.retriever = type("R", (), {"invoke": lambda self, q: []})()
+def test_scenario_with_no_legal_spells_skips_llm(shell, fake_db, fake_llm, capsys):
+    """With no eligible book picks there is nothing to recommend, so the model is
+    never called. Similarity hits alone are not enough - the lanes must be empty."""
+    fake_db.CATALOGUE = []
     shell.onecmd("/scenario anything")
     assert fake_llm.prompts == []
+    assert "eligibility" in capsys.readouterr().out
 
 
 # --- /ask refinement ---

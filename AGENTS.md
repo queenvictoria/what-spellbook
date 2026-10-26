@@ -356,6 +356,67 @@ before "fixing" the document.
   tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
   not installed`.
 
+### Retrieval: filter first, rank second
+
+The recommender runs in two stages and they must stay separate:
+
+1. **Eligibility** decides what is *legal* for the character (class, pact, subclass,
+   level). This is a rules question and the scenario must never widen it.
+2. **Ranking** uses the scenario to order an already-legal pool.
+
+Specific traps hit while building this:
+
+- **A similarity search cannot enumerate.** Book of Shadows takes exactly 3 cantrips
+  and 2 level 1 rituals, so those lanes are fetched exhaustively from Chroma metadata
+  (`db.get(where=...)`), not by vector search. Relying on similarity would silently
+  omit legal options.
+- **One chunk is not one spell.** The index holds 1280 chunks for 544 spells, so a raw
+  `k=30` returned roughly 13 distinct spells. Always dedupe by spell name.
+- **Do not put ineligible spells in the pool as "context".** Listing castable levelled
+  spells for "synergy advice" caused a model to file Misty Step (level 2) and Daylight
+  (level 3) as *book picks*. A flat spell list reads as pickable. Only pool-eligible
+  spells belong in the pool; a Warlock's prepared list does not change on a short rest
+  anyway, so those suggestions are not actionable.
+- **Chroma's `$and` rejects a single child**, and numeric operators (`$lte`) only work
+  on numeric metadata. Hence `build_where()` unwrapping one clause, and `level` stored
+  as an `int` rather than a tag string.
+- **Bump `INDEX_VERSION` when metadata changes.** Without the guard a stale index keeps
+  serving old fields and every metadata filter silently returns nothing.
+- **`Collection.get(include=["embeddings"])` returns a numpy array.** `not payload[...]`
+  raises `ValueError: truth value of an array ... is ambiguous`, which an `except` will
+  swallow — making the validator always report "invalid" and rebuild every launch. Use
+  `len(...) == 0`.
+
+### Validate the model's output, do not trust it
+
+The pool is filtered before the model sees it, and models still mis-file picks. The
+recurring real failure: **a Celestial Warlock's always-prepared `Guiding Bolt`** appears
+in the rules context, so the model puts it in a book — where it is illegal, because
+always-prepared spells are not book options. `spells.validate_book_picks()` parses the
+answer and checks every entry against the pool; the shell warns when it finds a
+mismatch. Keep that guard: a wrong book is only discovered at the table.
+
+Two parsing details that matter when writing such a guard:
+
+- Models copy the pool's annotation into the bolded name
+  (`**Light (Cantrip; Evocation; Bard)**`). Strip it, or every pick looks illegal.
+- When normalising a spell name, do not collapse whitespace —
+  `"Detect Magic"` becomes `"DetectMagic"` and matches nothing.
+
+### Ollama thinking models return empty responses
+
+`qwen3.5:4b` is a *thinking* model. On a large prompt it can emit thousands of tokens
+of hidden reasoning and return an **empty** `response` with `done_reason: "stop"` and
+HTTP 200. The CLI therefore treats an empty completion as a failure and says so; a
+silent empty print looks like a successful run. `_extract_text()` reads `content`,
+which is empty, so an explicit check is required.
+
+### Prompt size is a real limit
+
+`context/` plus the pool is already ~8k tokens; the rule files alone are ~17k
+characters. `prompts.prompt_budget_warning()` exists because overshooting a local
+model's window shows up as an empty reply, not an error.
+
 ## Future Enhancements
 
 - **Multi-Agent System**: Separate agents for different subsystems (DM assistant, item finder, etc.)
