@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from backend import cache, config, prompts, service, timing
+from backend.libs import cache, config, prompts, service, timing
 
 SCENARIO = "A rust monster eats the fighter's plate armour mid-fight."
 

@@ -1,4 +1,4 @@
-"""``python -m src.cli`` runs the CLI."""
+"""``python -m backend.cli`` runs the CLI."""
 
 from .app import main
 

@@ -6,7 +6,7 @@
     "module": "esnext",
     "types": ["vite/client"],
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./app/*"]
     },
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
@@ -25,5 +25,5 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["app"]
 }

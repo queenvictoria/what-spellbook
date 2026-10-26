@@ -35,8 +35,8 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from backend import cache as cache_store
-from backend import characters, config, indexing, llm, rules, service
+from backend.libs import cache as cache_store
+from backend.libs import characters, config, indexing, llm, rules, service
 
 from . import schemas
 
@@ -364,7 +364,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
     @app.get("/api/sheet-keys", response_model=list[str], tags=["character"])
     def sheet_keys():
         """Every value ``/c`` can look up, for autocomplete and a help panel."""
-        from backend import lookup
+        from backend.libs import lookup
 
         return lookup.sheet_keys()
 

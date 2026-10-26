@@ -13,7 +13,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# src/backend/config.py -> src/backend -> src -> repo root
+# backend/libs/config.py -> backend/libs -> backend -> repo root
 ROOT = Path(__file__).resolve().parents[2]
 
 # Pull OPENROUTER_API_KEY (and friends) out of the untracked .env file at the repo root.

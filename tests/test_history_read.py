@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from backend import cache, service
+from backend.libs import cache, service
 
 
 def _write_run(root, *, scenario, character="Lois", level=5, books=("Hold", "Peel")):

@@ -304,7 +304,7 @@ offer the closest legal alternative.
 # --- character sheet ingest (D&D Beyond PDF -> data/characters/<name>.yaml) ---
 
 # The sheet keys the recommender actually reads, in the order they should appear.
-# ``main._format_character`` renders these verbatim into the prompt, so the names are
+# ``characters.format_character`` renders these verbatim into the prompt, so the names are
 # part of the contract with the model, not cosmetic.
 CHARACTER_SHEET_KEYS = (
     "Name",

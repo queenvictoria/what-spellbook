@@ -10,10 +10,8 @@ from pathlib import Path
 
 import pytest
 
-from backend import cache, service
-from cli.shell import SpellbookShell
-from backend import cache  # noqa: F401
-import main
+from backend.cli.shell import SpellbookShell
+from backend.libs import cache, config, service
 
 
 # --- writing on generation ---
@@ -44,7 +42,7 @@ def test_cached_run_records_the_eligible_pool(loaded_shell, cache_dir):
     run = json.loads(next(cache_dir.rglob(cache.RUN_FILENAME)).read_text(encoding="utf-8"))
     assert "pool_cantrips" in run["context"]
     assert "pool_rituals" in run["context"]
-    assert run["context"]["database_version"] == main.INDEX_VERSION
+    assert run["context"]["database_version"] == config.INDEX_VERSION
 
 
 def test_cached_book_records_its_own_picks(loaded_shell, cache_dir):
@@ -200,8 +198,8 @@ def test_help_documents_the_new_commands(shell, capsys):
 
 
 def test_commands_include_rate_and_history():
-    assert "rate" in main.SpellbookShell.COMMANDS
-    assert "history" in main.SpellbookShell.COMMANDS
+    assert "rate" in SpellbookShell.COMMANDS
+    assert "history" in SpellbookShell.COMMANDS
 
 
 # --- serving from the cache ---

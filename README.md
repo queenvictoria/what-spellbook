@@ -10,6 +10,33 @@ This project will store all settings in localstorage exportable to JSON and the 
 
 It will run as a webapp optimised for mobile. The interface should be minimal: character selection and storage, a history of scenarios, an editor for the character.
 
+## Repository layout
+
+A monorepo: one Python package and one npm project, side by side at the root.
+
+```
+backend/          the Python package
+  libs/             rules, retrieval, prompting, caching - the domain, no printing
+  cli/              the terminal front end
+  api/              the HTTP front end
+  __main__.py       `python -m backend` runs the CLI
+frontend/         the npm project
+  app/              the React source
+context/          rules text injected into the model prompt
+data/             character sheets and the Chroma index (untracked)
+tests/            pytest
+```
+
+There is no `src/`. Nothing here compiles, so a `src/` root would only have meant inserting
+`src/` onto `sys.path` so that `from backend import config` resolved - a directory's *name*
+doing work its contents did not. The repo root is the import root instead, which is why
+every import is written in full as `backend.libs.<module>`.
+
+Within `backend/`, `libs` is the domain and `cli`/`api` are peers over it. The dependency
+direction is one-way and a test enforces it: **`backend/libs` never imports `backend/cli`
+or `backend/api`**. That is the whole reason the API could be added without touching the
+recommendation logic.
+
 ## Sources
 
 5.5e SRD has 339 spells. DNDBeyond 400+ (includes legacy and trademarked spells).
@@ -50,7 +77,7 @@ Framework: FastAPI + uvicorn
 Status: working
 
 ```bash
-uvicorn api.main:get_app --factory --app-dir src --port 8000
+uvicorn backend.api.main:get_app --factory --port 8000
 ```
 
 Interactive docs are at `http://localhost:8000/docs`. The API contains no logic: every
@@ -97,13 +124,18 @@ Status: working
 Run it with:
 
 ```bash
-python main.py                      # loads data/characters/lois.yaml
-python -m src.cli.app               # same, without the shim
-python main.py --character vax      # loads data/characters/vax.yaml
-CHARACTER=vax python main.py        # same, via environment variable
-BOOKS=2 python main.py              # generate 2 alternatives instead of 3
-python main.py --refresh            # ignore cached books, regenerate everything
+python -m backend                  # loads data/characters/lois.yaml
+python -m backend.cli              # same thing, spelled differently
+python -m backend --character vax  # loads data/characters/vax.yaml
+CHARACTER=vax python -m backend    # same, via environment variable
+BOOKS=2 python -m backend          # generate 2 alternatives instead of 3
+python -m backend --refresh        # ignore cached books, regenerate everything
 ```
+
+Run from the repo root: the imports are `backend.*`, so the root is the import root. There
+is deliberately no `python backend/app.py` - running a file directly puts *its own*
+directory on `sys.path`, so that command can never work, and a launch form that crashes is
+worse than one that does not exist.
 
 Character sheets are plain YAML in `data/characters/<name>.yaml`; keys are
 rendered as `Key: value` lines for the prompt, and list values are joined with
@@ -131,15 +163,14 @@ styling is skipped automatically when output is redirected.
 ### Layout
 
 ```
-src/backend/    rules, retrieval, prompting, caching, index, watcher, lookup, timing
-src/cli/        REPL, arguments, progress, markdown rendering
-src/api/        FastAPI routes and wire schemas
-frontend/       React UI calling the API
-main.py         compatibility shim (re-exports the old names)
+backend/libs/   rules, retrieval, prompting, caching, index, watcher, lookup, timing
+backend/cli/    REPL, arguments, progress, markdown rendering
+backend/api/    FastAPI routes and wire schemas
+frontend/app/   React UI calling the API
 ```
 
-The rule that keeps the split honest: **`src/backend` never imports `src/cli` or
-`src/api`**. `backend.service.SpellbookService` is the seam — it does the work and
+The rule that keeps the split honest: **`backend/libs` never imports `backend/cli` or
+`backend/api`**. `backend.libs.service.SpellbookService` is the seam — it does the work and
 returns `Generation`/`Book`/`Answer` dataclasses, and never prints, prompts or exits.
 The REPL renders those objects; the API serialises the same ones. A test asserts the
 layering holds, so a rule that leaked into a transport layer would fail the suite rather
@@ -255,7 +286,7 @@ model produced.
 /history                 # list cached runs, newest first, numbered
 /read 2                  # open run 2 from that listing and print its books
 /read bridge denial      # same, by a fragment of its scenario
-python main.py --refresh # ignore the cache, regenerate every scenario
+python -m backend --refresh # ignore the cache, regenerate every scenario
 ```
 
 A rating is attached to a book _slot_ and carried across a regeneration, so a
@@ -309,7 +340,7 @@ short rest, so this is how many alternatives to compare. Each one lengthens the 
 and the wait.
 
 ```bash
-BOOKS=2 python main.py      # two alternatives, roughly two thirds of the output
+BOOKS=2 python -m backend      # two alternatives, roughly two thirds of the output
 ```
 
 The count is part of the cache key, so asking for two is a different request from asking
@@ -356,7 +387,7 @@ cache lookup the test exists to verify.
 - [x] Rate a generated book after the scenario is played
 - [ ] Report on rating patterns once enough books are rated
 - [ ] Add /character command to switch characters
-- [x] Refactor the python main.py and supporting files into the src/backend directory as a proper Class/module/OOP pattern so that it can power both the cli and a future front end via an API. Don't build the api but do keep your own notes about this in AGENTS and/or ROADMAP. Pull the cli functions out into their own file.
+- [x] Refactor `main.py` and supporting files into a proper class/module structure so it can power both the CLI and a front end via an API. Pulled the CLI functions out into their own layer and noted the design in AGENTS/ROADMAP.
 - [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
 - [x] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
 - [x] Build the React/Vite/Tailwind/shadcn front end
@@ -383,8 +414,8 @@ running locally by default. A remote model id with no key falls back to Ollama a
 so, rather than silently swapping models.
 
 ```bash
-LLM_MODEL=qwen2.5-coder:7b-instruct python main.py   # local, one-off
-LLM_MODEL=openai/gpt-4o-mini python main.py          # OpenRouter, one-off
+LLM_MODEL=qwen2.5-coder:7b-instruct python -m backend   # local, one-off
+LLM_MODEL=openai/gpt-4o-mini python -m backend          # OpenRouter, one-off
 ```
 
 `OLLAMA_MODEL` also overrides the local default (`qwen3.5:4b`) when `LLM_MODEL` is unset.

@@ -9,10 +9,10 @@ import readline
 
 import pytest
 
-from backend import cache  # noqa: F401
-import main
+from backend.libs import cache  # noqa: F401
+from backend.cli.shell import SpellbookShell
 
-COMMANDS = main.SpellbookShell.COMMANDS
+COMMANDS = SpellbookShell.COMMANDS
 
 
 # --- parseline: '/command' must parse as a command, not fall through to default ---

@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from backend import config, prompts
+from backend.libs import config, prompts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -55,7 +55,7 @@ def test_context_dir_default_is_the_resolved_constant():
 
 def test_cache_dir_ignores_cwd(tmp_path, monkeypatch):
     """The reported symptom: books written into whatever directory we happened to be in."""
-    from backend import service
+    from backend.libs import service
 
     monkeypatch.chdir(tmp_path)
     svc = service.SpellbookService(object(), {"Class": "Warlock"}, backend=object())
@@ -65,12 +65,12 @@ def test_cache_dir_ignores_cwd(tmp_path, monkeypatch):
 
 def test_cli_reports_the_same_cache_dir_from_another_working_directory(tmp_path):
     """End-to-end guard: a subprocess launched elsewhere must resolve the repo cache."""
-    env = {**os.environ, "PYTHONPATH": str(ROOT / "src")}
+    env = {**os.environ, "PYTHONPATH": str(ROOT)}
     result = subprocess.run(
         [
             sys.executable,
             "-c",
-            "from backend import config; print(config.CACHE_DIR_PATH)",
+            "from backend.libs import config; print(config.CACHE_DIR_PATH)",
         ],
         cwd=tmp_path,
         env=env,

@@ -12,8 +12,8 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from api.main import create_app
-from backend import cache, characters, llm, rules
+from backend.api.main import create_app
+from backend.libs import cache, characters, llm, rules
 
 from conftest import BOOKS_ANSWER, FakeDB, FakeLLM
 
@@ -53,7 +53,7 @@ def api(tmp_path, monkeypatch):
     fake_llm = FakeServiceLLM()
     app = create_app(vector_db=FakeDB(), backend=fake_llm, character_name="lois",
                      cache_dir=str(tmp_path / "cache"))
-    monkeypatch.setattr("backend.characters.load_character_data", lambda name, **kw: client.sheet)
+    monkeypatch.setattr("backend.libs.characters.load_character_data", lambda name, **kw: client.sheet)
     client = TestClient(app)
     client.sheet = dict(LOIS)
     return client
@@ -176,7 +176,7 @@ def test_missing_scenario_field_is_rejected(api):
 def test_scenario_reports_an_empty_completion_as_502(api, monkeypatch):
     """A model that returns nothing is the server's problem, not a bad request."""
     monkeypatch.setattr(
-        "backend.llm.invoke",
+        "backend.libs.llm.invoke",
         lambda *a, **k: (_ for _ in ()).throw(llm.EmptyCompletion("no output")),
     )
     response = api.post("/api/scenario", json={"scenario": "a fresh scenario"})
@@ -185,7 +185,7 @@ def test_scenario_reports_an_empty_completion_as_502(api, monkeypatch):
 
 def test_scenario_reports_an_unreachable_model_as_503(api, monkeypatch):
     monkeypatch.setattr(
-        "backend.llm.invoke",
+        "backend.libs.llm.invoke",
         lambda *a, **k: (_ for _ in ()).throw(llm.LLMUnavailable("connection refused")),
     )
     response = api.post("/api/scenario", json={"scenario": "another scenario"})
@@ -327,7 +327,7 @@ def test_rules_answers_are_grounded_and_cached(api, monkeypatch):
         lambda *a, **k: ["https://5e24srd.com/playing-the-game/combat.html"],
     )
     monkeypatch.setattr(
-        "backend.llm.invoke",
+        "backend.libs.llm.invoke",
         lambda *a, **k: "Walls and trees provide cover. Note the table is not shown here.",
     )
 

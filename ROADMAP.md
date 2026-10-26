@@ -8,14 +8,14 @@ and asks a model to compose them into *books* - small, self-contained sets of pi
 advice for using them.
 
 The system is built as a Python core with two front ends: a terminal REPL and an HTTP
-API driving a browser UI. Both call the same `backend.service` layer, so a rule lives in
+API driving a browser UI. Both call the same `backend.libs.service` layer, so a rule lives in
 one place.
 
 ## Technology Stack (as built)
 
 | Component | Decision | Rationale |
 |-----------|----------|-----------|
-| Core | Python 3.14 + `backend.service.SpellbookService` | One implementation, two front ends |
+| Core | Python 3.14 + `backend.libs.service.SpellbookService` | One implementation, two front ends |
 | CLI | `cmd.Cmd` REPL + `rich` | `/slash` + TAB commands, formatted output, progress |
 | API | FastAPI + uvicorn | Typed schemas, dependency injection, OpenAPI for free |
 | Front end | React + Vite + Tailwind v4 + shadcn-style components | Fast dev loop, typed API client |
@@ -36,12 +36,14 @@ Superseded choices, recorded so they are not reintroduced:
 ## Architecture
 
 ```
-src/backend/    rules, retrieval, prompting, caching, index, lookup, timing  (no printing)
-src/cli/        REPL, argument parsing, progress, markdown rendering
-src/api/        FastAPI routes and wire schemas
-frontend/       React UI calling the API
-main.py         compatibility shim re-exporting the old names
+backend/libs/   rules, retrieval, prompting, caching, index, lookup, timing  (no printing)
+backend/cli/    REPL, argument parsing, progress, markdown rendering
+backend/api/    FastAPI routes and wire schemas
+frontend/app/   React UI calling the API
 ```
+
+The root is the monorepo: one Python package and one npm project side by side. There is no
+`src/` - nothing here compiles, so it would only have meant a `sys.path` bootstrap.
 
 Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGENTS.md).
 

@@ -15,13 +15,13 @@ local **Chroma** vector store of spell markdown files; the model is reached thro
 The TypeScript interfaces later in this file describe the **agent configuration shape**
 from the original design. Where they disagree with the implementation, the
 implementation wins - the wire contract the UI actually depends on is
-`src/api/schemas.py`, mirrored by hand in `frontend/src/api/types.ts`.
+`backend/api/schemas.py`, mirrored by hand in `frontend/app/api/types.ts`.
 
 ### Layout: one backend, three front ends
 
 ```
-src/
-  backend/        rules, retrieval, prompting, caching - no terminal, no printing
+backend/
+  libs/           rules, retrieval, prompting, caching - no terminal, no printing
     config.py       paths, models, tunables (+ resolve() for repo-relative paths)
     indexing.py     Chroma build/validate/rebuild
     characters.py   sheet loading and the rules questions we ask of a sheet
@@ -43,12 +43,18 @@ src/
   api/            HTTP only - routing and wire schemas
     main.py         create_app(), the routes, error mapping
     schemas.py      the wire contract (pydantic)
+  __main__.py     `python -m backend` runs the CLI
 frontend/         React UI - its own package.json, vite.config.ts, tsconfig
-main.py           compatibility shim (re-exports the old names)
+  app/            the React source (not src/, because this is the front-end "app")
 ```
 
-**The rule that keeps this honest: `src/backend` must not import `src/cli` or
-`src/api`.** A test enforces it (`test_service_imports_without_a_terminal`). If the
+There is deliberately no `src/`. Nothing here compiles, so a `src/` root only existed to
+hold Python packages apart from non-Python ones - and it forced a `sys.path` bootstrap so
+that `from backend import config` would work. The repo root is now the import root, which
+is why every import is written in full as `backend.libs.<module>`.
+
+**The rule that keeps this honest: `backend/libs` must not import `backend/cli` or
+`backend/api`.** A test enforces it (`test_service_imports_without_a_terminal`). If the
 backend ever needs a terminal or a request object, the other surfaces cannot reuse it.
 
 `SpellbookService` is the seam. It does the work and returns dataclasses
@@ -58,9 +64,8 @@ those objects; the API serialises them; the UI draws them. Errors are typed
 `CharacterNotFound`, `RulesUnavailable`, `IndexUnavailable`) so each surface decides how
 to report them - which is why the library no longer calls `sys.exit`.
 
-**Prefer the packages over the shim.** `main.py` exists so existing habits,
-`python main.py` and older imports keep working; new code should use
-`from backend import service, characters` and `python -m src.cli.app`.
+**Import the real modules.** There is no compatibility shim any more: use
+`from backend.libs import service, characters` and run with `python -m backend`.
 
 ### Separation of concerns - two different kinds of document
 
@@ -72,6 +77,19 @@ to report them - which is why the library no longer calls `sys.exit`.
 
 Keep these apart. A context file that knows a character's level, or an `AGENTS.md` that
 carries spell rules, will both go stale in the wrong direction.
+
+### How the three front ends relate
+
+| Layer | May import | Must not |
+| --- | --- | --- |
+| `backend/libs` | stdlib, third-party, other `libs` modules | `backend/cli`, `backend/api` |
+| `backend/cli` | `backend/libs` | `backend/api` |
+| `backend/api` | `backend/libs` | `backend/cli` |
+
+`api` and `cli` are **peers**, which is why `api` sits beside `cli` rather than inside
+`libs`. Both are transport over `SpellbookService`; neither owns it. Nesting the API
+inside the domain would have claimed the opposite, and made the layering test express
+something structurally odd - a subpackage forbidden from touching its own parent.
 
 ## Agent: Spell Recommender
 
@@ -319,9 +337,9 @@ Rules for context files:
 
 Hard-won facts about this codebase. Each of these cost real debugging time.
 
-### `main.py` must stay import-safe
+### Imports must stay side-effect free
 
-No side effects may run at import time - tests and tooling import the module. Anything
+No side effects may run at import time - tests and tooling import the packages. Anything
 expensive or destructive belongs inside a function called from `main()`:
 
 - `ensure_db()` rebuilds the Chroma index. It must **not** run on import.
@@ -331,7 +349,7 @@ expensive or destructive belongs inside a function called from `main()`:
   module-level singleton.
 
 The rebuild path deletes the index directory. When it ran at import scope, merely
-importing `main` in a test could destroy the user's index. Refreshing the Chroma client
+importing the packages in a test could destroy the user's index. Refreshing the Chroma client
 cache (`SharedSystemClient.clear_system_cache()`) is required before removing the
 directory, or the rebuild reuses a stale handle and fails with
 `attempt to write a readonly database`.
@@ -361,30 +379,49 @@ command surface itself is asserted as a superset by design.
 
 ### Splitting a god module without breaking the suite
 
-`main.py` held config, indexing, retrieval, prompting, caching, the watcher, the LLM
-client, the REPL and the entry point. Pulling it apart surfaced traps worth recording:
+The original `main.py` held config, indexing, retrieval, prompting, caching, the watcher,
+the LLM client, the REPL and the entry point. Splitting it surfaced traps worth recording -
+and the shim kept to avoid a wide rename was itself the last one to go:
 
 - **Moving code is not renaming it.** Helpers like `known_spells` were reached through
-  `main.` by eight test files, so `main.py` stayed as a shim re-exporting the old names
-  rather than being deleted. A shim is cheaper than a sed across the suite, and it keeps
-  `python main.py` working for the user.
+  `main.` by seven test files, so `main.py` became a shim re-exporting the old names. That
+  bought a green suite immediately and cost a second migration later.
+- **A shim rots silently.** It re-exports *names*, so it stops tracking the code the
+  moment something changes behind it - and nothing fails, because the shim's copy still
+  exists. When it was finally removed, three tests failed for real reasons: `main.Path`
+  and `main.__file__` had never existed, and a `monkeypatch.setattr(main, ...)` had been
+  patching a copy the code no longer reads. Retire a shim as soon as its reason to exist
+  has passed; the longer it lives, the more of it is a lie.
 - **Monkeypatching follows the module, not the shim.** Tests patched `main.CHARACTERS_DIR`
   and `main.CACHE_DIR`; once the code reads `config.CHARACTERS_DIR`, patching the shim's
   copy does nothing and the test silently hits the real directory. Fixtures must patch
   the module that *reads* the value. This is the nastiest class of refactor bug because
   the test still passes - it just stops testing anything.
-- **`python -m src.cli.app` puts only the repo root on `sys.path`,** so `import backend`
-  fails while `python main.py` works. `src/__init__.py` therefore bootstraps `src/`
-  onto the path itself, so all three launch styles agree.
+- **A moved package needs its import root to move with it.** While the code lived in
+  `src/`, `python -m src.cli.app` put only the repo root on `sys.path`, so `import backend`
+  failed while `python main.py` worked - and `src/__init__.py` had to bootstrap `src/` onto
+  the path so the three launch styles agreed. Deleting `src/` removed the problem rather
+  than managing it: the repo root is the import root, and `backend.libs.x` resolves from
+  any launch style. Nothing here compiles, so `src/` was never buying anything.
+- **Do not add a launch form you cannot honour.** `python backend/app.py` looks reasonable
+  and can never work: running a file directly puts *its own* directory on `sys.path`, not
+  the repo root, so `import backend` fails. The file was deleted rather than documented,
+  because a launch command that crashes is worse than one that does not exist.
 - **A library must not call `sys.exit`.** Tests that asserted `SystemExit` were rewritten
   to assert the typed exception, and the exit code moved to the CLI boundary where
   `main()` can return it. That is what lets an API reuse the same code path.
 - **Relative paths must resolve against the repo root, not the CWD.** `config.resolve()`
   exists so launching from another directory does not silently read a different index or
   character folder.
-- **Keep the private-name aliases.** `_format_pool`, `_db_is_valid`, `_split_names` etc.
-  are still exercised by name; deleting them would have meant touching tests for no
-  behavioural gain.
+- **Do not keep private-name aliases for their own sake.** The shim exposed `_format_pool`,
+  `_db_is_valid`, `_split_names` and friends so tests could keep using the old private
+  spellings. Removing the shim proved they were only aliases: the tests now call the real
+  public names (`format_pool`, `db_is_valid`, `split_names`), and nothing was lost.
+- **Check a bulk rename for double substitution.** A regex pass that rewrote
+  `src/backend` → `backend/libs` and then `from backend import` → `from backend.libs
+  import` produced `backend.libs.libs` in prose, because the second rule re-matched the
+  output of the first. Order the rules so later ones cannot match earlier results, and
+  grep for the pattern (`libs.libs`) afterwards.
 
 ### Tests
 
@@ -396,7 +433,7 @@ client, the REPL and the entry point. Pulling it apart surfaced traps worth reco
   accepts; a narrower fake lets broken calls pass.
 - Opening a Chroma store rewrites metadata, so the sqlite mtime changes on every
   launch. That is normal, not corruption - do not assert on it.
-- Anything that writes must be redirected. Cache tests monkeypatch `main.CACHE_DIR`;
+- Anything that writes must be redirected. Cache tests monkeypatch `config.CACHE_DIR`;
   without that the suite writes `.cache/` into the working tree.
 
 ### Sources: 2024 only
@@ -488,7 +525,7 @@ before "fixing" the document.
 - **Vite + React + TypeScript + Tailwind v4 + shadcn-style components**, in `frontend/`
   with its own `package.json`. It is a separate npm project, not a workspace.
 - **Tailwind v4 has no `tailwind.config.js`** - the palette and base layer live in
-  `src/index.css` under `@theme`. Adding a colour means adding a token there, not a
+  `frontend/app/index.css` under `@theme`. Adding a colour means adding a token there, not a
   config entry.
 - **`baseUrl` is gone in TypeScript 7.** Path aliases work from `paths` alone; adding
   `baseUrl` fails the build with `TS5101`. The alias must also be mirrored in
@@ -498,7 +535,7 @@ before "fixing" the document.
 - **The root `.gitignore` Node patterns are anchored with a leading `/`.** They existed to
   keep the retired root-level `node_modules` out; unanchored, they also ignored
   `frontend/package-lock.json`, which a front end must commit.
-- Lint with `npx eslint src`, typecheck and build with `npm run build` (`tsc -b && vite
+- Lint with `npx eslint app`, typecheck and build with `npm run build` (`tsc -b && vite
   build`). Both are clean and should stay that way.
 
 ### Retrieval: filter first, rank second
@@ -631,8 +668,7 @@ the answer is printed, because it is the record used for post-play ratings, and 
   anywhere other than the repo root silently wrote books into *that* directory and
   loaded an empty rules context — the symptom was "the cache isn't being created",
   because it was being created elsewhere. Prefer the resolved constants
-  (`CACHE_DIR_PATH`, `CONTEXT_DIR_PATH`, …); the bare names still exist for the
-  import-compatibility shim only.
+  (`CACHE_DIR_PATH`, `CONTEXT_DIR_PATH`, …).
 - **Test the CWD, not just the code.** No unit test could catch this: every test ran
   with the repo root as `cwd`. The regression test launches a real subprocess from a
   `tmp_path` and asserts no `.cache` appears there.
@@ -682,7 +718,7 @@ the answer is printed, because it is the record used for post-play ratings, and 
 
 ### The API is transport, and only transport
 
-`src/api/main.py` validates input, calls one service method, and maps a typed error to a
+`backend/api/main.py` validates input, calls one service method, and maps a typed error to a
 status code. Nothing else. A rule that lived in a route handler would be a rule the CLI
 does not have, and the two front ends would drift within a week.
 
@@ -786,7 +822,7 @@ model's window shows up as an empty reply, not an error.
 ### Terminal output: progress and markdown
 
 The answers are markdown and were being printed raw, so the user saw `### Book 1` and
-`**Cantrips:**`. `cli/render.py` converts them with `rich`.
+`**Cantrips:**`. `backend/cli/render.py` converts them with `rich`.
 
 - **Styling belongs to the CLI, not the backend.** The service returns markdown text;
   an API would serialise that as-is, so `render.py` is the only place that knows about a
@@ -795,7 +831,7 @@ The answers are markdown and were being printed raw, so the user saw `### Book 1
   output is redirected, and printing ANSI escapes into a file or a test capture is
   worse than no styling. Both `render` and `StageProgress` check it.
 - **A silent terminal is indistinguishable from a hang.** Fetching candidates embeds the
-  scenario and generating an answer waits on the model, so `cli/progress.py` announces
+  scenario and generating an answer waits on the model, so `backend/cli/progress.py` announces
   each stage. The backend takes a plain `emit(message)` callback, so it never imports
   `rich`.
 - **Stages must be closed, not just opened.** `StageProgress` completes the previous

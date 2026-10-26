@@ -5,7 +5,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { '@': new URL('./src', import.meta.url).pathname },
+    alias: { '@': new URL('./app', import.meta.url).pathname },
   },
   server: {
     // The API allows this dev origin explicitly, so the front end calls :8000

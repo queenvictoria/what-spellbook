@@ -12,10 +12,10 @@ import os
 import signal
 import sys
 
-from backend import config, indexing, service, watching
-from backend.characters import CharacterNotFound, load_character_data
-from backend.indexing import IndexUnavailable
-from backend.service import SpellbookService
+from backend.libs import config, indexing, service, watching
+from backend.libs.characters import CharacterNotFound, load_character_data
+from backend.libs.indexing import IndexUnavailable
+from backend.libs.service import SpellbookService
 
 from .shell import SpellbookShell
 

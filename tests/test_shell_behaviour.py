@@ -4,9 +4,11 @@ wiring, error handling, and the lazy/import-safe module contract.
 
 import pytest
 
-from backend import cache  # noqa: F401
-from backend import llm  # noqa: E402
-import main
+from backend.libs import cache  # noqa: F401
+from backend.libs import llm  # noqa: E402
+from backend.cli import app as cli_app
+from backend.libs import indexing
+from backend.libs import watching
 
 
 # --- /scenario prompt assembly ---
@@ -183,29 +185,29 @@ def test_extract_text_falls_back_to_str_for_unknown_objects():
 
 
 def test_import_builds_no_vector_store():
-    """Importing main must not scan, embed, or delete anything."""
-    assert not hasattr(main, "db")
+    """Importing the packages must not scan, embed, or delete anything."""
+    assert not hasattr(indexing, "db")
 
 
 def test_import_defines_no_eager_embeddings():
     """get_embeddings is a factory; the module holds no client until asked."""
-    assert callable(main.get_embeddings)
-    assert getattr(main, "_embeddings", None) is None
+    assert callable(indexing.get_embeddings)
+    assert getattr(indexing, "_embeddings", None) is None
 
 
 def test_observer_is_a_factory_not_a_shared_instance():
     """A single Observer cannot be started twice, so each run needs a new one."""
-    first = main.get_observer()
-    second = main.get_observer()
+    first = watching.get_observer()
+    second = watching.get_observer()
     assert first is not second
     first.stop()
     second.stop()
 
 
 def test_stop_observer_tolerates_none():
-    main._stop_observer(None)
+    watching.stop_observer(None)
 
 
 def test_exit_on_sigterm_raises_keyboard_interrupt():
     with pytest.raises(KeyboardInterrupt):
-        main._exit_on_sigterm(15, None)
+        cli_app._exit_on_sigterm(15, None)

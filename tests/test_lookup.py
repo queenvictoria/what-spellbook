@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend import characters, lookup
+from backend.libs import characters, lookup
 
 LOIS = {
     "Name": "Lois",

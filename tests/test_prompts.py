@@ -7,7 +7,7 @@ for a character without hard-coding a class.
 
 import pytest
 
-from backend import prompts
+from backend.libs import prompts
 
 
 LOIS = {

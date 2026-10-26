@@ -9,8 +9,8 @@ import json
 
 import pytest
 
-from backend import llm, service
-from cli import shell as shell_mod
+from backend.libs import llm, service
+from backend.cli import shell as shell_mod
 
 
 SHEET = {
@@ -173,16 +173,18 @@ def test_work_happens_without_any_progress_callback(svc):
 # --- API readiness ---
 
 def test_service_imports_without_a_terminal():
-    """The backend must not depend on the CLI, or an API would pull in cmd/readline."""
+    """The domain must not depend on a front end, or an API would pull in cmd/readline."""
     import subprocess
     import sys
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
+    # Assert on the real module names: the subpackages are `backend.cli` and
+    # `backend.api`, so a bare 'cli' check would pass even if the CLI were imported.
     code = (
-        "import sys; sys.path.insert(0, 'src');"
-        "import backend.service;"
-        "assert 'cli' not in sys.modules, 'backend imported the CLI'"
+        "import backend.libs.service, sys;"
+        "imported = {m for m in sys.modules if m.startswith(('backend.cli', 'backend.api'))};"
+        "assert not imported, f'the domain imported a front end: {imported}'"
     )
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, cwd=str(root)

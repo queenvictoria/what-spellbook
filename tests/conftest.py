@@ -5,17 +5,17 @@ from pathlib import Path
 
 import pytest
 
-# Make `src/` importable so tests can import backend/cli regardless of cwd, and the
-# repo root so they can still use the `main` shim.
+# The repo root is the import root, so `backend.*` resolves from anywhere. pytest also
+# inserts rootdir for us, but doing it explicitly means `pytest tests/foo.py` and a bare
+# `pytest` behave identically.
 _ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(_ROOT / "src"))
-sys.path.insert(0, str(_ROOT))
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
 
-from backend import cache, characters, config, service  # noqa: E402
-from cli import progress as progress_mod  # noqa: E402
-from cli.shell import SpellbookShell  # noqa: E402
+from backend.libs import cache, characters, config, service  # noqa: E402
+from backend.cli import progress as progress_mod  # noqa: E402
+from backend.cli.shell import SpellbookShell  # noqa: E402
 
-import main  # noqa: E402
 
 
 class FakeDoc:

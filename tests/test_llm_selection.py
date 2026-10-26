@@ -6,7 +6,7 @@ two conventions are unambiguous (OpenRouter is `vendor/model`, Ollama is `name:t
 
 import pytest
 
-from backend import config, llm
+from backend.libs import config, llm
 
 
 # --- routing ---

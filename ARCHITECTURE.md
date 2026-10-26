@@ -3,40 +3,44 @@
 ## Shape of the system
 
 ```
-                 ┌──────────────────┐        ┌──────────────────┐
-                 │   CLI (rich)     │        │  React front end │
-                 │   src/cli/       │        │  frontend/       │
-                 └────────┬─────────┘        └────────┬─────────┘
-                          │                           │ HTTP
-                          │                           ▼
-                          │                  ┌──────────────────┐
-                          │                  │  FastAPI         │
-                          │                  │  src/api/        │
-                          │                  └────────┬─────────┘
-                          └───────────┬───────────────┘
-                                      ▼
-                          ┌───────────────────────────┐
-                          │  backend.service          │
-                          │  SpellbookService         │
-                          └─────────────┬─────────────┘
-                                        │
-        ┌───────────┬───────────┬───────┴────┬───────────┬──────────┐
-        ▼           ▼           ▼            ▼           ▼          ▼
-   retrieval   characters   prompts      cache       lookup      rules
-   (Chroma)     (YAML)     (context/)   (files)     (sheet)    (5e24srd)
+        ┌────────────────────┐          ┌────────────────────┐
+        │  backend/cli/      │          │  frontend/app/     │
+        │  the REPL          │          │  React UI          │
+        └─────────┬──────────┘          └─────────┬──────────┘
+                  │                                │ HTTP
+                  │                                ▼
+                  │                     ┌────────────────────┐
+                  │                     │  backend/api/      │
+                  │                     │  FastAPI           │
+                  │                     └─────────┬──────────┘
+                  └──────────────┬────────────────┘
+                                 ▼
+                    ┌─────────────────────────────┐
+                    │  backend/libs/service.py    │
+                    │  SpellbookService           │
+                    └──────────────┬──────────────┘
+                                   │
+     ┌──────────┬──────────┬───────┴────┬──────────┬──────────┐
+     ▼          ▼          ▼            ▼          ▼          ▼
+ retrieval  characters  prompts      cache     lookup     rules
+ (Chroma)    (YAML)    (context/)   (files)    (sheet)   (5e24srd)
 ```
 
-The single rule this diagram encodes: **logic lives in `backend/`, and only
-`backend/` talks to the index, the model or the disk.** The CLI and the API are both
-transport. A rule that lives in a route handler is a rule the CLI does not have, and
-vice versa.
+The single rule this diagram encodes: **logic lives in `backend/libs/`, and only
+`backend/libs/` talks to the index, the model or the disk.** The CLI and the API are both
+transport, peers over the same service. A rule that lives in a route handler is a rule the
+CLI does not have, and vice versa.
 
 That is enforced by a test (`test_service_imports_without_a_terminal`) which asserts the
-service imports without pulling in `cli`.
+service imports without pulling in `cli` or `api`.
+
+`backend/api` sits beside `backend/cli` rather than inside `backend/libs` because the
+dependency direction is one-way: `api -> libs`, never the reverse. A package that may not
+import its own parent would be a strange thing to write down.
 
 ## Layers
 
-### `src/backend/` - the core
+### `backend/libs/` - the core
 
 | Module | Responsibility |
 | --- | --- |
@@ -55,7 +59,7 @@ Nothing here prints, prompts or exits. A failure is a typed exception:
 `NoEligibleSpells`, `EmptyCompletion`, `LLMUnavailable`, `CharacterNotFound`,
 `CharacterNotLoaded`, `RulesUnavailable`.
 
-### `src/cli/` - the terminal front end
+### `backend/cli/` - the terminal front end
 
 `shell.py` is the REPL: `/scenario`, `/ask`, `/books`, `/rate`, `/history`, `/read`,
 `/c`, `/?`, `/config`. `progress.py` owns the live progress line, `render.py` the
@@ -64,15 +68,19 @@ markdown-to-terminal formatting, `app.py` argument parsing.
 `ALIASES` in `shell.py` maps short forms (`c` -> `character`, `?` -> `rules`) for both
 dispatch and completion, so the two cannot drift apart.
 
-### `src/api/` - the HTTP front end
+### `backend/api/` - the HTTP front end
 
-`main.py` routes; `schemas.py` is the wire contract. No logic: each endpoint validates,
+`backend/api/main.py` routes; `schemas.py` is the wire contract. No logic: each endpoint validates,
 calls one service method, and maps the result or a typed error to a status code.
 
-### `frontend/` - the browser front end
+### `frontend/app/` - the browser front end
 
-Hand-written typed client in `src/api/client.ts` mirroring `schemas.py`. Screens for
-scenario, history, character and rules.
+Hand-written typed client in `app/api/client.ts` mirroring `backend/api/schemas.py`.
+Screens for scenario, history, character and rules.
+
+The React source lives in `app/`, not `src/`. That is the Vite/Next convention for "the
+web app", and it keeps the front end from being the only thing in the repo still using a
+`src/` that means something different from what it meant before.
 
 ## Two decisions worth stating
 

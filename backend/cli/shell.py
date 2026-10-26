@@ -24,8 +24,8 @@ try:
 except ImportError:  # Windows has no readline; cmd merely loses TAB completion there.
     readline = None
 
-from backend import cache as cache_store
-from backend import characters, config, llm, rules as rules_mod, service, timing
+from backend.libs import cache as cache_store
+from backend.libs import characters, config, llm, rules as rules_mod, service, timing
 
 from . import progress as progress_mod
 from . import render
@@ -507,7 +507,7 @@ def build_shell(*, character_name=None, refresh=False, show_progress=True,
     Kept separate from ``main()`` so a test can build a shell around a fake index and
     backend without a terminal.
     """
-    from backend import indexing
+    from backend.libs import indexing
 
     name = character_name or config.DEFAULT_CHARACTER
     sheet = characters.load_character_data(name)

@@ -9,7 +9,7 @@ import io
 import pytest
 from rich.console import Console
 
-from cli import progress, render
+from backend.cli import progress, render
 
 
 # --- markdown rendering ---
