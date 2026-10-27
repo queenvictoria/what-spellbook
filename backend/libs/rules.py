@@ -230,17 +230,23 @@ def _promote_groups(markdown: str) -> str:
     """
     out = []
     current = None
+    parent = None
     for line in markdown.splitlines():
         if heading := re.match(r"^#{1,4}\s+(.*)$", line):
             current = heading.group(1).strip().lower()
+            # Track the parent heading for fourth-level promotion
+            if heading.group(0).startswith("####"):
+                parent = current
+            else:
+                parent = None
             out.append(line)
             continue
-        if re.match(r"^\s*</?details[^>]*>\s*$", line, re.I):
-            continue
-        label = rest = None
-        if match := _SUMMARY.match(line):
-            label = re.sub(r"<[^>]+>", "", match.group(1)).strip()
-        elif match := _RUN_IN_WHOLE.match(line):
+        # Promote fourth-level headings that are distinct from the parent heading.
+        # This makes rules like "#### Spell Attack" under "## Rules Definitions"
+        # searchable, which the SRD uses for glossary definitions.
+        if parent and re.match(r"^####\s+(.+)$", line):
+            label = re.sub(r"<[^>]+>", "", line).strip()
+            out.append(f"### {label}")
             # The whole line is the label, and it takes no full stop: the SRD captions each
             # table with the name of its section ("**Cover**").
             label = match.group(1).strip()
@@ -251,20 +257,19 @@ def _promote_groups(markdown: str) -> str:
             # share a line - which is why the standalone pattern above caught exactly one
             # line in the whole SRD and missed all 240 of these. "Shove" is a rule defined
             # *only* this way, as the third of three cases under "Unarmed Strike", so
-            # without promoting it "how do I shove a creature" had nowhere to land.
             label = match.group(2).strip()
             rest = match.group(3).strip()
-        if label and label.lower() != current:
-            # Promoted at ``#####``, a level no SRD file uses. It has to be *distinct* from
-            # every heading the source itself writes, because the promotion is what makes a
-            # run-in label a part of the rule above it rather than a rule of its own. The
-            # two are separated again by :func:`markdown_to_text`, which flattens a real
-            # heading to ``##`` and a promoted label to ``###``, and :func:`_sections` reads
-            # that difference as the parent link.
-            out.append(f"##### {label}")
-            if rest:
-                out.append(rest)
-            continue
+            if label and label.lower() != current:
+                # Promoted at ``#####``, a level no SRD file uses. It has to be *distinct* from
+                # every heading the source itself writes, because the promotion is what makes a
+                # run-in label a part of the rule above it rather than a rule of its own. The
+                # two are separated again by :func:`markdown_to_text`, which flattens a real
+                # heading to ``##`` and a promoted label to ``###``, and :func:`_sections` reads
+                # that difference as the parent link.
+                out.append(f"##### {label}")
+                if rest:
+                    out.append(rest)
+                continue
         out.append(line)
     return "\n".join(out)
 
