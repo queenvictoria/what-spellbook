@@ -373,6 +373,33 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         except ValueError as e:
             raise _error(400, str(e))
 
+    @app.get("/api/rules/contextual", response_model=schemas.AnswerSchema, tags=["rules"])
+    def get_rules_contextual(selected_text: str = Query(min_length=1,
+                                                         description="Selected text from the book prose"),
+                              character: str | None = Query(default=None)):
+        """Ask a contextual rules question based on selected text, grounded in the 2024 SRD.
+
+        This endpoint uses RAG to find relevant passages from the SRD that explain the
+        selected text in the context of D&D 5.5e rules. It falls back to the generative
+        rules path when no heading matches the question.
+
+        A 404 here means the SRD genuinely has no rule for the question - rests, the
+        Rules Glossary and most conditions are not in it. That is reported rather than
+        answered from the model's memory, which is how 2014 numbers leak into 2024
+        answers.
+        """
+        svc = service_for(character)
+        try:
+            return schemas.AnswerSchema.from_answer(svc.ask_rules_contextual(selected_text))
+        except rules.RulesUnavailable as e:
+            raise _error(404, str(e))
+        except llm.EmptyCompletion as e:
+            raise _error(502, f"The model returned an empty response: {e}")
+        except llm.LLMUnavailable as e:
+            raise _error(503, f"The model could not be reached: {e}")
+        except ValueError as e:
+            raise _error(400, str(e))
+
     @app.get("/api/spell", response_model=schemas.SpellSchema, tags=["rules"])
     def get_spell(name: str = Query(min_length=1,
                                     description="Spell name, e.g. Fireball")):

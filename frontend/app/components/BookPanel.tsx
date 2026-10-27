@@ -1,7 +1,9 @@
 import { useState } from 'react'
-import { ChevronDown, ChevronRight, Star } from 'lucide-react'
+import { ChevronDown, ChevronRight, Star, MessageSquare } from 'lucide-react'
 
 import { api, ApiError } from '@/api/client'
+import { RulesContextDrawerProvider } from '@/components/RulesContextDrawer'
+import { RulesContextButton } from '@/components/RulesContextButton'
 import type { Answer, Book } from '@/api/types'
 import { Markdown } from '@/components/Markdown'
 import { SourceBadge } from '@/components/SourceBadge'
@@ -152,7 +154,7 @@ export function BookPanel({
 
           <Markdown text={book.text} className="prose-spell" />
 
-          <div className="border-t border-void-800 pt-3">
+          <div className="border-t border-void-800 pt-3 space-y-3">
             <div className="flex gap-2">
               <Input
                 value={question}
@@ -165,12 +167,21 @@ export function BookPanel({
               </Button>
             </div>
             {answer && (
-              <div className="mt-3 space-y-2">
+              <div className="space-y-2">
                 <SourceBadge source={answer.source} field={answer.field_name} />
                 <Markdown text={answer.answer} className="prose-spell" />
               </div>
             )}
+
+            <div className="flex items-center gap-2 text-sm text-parchment/60">
+              <MessageSquare className="h-4 w-4" />
+              <span>Or select text and click the context button to ask about it</span>
+            </div>
           </div>
+
+          <RulesContextDrawerProvider>
+            <RulesContextButton />
+          </RulesContextDrawerProvider>
 
           {error && <p className="text-xs text-red-300">{error}</p>}
 

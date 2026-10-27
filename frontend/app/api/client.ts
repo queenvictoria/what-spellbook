@@ -115,6 +115,10 @@ export const api = {
 
   rules: (question: string) => request<Answer>(`/api/rules${query({ question })}`),
 
+  /** Contextual rules answer based on selected text. A 404 means the SRD has no rule. */
+  rulesContextual: (selectedText: string) =>
+    request<Answer>(`/api/rules/contextual${query({ selectedText })}`),
+
   /** One spell's own text. A 404 means neither the SRD nor the corpus has that name. */
   spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),
 

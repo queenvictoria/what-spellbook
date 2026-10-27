@@ -424,6 +424,49 @@ class SpellbookService:
         return Answer(question=question, answer=answer, source=source,
                       citations=[retrieved["url"]])
 
+    def ask_rules_contextual(self, selected_text: str, progress=None) -> Answer:
+        """Answer a contextual rules question based on selected text, grounded in the 2024 SRD.
+
+        This method uses RAG to find relevant passages from the SRD that explain the
+        selected text in the context of D&D 5.5e rules. It falls back to the generative
+        rules path when no heading matches the question.
+
+        The selected text is used as the question, so the model can explain it in the
+        context of the rules. For example, selecting "2 beams" from "Eldritch Blast" would
+        result in a question like "What does 2 beams mean in the context of Eldritch Blast?".
+        """
+        if not selected_text.strip():
+            raise ValueError("Please provide selected text.")
+
+        emit = progress or (lambda _message: None)
+        emit("Consulting the 2024 SRD")
+        try:
+            retrieved = rules.gather(selected_text, cache_dir=self.cache_dir)
+            source = "rules"
+        except rules.RulesUnavailable:
+            # No heading names the question. Fall back to the best related text, which
+            # raises in turn when the SRD does not discuss the subject at all.
+            retrieved = rules.gather_inferred(selected_text, cache_dir=self.cache_dir)
+            source = "rules-inferred"
+
+        if retrieved["from_cache"] and (cached := rules.load_cached(selected_text, self.cache_dir)):
+            return Answer(question=selected_text, answer=cached["answer"],
+                          source=cached.get("answer_source") or source,
+                          citations=[cached["url"]], from_cache=True)
+
+        emit("Reading the rules")
+        build = (prompts.rules_prompt if source == "rules"
+                 else prompts.rules_inferred_prompt)
+        prompt = build(
+            question=selected_text, rule_text=retrieved["text"], rule_context=self.rule_context,
+        )
+        answer = llm.invoke(self.llm, prompt)
+        rules.save_cached(selected_text, answer, passages=retrieved["passages"],
+                          url=retrieved["url"], answer_source=source,
+                          cache_dir=self.cache_dir)
+        return Answer(question=selected_text, answer=answer, source=source,
+                      citations=[retrieved["url"]])
+
     def history(self) -> list[dict]:
         try:
             return cache.load_runs(self.cache_dir)
