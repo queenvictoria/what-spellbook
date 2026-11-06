@@ -1,19 +1,19 @@
-import { useMemo, useState } from 'react'
-import type { ReactNode } from 'react'
-import { Search, X } from 'lucide-react'
+import { useMemo, useState } from "react"
+import type { ReactNode } from "react"
+import { Search, X } from "lucide-react"
 
-import { SpellCard } from '@/components/SpellCard'
+import { SpellCard } from "@/components/SpellCard"
 import {
   Drawer,
   DrawerClose,
   DrawerContent,
   DrawerDescription,
   DrawerTitle,
-} from '@/components/ui/drawer'
-import { Input } from '@/components/ui/input'
-import { OpenSpellContext, useOpenSpell } from '@/lib/spellDrawer'
-import { useSpellNames } from '@/lib/spellNames'
-import { useSpell } from '@/lib/useSpell'
+} from "@/components/ui/drawer"
+import { Input } from "@/components/ui/input"
+import { OpenSpellContext, useOpenSpell } from "@/lib/spellDrawer"
+import { useSpellNames } from "@/lib/spellNames"
+import { useSpell } from "@/lib/useSpell"
 
 /**
  * A pull-out panel for reading a spell without leaving the page you were on.
@@ -41,7 +41,13 @@ export function SpellDrawerProvider({ children }: { children: ReactNode }) {
   )
 }
 
-function SpellDrawer({ name, onClose }: { name: string | null; onClose: () => void }) {
+function SpellDrawer({
+  name,
+  onClose,
+}: {
+  name: string | null
+  onClose: () => void
+}) {
   return (
     <Drawer
       open={name !== null}
@@ -56,14 +62,18 @@ function SpellDrawer({ name, onClose }: { name: string | null; onClose: () => vo
         {/* The primitive labels the panel from its Title, so there has to be one. It is
             visually hidden because the card below already shows the spell's name, and a
             visible title would state it twice. */}
-        <DrawerTitle className="sr-only">{name ? `Spell: ${name}` : 'Spell'}</DrawerTitle>
+        <DrawerTitle className="sr-only">
+          {name ? `Spell: ${name}` : "Spell"}
+        </DrawerTitle>
         <DrawerDescription className="sr-only">
           A spell's rules, quoted from the vendored SRD or the spell corpus.
         </DrawerDescription>
 
         <SpellSearch />
 
-        <div className="flex-1 overflow-y-auto p-4">{name && <SpellBody name={name} />}</div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {name && <SpellBody name={name} />}
+        </div>
 
         <div className="border-t border-void-800 p-3">
           <DrawerClose
@@ -90,7 +100,7 @@ function SpellDrawer({ name, onClose }: { name: string | null; onClose: () => vo
 function SpellSearch() {
   const names = useSpellNames()
   const setOpen = useOpenSpell()
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useState("")
 
   const matches = useMemo(() => {
     const needle = query.trim().toLowerCase()
@@ -98,7 +108,8 @@ function SpellSearch() {
     const all = [...names]
     const starts = all.filter((n) => n.toLowerCase().startsWith(needle))
     const contains = all.filter(
-      (n) => !n.toLowerCase().startsWith(needle) && n.toLowerCase().includes(needle),
+      (n) =>
+        !n.toLowerCase().startsWith(needle) && n.toLowerCase().includes(needle),
     )
     // A prefix match is nearly always the intended one - typing "shie" means Shield rather
     // than "Barkskin" - so those come first instead of being interleaved alphabetically.
@@ -108,7 +119,7 @@ function SpellSearch() {
   return (
     <div className="border-b border-void-800 p-4">
       <div className="relative">
-        <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-parchment/35" />
+        <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-parchment/60" />
         <Input
           value={query}
           placeholder="Search all spells…"
@@ -127,7 +138,7 @@ function SpellSearch() {
                   // The same opener a link in a book uses, so a result and a mention are
                   // the same action.
                   setOpen(match)
-                  setQuery('')
+                  setQuery("")
                 }}
                 className="rounded-full border border-void-700 px-2 py-0.5 text-xs text-parchment/60 transition-colors hover:border-arcane-400 hover:text-parchment"
               >
@@ -159,7 +170,8 @@ function SpellBody({ name }: { name: string }) {
     )
   }
 
-  if (!spell) return <p className="text-sm text-parchment/40">Looking up {name}…</p>
+  if (!spell)
+    return <p className="text-sm text-parchment/40">Looking up {name}…</p>
 
   return <SpellCard spell={spell} />
 }

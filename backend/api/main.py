@@ -378,6 +378,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                                                          description="Text selected from the book prose"),
                               context: str | None = Query(default=None,
                                                           description="The sentence the selection came from"),
+                              document: list[str] | None = Query(default=None,
+                                                                 description="A document attached to the selection, repeatable"),
                               character: str | None = Query(default=None)):
         """Explain a phrase selected from a book's prose, grounded in the 2024 SRD.
 
@@ -392,6 +394,14 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         spell), but the selection is what was asked about, so the sentence never steers
         retrieval.
 
+        ``document`` attaches a named rule - a spell or an invocation - to the selection, and
+        may be repeated. This is what makes a book's sentence answerable: "Repelling Blast
+        misses, so Thorn Whip pulls it" names two spells, and no retrieval over the
+        *selection* can turn those names into their rules, because their descriptions are
+        written in different words. Pass none and the mentions in the selection are resolved
+        automatically; a selection whose documents cover it is answered from them even when
+        the SRD has no rule of its own for the sentence.
+
         A 404 here means the SRD does not discuss the selection at all - a monster ability
         it does not carry, or a term like "flanking" that appears nowhere in 2024. That is
         reported rather than answered from the model's memory, which is how 2014 numbers
@@ -400,7 +410,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         svc = service_for(character)
         try:
             return schemas.AnswerSchema.from_answer(
-                svc.ask_rules_contextual(selected_text, context=context or ""))
+                svc.ask_rules_contextual(selected_text, context=context or "",
+                                         attachments=document))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
         except llm.EmptyCompletion as e:

@@ -647,3 +647,103 @@ def test_every_name_in_the_link_list_resolves(api):
             continue
         misses.append(name)
     assert misses == [], f"{len(misses)} linkable names do not resolve: {misses[:5]}"
+
+
+def test_contextual_attaches_the_documents_it_is_given(api, monkeypatch):
+    """The attached documents must reach the prompt, and the response must report them.
+
+    A book's sentence names the spells it is about, and no retrieval over the *selection* can
+    turn those names into their rules - a spell's description is written in different words
+    from a sentence about it. Attaching them is the difference between an answer and "the SRD
+    does not cover this".
+    """
+    prompts = []
+
+    def fake_invoke(*args, **kwargs):
+        prompts.append(args[1] if len(args) > 1 else kwargs.get("prompt", ""))
+        return "Thorn Whip is a 30-foot melee spell attack for 1d6 piercing."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    selection = ("If Repelling Blast misses, Thorn Whip is a 30-ft melee spell attack "
+                 "for 2d6")
+    body = api.get("/api/rules/contextual", params={
+        "selected_text": selection,
+        "document": ["Thorn Whip", "Repelling Blast"],
+    }).json()
+
+    # The spell's own text is in the prompt, not just its name.
+    assert "MELEE SPELL ATTACK" in prompts[0].upper()
+    assert "1d6" in prompts[0]
+    assert body["attachments"] == ["Thorn Whip", "Repelling Blast"]
+
+
+def test_contextual_resolves_names_from_the_selection_when_none_are_given(api, monkeypatch):
+    """A caller that sends only the selection still gets the documents.
+
+    The UI resolves the mentions itself so the attached list matches the links the reader was
+    shown, but the endpoint must not depend on that - a selection is enough on its own.
+    """
+    prompts = []
+
+    def fake_invoke(*args, **kwargs):
+        prompts.append(args[1] if len(args) > 1 else kwargs.get("prompt", ""))
+        return "Answer."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    body = api.get("/api/rules/contextual", params={
+        "selected_text": "Thorn Whip is a 30-ft melee spell attack",
+    }).json()
+
+    assert body["attachments"] == ["Thorn Whip"]
+    assert "1d6" in prompts[0]
+
+
+def test_an_attached_document_rescues_a_selection_the_srd_cannot_answer(api, monkeypatch):
+    """A sentence built of vocabulary the SRD lacks is answerable when its documents are
+    attached.
+
+    Without them the selection path refuses, correctly: "Rust Metal" is not in the 2024 SRD
+    and nearby prose would read as sourced. But a *question about a spell* does not need an
+    SRD rule behind the sentence - the spell's own description is the rule.
+    """
+
+    def fake_invoke(*args, **kwargs):
+        return "Answered from the attached spell."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    selection = "Rust Metal corrodes the plate armour"
+    # Unanswerable with nothing attached...
+    assert api.get("/api/rules/contextual",
+                   params={"selected_text": selection}).status_code == 404
+    # ...and answerable once a document is, because that document is the rule.
+    rescued = api.get("/api/rules/contextual", params={
+        "selected_text": selection, "document": "Mending"})
+    assert rescued.status_code == 200
+    assert rescued.json()["attachments"] == ["Mending"]
+
+
+def test_contextual_reports_the_documents_a_cached_answer_used(api, monkeypatch):
+    """A cache hit skips retrieval *and* resolution, so the names have to be stored.
+
+    "What the model actually read" is part of the answer: reporting the SRD does not cover a
+    spell reads differently once it is clear the spell was never attached.
+    """
+    calls = []
+
+    def fake_invoke(*args, **kwargs):
+        calls.append(args)
+        return "Answer."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+    params = {"selected_text": "Thorn Whip is a melee spell attack", "document": "Thorn Whip"}
+
+    first = api.get("/api/rules/contextual", params=params).json()
+    assert first["attachments"] == ["Thorn Whip"]
+
+    second = api.get("/api/rules/contextual", params=params).json()
+    assert second["from_cache"] is True
+    assert second["attachments"] == ["Thorn Whip"]
+    assert len(calls) == 1

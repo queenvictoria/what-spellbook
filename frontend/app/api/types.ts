@@ -76,6 +76,13 @@ export interface Answer {
   field_name: string | null
   citations: string[]
   from_cache: boolean
+  /**
+   * The documents the answer was given, by name.
+   *
+   * Worth showing: an answer that says the SRD does not cover a spell reads very
+   * differently once the reader can see the spell was never attached.
+   */
+  attachments: string[]
 }
 
 export interface SpellComponents {
@@ -150,4 +157,21 @@ export const PHASE_LABELS: Record<string, string> = {
   retrieval: 'Fetching spells from Grimoire',
   prompt: 'Crafting prompt',
   books: 'Scribing Books of Shadow',
+}
+
+/**
+ * The contextual menu's own stages.
+ *
+ * A separate list from `PHASES` rather than a reuse of it, because the work is different
+ * work: nothing is ranked, nothing is filtered by class, and the spell texts that answer
+ * the question are *attached* rather than retrieved - which is the stage a reader most
+ * wants to see, since a missing attachment is invisible in the answer text.
+ */
+export const CONTEXT_STAGES = ['analyse', 'gather', 'prompt', 'answer'] as const
+
+export const CONTEXT_STAGE_LABELS: Record<string, string> = {
+  analyse: 'Analysing the selection',
+  gather: 'Retrieving context',
+  prompt: 'Crafting prompt',
+  answer: 'Cogitating',
 }

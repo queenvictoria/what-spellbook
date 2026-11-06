@@ -417,3 +417,71 @@ def test_blank_selection_context_is_treated_as_absent(build):
     run of spaces is not one either."""
     assert "WHERE THE SELECTED TEXT APPEARS" not in build(
         question="q", rule_text="R", rule_context="", selection_context="   \n ")
+
+
+# --- attached documents --------------------------------------------------------
+
+
+def test_no_attachments_means_no_attachments_block():
+    text = prompts.rules_inferred_prompt(
+        question="2 beams", rule_text="R", rule_context="", attachments=[])
+    assert "ATTACHED DOCUMENTS" not in text
+
+
+def test_an_attachment_carries_its_text_and_its_source():
+    """The source is rendered per document because the two corpora are not equal - the 2024
+    SRD is the authority and this project's own spell corpus is not. A set that mixes them
+    must not read as if it were all SRD."""
+    documents = [
+        {"name": "Thorn Whip", "text": "1d6 Piercing.", "source": "retrieval-corpus"},
+        {"name": "Repelling Blast", "text": "Push 10 feet.", "source": "vendored-srd-5.2.1"},
+    ]
+    text = prompts.rules_inferred_prompt(
+        question="q", rule_text="R", rule_context="", attachments=documents)
+    assert "--- Thorn Whip (retrieval-corpus) ---" in text
+    assert "1d6 Piercing." in text
+    assert "--- Repelling Blast (vendored-srd-5.2.1) ---" in text
+    assert "Push 10 feet." in text
+
+
+@pytest.mark.parametrize("build", [prompts.rules_prompt, prompts.rules_inferred_prompt])
+def test_attached_documents_are_a_permitted_source(build):
+    """Both prompts must license the documents, or a spell the model was handed is reported as
+    unanswerable - which is the whole failure this exists to prevent."""
+    text = build(question="q", rule_text="R", rule_context="",
+                 attachments=[{"name": "Thorn Whip", "text": "T", "source": "s"}])
+    assert "attached documents" in text.lower()
+
+
+def test_only_the_interpreting_prompt_gives_the_documents_precedence():
+    """The two prompts differ here, and the difference is the point.
+
+    ``rules_inferred_prompt`` is the one that says the retrieved text is *related* to the
+    question rather than being the rule, so it has to say which of the two wins. The precise
+    prompt is used when a heading *names* the selection - the retrieved passage then simply is
+    the rule, and the documents are usually the same text arriving by a second route. Giving
+    them precedence there would invite the model to prefer a spell's description over the rule
+    that governs it.
+    """
+    documents = [{"name": "Thorn Whip", "text": "T", "source": "s"}]
+    inferred = prompts.rules_inferred_prompt(
+        question="q", rule_text="R", rule_context="", attachments=documents).lower()
+    precise = prompts.rules_prompt(
+        question="q", rule_text="R", rule_context="", attachments=documents).lower()
+
+    assert "precedence" in inferred
+    assert "precedence" not in precise
+
+
+def test_all_three_blocks_can_coexist_in_order():
+    """Retrieved text, then the named documents, then the character, then the book's own
+    paragraph. The order is the app's, and a variant that reordered it would be a second
+    variable hiding inside the first."""
+    text = prompts.rules_inferred_prompt(
+        question="q", rule_text="RETRIEVED", rule_context="SHEET",
+        selection_context="PARAGRAPH",
+        attachments=[{"name": "N", "text": "T", "source": "s"}])
+    assert text.index("RETRIEVED") < text.index("ATTACHED DOCUMENTS")
+    assert text.index("ATTACHED DOCUMENTS") < text.index("SHEET")
+    assert text.index("SHEET") < text.index("PARAGRAPH")
+    assert text.index("PARAGRAPH") < text.index("=== QUESTION ===")

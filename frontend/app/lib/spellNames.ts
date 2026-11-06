@@ -92,6 +92,23 @@ export function splitSpells(
   return parts
 }
 
+/**
+ * Every spell name `text` mentions, deduplicated and in the corpus's own spelling.
+ *
+ * The same rule `splitSpells` links by, so a caller that attaches the mentioned spells to a
+ * question attaches exactly the mentions the reader was shown as links. Two rules would
+ * eventually disagree about whether a faint mention is attached, and the disagreement would
+ * be invisible: a missing attachment reads as "the SRD does not cover this spell".
+ */
+export function extractSpellNames(text: string, names: ReadonlySet<string>): string[] {
+  if (!buildSpellPattern(names)) return []
+  const seen = new Set<string>()
+  for (const [chunk, isSpell] of splitSpells(text, names)) {
+    if (isSpell) seen.add(chunk)
+  }
+  return [...seen]
+}
+
 /** The corpus's own spelling of a name written some other way, or the text unchanged. */
 function findCanonical(text: string, names: ReadonlySet<string>): string {
   const key = foldSpellName(text)

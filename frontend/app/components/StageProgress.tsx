@@ -1,8 +1,8 @@
-import { Loader2 } from 'lucide-react'
+import { Loader2 } from "lucide-react"
 
-import { PHASES, PHASE_LABELS } from '@/api/types'
-import { formatSeconds, progressPercent } from '@/lib/format'
-import { cn } from '@/lib/utils'
+import { PHASES, PHASE_LABELS } from "@/api/types"
+import { formatSeconds, progressPercent } from "@/lib/format"
+import { cn } from "@/lib/utils"
 
 /**
  * Mirrors the CLI's progress line: which phase is running, how long it has been going,
@@ -16,36 +16,47 @@ export function StageProgress({
   stage,
   elapsed,
   estimate,
+  stages = PHASES,
+  labels = PHASE_LABELS,
 }: {
-  /** Index into PHASES, or PHASES.length once every phase has finished. */
+  /** Index into `stages`, or `stages.length` once every stage has finished. */
   stage: number
   elapsed: number
   estimate: number | null
+  /**
+   * The stage list. Defaults to the recommendation's own, which is what the scenario
+   * screen wants; the contextual menu passes its own, because it does different work and
+   * its stages are named for it.
+   */
+  stages?: readonly string[]
+  labels?: Record<string, string>
 }) {
   const percent = progressPercent(elapsed, estimate)
 
   return (
     <div className="space-y-2">
       <ol className="space-y-1.5">
-        {PHASES.map((phase, i) => {
+        {stages.map((phase, i) => {
           const done = i < stage
           const active = i === stage
           return (
             <li
               key={phase}
               className={cn(
-                'flex items-center gap-2 text-sm',
-                done && 'text-verdant-400',
-                active && 'text-arcane-300',
-                !done && !active && 'text-parchment/35',
+                "flex items-center gap-2 text-sm",
+                done && "text-verdant-400",
+                active && "text-arcane-300",
+                !done && !active && "text-parchment/60",
               )}
             >
               {active ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <span className="w-3.5 text-center text-xs">{done ? '✓' : '·'}</span>
+                <span className="w-3.5 text-center text-xs">
+                  {done ? "✓" : "·"}
+                </span>
               )}
-              {PHASE_LABELS[phase]}
+              {labels[phase] ?? phase}
             </li>
           )
         })}
@@ -59,7 +70,9 @@ export function StageProgress({
         />
       </div>
 
-      <p className="font-mono text-xs text-parchment/50">{summary(elapsed, estimate)}</p>
+      <p className="font-mono text-xs text-parchment/60">
+        {summary(elapsed, estimate)}
+      </p>
     </div>
   )
 }
@@ -78,5 +91,5 @@ function summary(elapsed: number, estimate: number | null) {
     }
     parts.push(`expected ~${formatSeconds(estimate)}`)
   }
-  return parts.join(' · ')
+  return parts.join(" · ")
 }

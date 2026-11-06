@@ -254,8 +254,32 @@ def _selection_block(selection_context: str) -> str:
     )
 
 
+def _attachments_block(documents) -> str:
+    """The documents attached to a selection, each with its own rules text.
+
+    This is the block that makes a selection answerable. A book's sentence names the spells
+    it is about - "Repelling Blast misses, so Thorn Whip pulls it" is a question about two
+    spells - but those names are words inside a sentence, and no retrieval over the
+    *selection* can turn them into their rules. So they arrive as documents instead, the
+    same way a reader would attach the two spells' pages before asking.
+
+    ``source`` is carried per document and rendered, because the two corpora are not equal:
+    the 2024 SRD is the authority and the retrieval corpus is not. A document set that
+    mixes them must not read as if it were all SRD.
+    """
+    documents = list(documents or ())
+    if not documents:
+        return ""
+
+    parts = ["=== ATTACHED DOCUMENTS ==="]
+    for document in documents:
+        source = document.get("source") or "unknown source"
+        parts.append(f"--- {document['name']} ({source}) ---\n{document['text'].strip()}")
+    return "\n\n".join(parts) + "\n\n"
+
+
 def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
-                 selection_context: str = "") -> str:
+                 selection_context: str = "", attachments=()) -> str:
     """Prompt for a rules question, grounded in fetched 2024 SRD text.
 
     The rule text is the only permitted source. A model asked a rules question answers
@@ -263,32 +287,34 @@ def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
     in a 2024 recommendation - so it is told to use the passage and nothing else.
 
     ``selection_context`` is set when the question is a phrase highlighted in a book's
-    prose rather than a question someone typed; see :func:`_selection_block`.
+    prose rather than a question someone typed; ``attachments`` carries that selection's
+    spell texts. See :func:`_selection_block` and :func:`_attachments_block`.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
 === RETRIEVED 2024 RULES TEXT ===
 {rule_text}
 
-=== CHARACTER CONTEXT ===
+{_attachments_block(attachments)}=== CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
 {_selection_block(selection_context)}=== QUESTION ===
 {question}
 
 Rules for your answer:
-- Answer ONLY from the retrieved rules text above. It is from the 2024 SRD.
+- Answer ONLY from the retrieved rules text and the attached documents above. They are
+  from the 2024 SRD or from this project's own spell corpus, and each says which.
 - The 2014 rules differ in ways that matter (invocation counts, whether Pact of the Tome
   costs an invocation). Do not fill a gap from memory or from the earlier edition.
-- If the retrieved text does not answer the question, say so plainly and say which part
-  is missing. That is a better answer than a guess.
+- If the retrieved text and the attached documents do not answer the question, say so
+  plainly and say which part is missing. That is a better answer than a guess.
 - Quote the rule's own wording where it settles the question.
 - Be brief and concrete. Two or three sentences is usually enough.
 """
 
 
 def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = "",
-                          selection_context: str = "") -> str:
+                          selection_context: str = "", attachments=()) -> str:
     """Prompt for a rules question the SRD does not define under its own heading.
 
     The retrieved text is related to the question rather than being the rule itself, so
@@ -298,7 +324,10 @@ def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = 
     would make the fallback useless.
 
     ``selection_context`` is set when the question is a phrase highlighted in a book's
-    prose rather than a question someone typed; see :func:`_selection_block`.
+    prose rather than a question someone typed; ``attachments`` carries that selection's
+    spell texts - which is what turns "the SRD does not cover these spells" into an answer,
+    so this prompt is told to prefer them over the retrieved excerpt. See
+    :func:`_selection_block` and :func:`_attachments_block`.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
@@ -309,20 +338,23 @@ the rule itself.
 === RETRIEVED 2024 SRD TEXT ===
 {rule_text}
 
-=== CHARACTER CONTEXT ===
+{_attachments_block(attachments)}=== CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
 {_selection_block(selection_context)}=== QUESTION ===
 {question}
 
 Rules for your answer:
-- Answer from the retrieved text above and from what it plainly implies. It is from the
-  2024 SRD.
+- Attached documents are the named rules the question is *about*, and they take precedence
+  over the retrieved excerpt. When a document covers something the excerpt does not, answer
+  from the document and quote its own wording.
+- Answer from the material above and from what it plainly implies. It is from the 2024 SRD
+  or from this project's own spell corpus, and each document says which.
 - The 2014 rules differ in ways that matter (invocation counts, whether Pact of the Tome
   costs an invocation). Do not fill a gap from memory or from the earlier edition.
-- Say plainly which part of the answer the retrieved text does not cover. The reader is
+- Say plainly which part of the answer the material above does not cover. The reader is
   being told this is an interpretation, so naming the gap is part of the answer.
-- Do not present a guess as a rule. If the text does not support an answer, say so.
+- Do not present a guess as a rule. If the material does not support an answer, say so.
 - Be brief and concrete. Two or three sentences is usually enough.
 """
 

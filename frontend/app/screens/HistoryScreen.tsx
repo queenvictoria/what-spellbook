@@ -1,15 +1,15 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
+import { useEffect, useState } from "react"
+import { Link } from "react-router-dom"
+import { ArrowRight, ChevronDown, ChevronRight } from "lucide-react"
 
-import { api, ApiError } from "@/api/client";
-import type { Book, RunSummary } from "@/api/types";
-import { BookPanel } from "@/components/BookPanel";
-import { formatSeconds } from "@/lib/format";
-import { cn } from "@/lib/utils";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { api, ApiError } from "@/api/client"
+import type { Book, RunSummary } from "@/api/types"
+import { BookPanel } from "@/components/BookPanel"
+import { formatSeconds } from "@/lib/format"
+import { cn } from "@/lib/utils"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 
 /**
  * Every stored run, newest first.
@@ -19,12 +19,12 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
  * renders, so the reading experience is identical either way.
  */
 export function HistoryScreen() {
-  const [runs, setRuns] = useState<RunSummary[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [runs, setRuns] = useState<RunSummary[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
   // Which run is open lives here rather than inside each card, because the card's own
   // width depends on it: an open run takes the full row, and a child cannot widen its
   // parent. Only one is open at a time, which also keeps the listing scannable.
-  const [openId, setOpenId] = useState<string | null>(null);
+  const [openId, setOpenId] = useState<string | null>(null)
 
   useEffect(() => {
     api
@@ -32,21 +32,21 @@ export function HistoryScreen() {
       .then(setRuns)
       .catch((e: unknown) =>
         setError(e instanceof ApiError ? e.message : String(e)),
-      );
-  }, []);
+      )
+  }, [])
 
   if (error) {
-    return <p className="text-sm text-red-300">{error}</p>;
+    return <p className="text-sm text-red-300">{error}</p>
   }
   if (runs === null) {
-    return <p className="text-sm text-parchment/50">Loading…</p>;
+    return <p className="text-sm text-parchment/60">Loading…</p>
   }
   if (runs.length === 0) {
     return (
-      <p className="text-sm text-parchment/50">
+      <p className="text-sm text-parchment/60">
         Nothing has been run yet. Generate a scenario and it will appear here.
       </p>
-    );
+    )
   }
 
   return (
@@ -96,7 +96,7 @@ export function HistoryScreen() {
         ))}
       </div>
     </div>
-  );
+  )
 }
 
 /**
@@ -116,29 +116,29 @@ function ViewRun({
   open,
   onToggle,
 }: {
-  run: RunSummary;
-  open: boolean;
-  onToggle: () => void;
+  run: RunSummary
+  open: boolean
+  onToggle: () => void
 }) {
-  const [books, setBooks] = useState<Book[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [books, setBooks] = useState<Book[]>([])
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(false)
 
   async function toggle() {
     if (open) {
-      onToggle();
-      return;
+      onToggle()
+      return
     }
-    setLoading(true);
-    setError(null);
+    setLoading(true)
+    setError(null)
     try {
-      const result = await api.run(run.id);
-      setBooks(result.books);
-      onToggle();
+      const result = await api.run(run.id)
+      setBooks(result.books)
+      onToggle()
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e));
+      setError(e instanceof ApiError ? e.message : String(e))
     } finally {
-      setLoading(false);
+      setLoading(false)
     }
   }
 
@@ -173,17 +173,17 @@ function ViewRun({
         </div>
       )}
     </div>
-  );
+  )
 }
 
 function formatDate(value: string | null) {
-  if (!value) return "unknown";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  if (!value) return "unknown"
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString(undefined, {
     month: "short",
     day: "numeric",
     hour: "2-digit",
     minute: "2-digit",
-  });
+  })
 }

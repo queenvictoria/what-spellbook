@@ -14,11 +14,18 @@ export interface RulesContextValue {
   setOpen: (open: boolean) => void
   selectedText: string
   setSelectedText: (text: string) => void
-  /** Ask about `text`, or about the current selection when called with none. */
-  ask: (text?: string, context?: string) => void
+  /**
+   * Ask about `text`. `documents` are the rules the question carries; pass them when the
+   * selection's mentions have already been resolved, so the drawer does not resolve them a
+   * second, slightly different way.
+   */
+  ask: (text: string, context?: string, documents?: string[]) => void
   loading: boolean
   answer: Answer | null
   error: string | null
+  /** The documents the next question will carry, by name. */
+  attachments: string[]
+  removeAttachment: (name: string) => void
 }
 
 export const RulesContext = createContext<RulesContextValue | null>(null)

@@ -973,7 +973,8 @@ def load_cached(question: str, cache_dir=None) -> dict | None:
 
 
 def save_cached(question: str, answer: str, *, passages: list[str], url: str,
-                answer_source: str = "rules", cache_dir=None) -> Path:
+                answer_source: str = "rules", cache_dir=None,
+                attachments=None) -> Path:
     """Store a rules answer with the source text it was grounded in. Never raises.
 
     ``answer_source`` records whether the answer was *quoted* from a rule the SRD defines
@@ -981,6 +982,11 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
     It is stored rather than recomputed because a cache hit skips retrieval entirely, so
     the distinction would otherwise be lost and an interpreted answer would be served as a
     quotation.
+
+    ``attachments`` are the documents the answer was given, by name. Stored for the same
+    reason: a hit does not resolve them again, and "what the model actually read" is part of
+    the answer - an answer that reports the SRD does not cover a spell reads very
+    differently once it is clear the spell was never attached.
     """
     from datetime import datetime, timezone
 
@@ -993,6 +999,7 @@ def save_cached(question: str, answer: str, *, passages: list[str], url: str,
         "url": url,
         "source": RULES_SOURCE,
         "answer_source": answer_source,
+        "attachments": list(attachments or []),
         "retrieval_version": RETRIEVAL_VERSION,
         "answered_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -1343,6 +1350,174 @@ def spell_names() -> list[str]:
     offer these as a list without offering "Actions" as if it were a spell.
     """
     return sorted(_spells_index())
+
+
+# The longest name `mentioned_documents` will consider. The corpus's longest is "Tasha's
+# Otherworldly Guise" at 27, and a name is the only thing this is looking for - so anything
+# longer is prose that happens to contain a document name, not a mention.
+_DOC_NAME_LIMIT = 40
+
+# How many documents may ride along with a selection. Two is the common case ("Repelling
+# Blast misses, so Thorn Whip ..."), and each one is a full spell description, so this is a
+# prompt-size guard rather than a ranking decision.
+_ATTACHMENT_LIMIT = 3
+
+
+def mentioned_documents(text: str, *, limit: int = _ATTACHMENT_LIMIT) -> list[dict]:
+    """The spells and invocations ``text`` names, each with its own rules text.
+
+    A selection out of a book is written *about* the spells it mentions - "Repelling Blast
+    misses, so Thorn Whip pulls it" is a question about two spells - but the words that
+    identify those spells are capitalised names inside a sentence, which no retrieval over
+    the *selection* can turn into their rules. They have to be resolved as documents and
+    attached alongside it.
+
+    Matched **case-sensitively** and on the name as written, which is what keeps "the light
+    of the fire" from resolving to the *Light* cantrip: 132 of the corpus's 544 spells are
+    single common words, and capitalisation is the only signal that separates the spell from
+    the word. That is the same rule the markdown renderer links mentions by, so the UI and
+    this agree about what counts as a mention by construction rather than by coincidence.
+
+    Names are tried longest-first, so "Eldritch Blast" is attached as one document rather
+    than as "Eldritch" and "Blast", and a name already found is not matched again.
+
+    Returns at most ``limit`` documents, longest name first, so a paragraph naming six
+    spells does not arrive with six spells' full text behind it.
+    """
+    body = str(text or "")
+    if not body.strip():
+        return []
+
+    seen: set[str] = set()
+    found: list[dict] = []
+    # Longest first: "Daylight" must be tried before "Light", or the shorter name matches
+    # inside it and both are attached.
+    for name in sorted(_document_names(), key=len, reverse=True):
+        if len(name) > _DOC_NAME_LIMIT or name in seen:
+            continue
+        if not _mentions(body, name):
+            continue
+        seen.add(name)
+        document = _document_for(name)
+        if document is not None:
+            found.append(document)
+
+    found.sort(key=lambda item: (-len(item["name"]), item["name"]))
+    return found[:limit]
+
+
+def _mentions(body: str, name: str) -> bool:
+    """Whether ``body`` names ``name`` as a whole word.
+
+    A bare substring test is not enough, and the failure is silent: "Daylight" contains
+    "Light", so a paragraph about Daylight would arrive with the *Light* cantrip's rules
+    behind it as well. The boundaries are letters and apostrophes, so "Ray of Frost" still
+    matches inside "the Ray of Frost," while "Light" does not match inside "Daylight".
+
+    A single-word name is additionally rejected when a capitalised word sits immediately
+    before it, because two capitalised words in a row usually form one longer proper name.
+    The Celestial Warlock's *Healing Light* is the case that forced this: without the rule,
+    "Healing Light" attaches the *Light* cantrip, which is a different thing entirely.
+    Multi-word names are exempt, so "Cast Eldritch Blast" still matches.
+
+    This mirrors ``frontend/app/lib/spellNames.ts``'s ``buildSpellPattern`` deliberately.
+    The front end is the authority - it is what decides which mentions the reader sees as
+    links - and this is only the fallback for a caller that sends no documents. Two rules
+    that disagree would attach a spell the reader was never shown, so they are kept in step
+    by hand and by the same test cases.
+
+    The preceding-word check is done in code rather than in the pattern because Python's
+    ``re`` needs a fixed-width lookbehind and "one capital followed by one or more
+    lowercase" is not one. JavaScript accepts the variable form, which is why the front end
+    can express it inline.
+    """
+    pattern = rf"(?<![A-Za-z']){re.escape(name)}(?![A-Za-z'])"
+    for match in re.finditer(pattern, body):
+        if " " in name or not _after_capitalised_word(body, match.start()):
+            return True
+    return False
+
+
+def _after_capitalised_word(body: str, start: int) -> bool:
+    """Whether a capitalised word immediately precedes position ``start``.
+
+    "Healing Light" is one feature name, so its trailing "Light" is not the Light cantrip.
+    "cast Light" is the cantrip. Both are the same one word in the text; the capital on the
+    word *before* it is the only thing telling them apart.
+    """
+    if start == 0 or body[start - 1] != " ":
+        return False
+
+    cursor = start - 1
+    while cursor > 0 and body[cursor - 1].islower():
+        cursor -= 1
+    # Nothing but the space, or the start of the text: there is no preceding word.
+    if cursor == start - 1 or cursor == 0:
+        return False
+    # A capitalised word is a capital followed by at least one lowercase letter, and it has
+    # to begin a word - "IHate Light" is not one.
+    if not body[cursor - 1].isupper():
+        return False
+    return cursor - 1 == 0 or not body[cursor - 2].isalpha()
+
+
+def _document_names() -> set[str]:
+    """Every name that can be attached: every spell the app can link, plus the invocations.
+
+    ``linkable_spell_names`` rather than the SRD index, because the index is keyed on
+    *folded* names - lowercased and apostrophe-normalised - so iterating it would match
+    "light" in "the light of the fire". The linkable list is the display spelling, and it
+    is the same list the front end links mentions from, so the two agree by construction
+    about what counts as a mention.
+
+    Invocations are included because a book names them in the same sentence as spells
+    ("Repelling Blast ... Thorn Whip"), and they resolve through ``find_invocation`` rather
+    than ``find_spell`` - an Eldritch Invocation is a class feature, not a spell, and
+    answering as if it were one is the category error ``/api/invocation`` exists to avoid.
+    """
+    names = set(linkable_spell_names())
+    names.update(invocation_names())
+    return names
+
+
+def _document_for(name: str) -> dict | None:
+    """One name's rules text, labelled with which corpus it came from.
+
+    The SRD is preferred and says so; our own class context carries 28 invocations' level
+    and prerequisite but not what they do, so it is the fallback and is labelled
+    differently. A reader comparing two attached documents should be able to see that one
+    is the 2024 authority and the other is not.
+    """
+    spell = find_spell(name)
+    if spell is not None:
+        return {"name": spell["name"], "text": spell["text"], "source": spell["source"]}
+
+    invocation = find_invocation(name)
+    if invocation is not None:
+        return {"name": invocation["name"], "text": invocation["text"],
+                "source": invocation["source"]}
+    return None
+
+
+def resolve_attachments(names, *, limit: int = _ATTACHMENT_LIMIT) -> list[dict]:
+    """The documents named by ``names``, in the order given, deduplicated.
+
+    The names come from the caller rather than from a text, because the UI already knows
+    which mentions the reader can see as links - resolving them again here from the
+    selection would be a second implementation of "what counts as a mention", and the two
+    would eventually disagree about whether a faint link is attached.
+    """
+    resolved: list[dict] = []
+    seen: set[str] = set()
+    for raw in names or ():
+        name = " ".join(str(raw).split()).strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        document = _document_for(name)
+        if document is not None:
+            resolved.append(document)
+    return resolved[:limit]
 
 
 def linkable_spell_names() -> list[str]:

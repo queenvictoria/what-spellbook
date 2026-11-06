@@ -1,7 +1,7 @@
-import { Drawer as DrawerPrimitive } from '@base-ui/react/drawer'
-import type { ComponentProps } from 'react'
+import { Drawer as DrawerPrimitive } from "@base-ui/react/drawer"
+import type { ComponentProps } from "react"
 
-import { cn } from '@/lib/utils'
+import { cn } from "@/lib/utils"
 
 /**
  * The shadcn Drawer, on Base UI.
@@ -21,15 +21,21 @@ function Drawer({ ...props }: ComponentProps<typeof DrawerPrimitive.Root>) {
   return <DrawerPrimitive.Root data-slot="drawer" {...props} />
 }
 
-function DrawerTrigger({ ...props }: ComponentProps<typeof DrawerPrimitive.Trigger>) {
+function DrawerTrigger({
+  ...props
+}: ComponentProps<typeof DrawerPrimitive.Trigger>) {
   return <DrawerPrimitive.Trigger data-slot="drawer-trigger" {...props} />
 }
 
-function DrawerPortal({ ...props }: ComponentProps<typeof DrawerPrimitive.Portal>) {
+function DrawerPortal({
+  ...props
+}: ComponentProps<typeof DrawerPrimitive.Portal>) {
   return <DrawerPrimitive.Portal data-slot="drawer-portal" {...props} />
 }
 
-function DrawerClose({ ...props }: ComponentProps<typeof DrawerPrimitive.Close>) {
+function DrawerClose({
+  ...props
+}: ComponentProps<typeof DrawerPrimitive.Close>) {
   return <DrawerPrimitive.Close data-slot="drawer-close" {...props} />
 }
 
@@ -41,8 +47,8 @@ function DrawerBackdrop({
     <DrawerPrimitive.Backdrop
       data-slot="drawer-backdrop"
       className={cn(
-        'fixed inset-0 z-50 bg-void-950/70 transition-opacity duration-200',
-        'data-[starting-style]:opacity-0 data-[ending-style]:opacity-0',
+        "fixed inset-0 z-50 bg-void-950/70 transition-opacity duration-200",
+        "data-[starting-style]:opacity-0 data-[ending-style]:opacity-0",
         className,
       )}
       {...props}
@@ -78,15 +84,15 @@ function DrawerContent({
             // `pointer-events-auto` because the viewport is a full-screen overlay that must
             // not swallow clicks meant for the page behind it; only the panel itself takes
             // them, so a click beside it reaches the backdrop and closes the drawer.
-            'pointer-events-auto absolute inset-y-0 right-0 flex h-full w-full max-w-xl flex-col',
-            'border-l border-void-800 bg-void-900 shadow-2xl',
-            'transition-transform duration-200 ease-out',
+            "pointer-events-auto absolute inset-y-0 right-0 flex h-full w-full max-w-xl flex-col",
+            "border-l border-void-800 bg-void-900 shadow-2xl",
+            "transition-transform duration-200 ease-out",
             // `data-closed` rather than `data-[starting-style]`/`data-[ending-style]`. Base
             // UI leaves the popup mounted after the first open and drives the transition
             // off its state attribute, and the starting/ending pair stays applied once the
             // panel has been opened and closed - which parks the panel off-screen even
             // while `data-open` is set. `data-closed` is present exactly when it is shut.
-            'data-[closed]:translate-x-full',
+            "data-[closed]:translate-x-full",
             className,
           )}
           {...props}
@@ -98,31 +104,34 @@ function DrawerContent({
   )
 }
 
-function DrawerHeader({ className, ...props }: ComponentProps<'div'>) {
+function DrawerHeader({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="drawer-header"
-      className={cn('flex flex-col gap-1 p-4', className)}
+      className={cn("flex flex-col gap-1 p-4", className)}
       {...props}
     />
   )
 }
 
-function DrawerFooter({ className, ...props }: ComponentProps<'div'>) {
+function DrawerFooter({ className, ...props }: ComponentProps<"div">) {
   return (
     <div
       data-slot="drawer-footer"
-      className={cn('mt-auto flex flex-col gap-2 p-4', className)}
+      className={cn("mt-auto flex flex-col gap-2 p-4", className)}
       {...props}
     />
   )
 }
 
-function DrawerTitle({ className, ...props }: ComponentProps<typeof DrawerPrimitive.Title>) {
+function DrawerTitle({
+  className,
+  ...props
+}: ComponentProps<typeof DrawerPrimitive.Title>) {
   return (
     <DrawerPrimitive.Title
       data-slot="drawer-title"
-      className={cn('font-semibold text-parchment', className)}
+      className={cn("font-semibold text-parchment", className)}
       {...props}
     />
   )
@@ -135,7 +144,7 @@ function DrawerDescription({
   return (
     <DrawerPrimitive.Description
       data-slot="drawer-description"
-      className={cn('text-sm text-parchment/50', className)}
+      className={cn("text-sm text-parchment/60", className)}
       {...props}
     />
   )

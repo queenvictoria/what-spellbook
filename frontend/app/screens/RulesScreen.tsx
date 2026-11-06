@@ -1,20 +1,20 @@
-import { useEffect, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
-import { Search } from 'lucide-react'
+import { useEffect, useState } from "react"
+import { useSearchParams } from "react-router-dom"
+import { Search } from "lucide-react"
 
-import { api, ApiError } from '@/api/client'
-import type { Answer, Spell } from '@/api/types'
-import { Markdown } from '@/components/Markdown'
-import { SourceBadge } from '@/components/SourceBadge'
-import { SpellCard } from '@/components/SpellCard'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
+import { api, ApiError } from "@/api/client"
+import type { Answer, Spell } from "@/api/types"
+import { Markdown } from "@/components/Markdown"
+import { SourceBadge } from "@/components/SourceBadge"
+import { SpellCard } from "@/components/SpellCard"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
 
 const EXAMPLES = [
-  'how does cover work',
-  'what happens when you drop prone',
-  'how does difficult terrain work',
+  "how does cover work",
+  "what happens when you drop prone",
+  "how does difficult terrain work",
 ]
 
 /**
@@ -36,19 +36,21 @@ const EXAMPLES = [
  */
 export function RulesScreen() {
   const [params, setParams] = useSearchParams()
-  const [question, setQuestion] = useState('')
+  const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [missing, setMissing] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const spellName = params.get('spell')
+  const spellName = params.get("spell")
 
   // The spell is fetched into state keyed by name, and the render reads it only when the
   // key still matches the URL. That keeps the effect free of synchronous setState - which
   // would cascade a second render on every navigation - while still clearing the card the
   // moment the query changes.
-  const [loaded, setLoaded] = useState<{ name: string; spell: Spell } | null>(null)
+  const [loaded, setLoaded] = useState<{ name: string; spell: Spell } | null>(
+    null,
+  )
   const spell = loaded && loaded.name === spellName ? loaded.spell : null
 
   useEffect(() => {
@@ -61,7 +63,8 @@ export function RulesScreen() {
     api
       .spell(spellName)
       .catch((e: unknown) => {
-        if (e instanceof ApiError && e.status === 404) return api.invocation(spellName)
+        if (e instanceof ApiError && e.status === 404)
+          return api.invocation(spellName)
         throw e
       })
       .then((found) => {
@@ -109,7 +112,7 @@ export function RulesScreen() {
               value={question}
               placeholder="how does cover work"
               onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && look()}
+              onKeyDown={(e) => e.key === "Enter" && look()}
             />
             <Button
               onClick={() => look()}
@@ -130,7 +133,7 @@ export function RulesScreen() {
                   setQuestion(example)
                   look(example)
                 }}
-                className="rounded-full border border-void-700 px-2 py-0.5 text-[0.7rem] text-parchment/50 hover:text-parchment"
+                className="rounded-full border border-void-700 px-2 py-0.5 text-[0.7rem] text-parchment/60 hover:text-parchment"
               >
                 {example}
               </button>
@@ -141,7 +144,9 @@ export function RulesScreen() {
 
       {error && (
         <Card className="border-red-500/40">
-          <CardContent className="pt-4 text-sm text-red-300">{error}</CardContent>
+          <CardContent className="pt-4 text-sm text-red-300">
+            {error}
+          </CardContent>
         </Card>
       )}
 
@@ -153,9 +158,9 @@ export function RulesScreen() {
           <CardContent className="space-y-2 text-sm text-parchment/70">
             <p>{missing}</p>
             <p className="text-xs text-parchment/45">
-              The 2024 SRD is a subset of the 2024 rulebook. Rules that are absent here
-              are reported as absent rather than answered from memory, because a
-              confidently wrong rule is worse than a gap.
+              The 2024 SRD is a subset of the 2024 rulebook. Rules that are
+              absent here are reported as absent rather than answered from
+              memory, because a confidently wrong rule is worse than a gap.
             </p>
           </CardContent>
         </Card>
@@ -175,7 +180,10 @@ export function RulesScreen() {
             {answer.citations.length > 0 && (
               <div className="border-t border-void-800 pt-2 text-xs">
                 {answer.citations.map((path) => (
-                  <p key={path} className="truncate font-mono text-parchment/40">
+                  <p
+                    key={path}
+                    className="truncate font-mono text-parchment/40"
+                  >
                     {path}
                   </p>
                 ))}

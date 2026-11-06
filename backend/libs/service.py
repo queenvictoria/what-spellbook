@@ -136,6 +136,19 @@ class Answer:
     field_name: str | None = None
     citations: list[str] = field(default_factory=list)
     from_cache: bool = False
+    # The documents this answer was given, by name, in the order they were attached. A
+    # reader needs to see *what the model actually read*: an answer that says the SRD does
+    # not cover a spell reads very differently once it is clear the spell was never
+    # attached, and that difference is invisible otherwise.
+    attachments: list[str] = field(default_factory=list)
+
+
+def _document_names(documents) -> str:
+    """``"Thorn Whip and Repelling Blast"`` - the attachment names, for a progress line."""
+    names = [document["name"] for document in documents]
+    if len(names) == 1:
+        return names[0]
+    return ", ".join(names[:-1]) + f" and {names[-1]}"
 
 
 class CharacterNotLoaded(RuntimeError):
@@ -425,7 +438,7 @@ class SpellbookService:
                       citations=[retrieved["url"]])
 
     def ask_rules_contextual(self, selected_text: str, context: str = "",
-                             progress=None) -> Answer:
+                             attachments=None, progress=None) -> Answer:
         """Explain a phrase selected out of a book's prose, grounded in the 2024 SRD.
 
         A selection is a fragment, not a question, so the answer is assembled rather than
@@ -445,14 +458,31 @@ class SpellbookService:
            "Crafting Nonmagical Items"). It still refuses a selection the SRD has the
            vocabulary for nowhere, so "Rust Metal" reports the gap.
 
+        4. ``rules-inferred`` with no passages at all - when the selection is *entirely*
+           explained by the documents attached to it. A sentence naming two spells and
+           saying what they do has no SRD *rule* behind it and does not need one: the two
+           spell descriptions are the rules, and they arrive as attachments.
+
         ``context`` is the surrounding sentence, when the caller has it. It reaches the
         prompt only - never retrieval - because the selection is what was asked about and
         letting a whole sentence steer the search would answer the book's prose instead.
         It is what lets "2 beams" be read as *two beams of Eldritch Blast*, which is the
         phrase the reader highlighted.
+
+        ``attachments`` are the documents named by the selection - the spell texts the UI
+        has already resolved into lozenges, or the mentions found in the selection text when
+        the caller passes none. They are the difference between answering a sentence that
+        discusses spells and reporting that the SRD does not cover them: a selection's own
+        words rarely reach a spell's *description*, because a book writes "2d6 and pulls it
+        10 ft", not "_Level 0 Transmutation (Druid)_".
         """
         if not selected_text.strip():
             raise ValueError("Please provide selected text.")
+
+        documents = rules.resolve_attachments(attachments) if attachments \
+            else rules.mentioned_documents(selected_text)
+
+        emit = progress or (lambda _message: None)
 
         # Read before retrieving: the answer is a pure function of the selection, and every
         # retrieval path below costs a pass over the whole SRD.
@@ -460,10 +490,15 @@ class SpellbookService:
         if cached is not None:
             return Answer(question=selected_text, answer=cached["answer"],
                           source=cached.get("answer_source", "rules"),
-                          citations=[cached["url"]], from_cache=True)
+                          citations=[cached["url"]], from_cache=True,
+                          attachments=list(cached.get("attachments") or []))
 
-        emit = progress or (lambda _message: None)
+        if documents:
+            emit(f"Attached {_document_names(documents)}")
+
         emit("Consulting the 2024 SRD")
+        source = "rules-inferred"
+        retrieved = None
         try:
             retrieved = rules.gather(selected_text, cache_dir=self.cache_dir)
             source = "rules"
@@ -472,10 +507,25 @@ class SpellbookService:
                 retrieved = rules.gather_inferred(selected_text, cache_dir=self.cache_dir)
             except rules.RulesUnavailable:
                 # Neither anchored path can take a fragment. The selection path ranks the
-                # selection's own words, and raises in turn when the SRD has none of them -
-                # so a fragment the rulebook cannot speak to still reports the gap.
-                retrieved = rules.gather_from_selection(selected_text)
-            source = "rules-inferred"
+                # selection's own words, and raises in turn when the SRD has none of them.
+                try:
+                    retrieved = rules.gather_from_selection(selected_text)
+                except rules.RulesUnavailable:
+                    # Nothing in the SRD's vocabulary, and nothing in the SRD about it. That
+                    # is a refusal *of the selection*, and an attached document is grounds to
+                    # answer anyway - "Repelling Blast misses, so Thorn Whip pulls it" is a
+                    # question about two spells, and their descriptions are the rules. With
+                    # no document either there is genuinely nothing to answer from, and the
+                    # refusal stands.
+                    if not documents:
+                        raise
+
+        if retrieved is None:
+            # A grounded answer needs a citation, so the first attachment stands in as the
+            # source. It is not a stretch: the answer really is drawn from it.
+            url = rules.find_spell(documents[0]["name"]) or {}
+            retrieved = {"passages": [], "text": "", "from_cache": False,
+                         "url": url.get("url") or rules.RULES_INDEX}
 
         emit("Reading the rules")
         build = (prompts.rules_prompt if source == "rules"
@@ -483,13 +533,16 @@ class SpellbookService:
         prompt = build(
             question=selected_text, rule_text=retrieved["text"],
             rule_context=self.rule_context, selection_context=context,
+            attachments=documents,
         )
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(selected_text, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
-                          cache_dir=self.cache_dir)
+                          cache_dir=self.cache_dir,
+                          attachments=[document["name"] for document in documents])
         return Answer(question=selected_text, answer=answer, source=source,
-                      citations=[retrieved["url"]])
+                      citations=[retrieved["url"]],
+                      attachments=[document["name"] for document in documents])
 
     def history(self) -> list[dict]:
         try:

@@ -47,6 +47,8 @@ backend/
   __main__.py     `python -m backend` runs the CLI
 frontend/         React UI - its own package.json, vite.config.ts, tsconfig
   app/            the React source (not src/, because this is the front-end "app")
+evals/            prompt scoring for the contextual menu - a dev tool, never imported by
+                  backend/ and never run by pytest
 ```
 
 There is deliberately no `src/`. Nothing here compiles, so a `src/` root only existed to
@@ -892,6 +894,86 @@ matcher would have left the feature just as dead. Each is a shape worth recognis
   "The button never appears" had three separate causes stacked in one small component, and
   each hid the next. When a guard makes a component invisible, check the guard's input is
   ever non-empty before looking at the guard.
+
+### A sentence about spells is not a question about a spell
+
+The first working version of the contextual menu answered the reported session badly:
+
+> The retrieved SRD text does not cover Thorn Whip, Repelling Blast, or forced movement…
+
+…about a sentence that named both spells and stated what they do. Three faults stacked, and
+only one was in the prompt:
+
+- **A book writes about spells in words a spell's description does not contain.** "2d6 and
+  pulls it 10 ft" is nothing like `_Level 0 Transmutation (Druid)_ ... 1d6 Piercing`, so no
+  ranking over the *selection* reaches the spell. The names have to be resolved as documents.
+- **Nothing told the model those documents existed.** They were not in the prompt at all.
+- **No stage named the gap.** The answer confidently reported a missing rule, and there was
+  nothing on screen to suggest a spell had never been attached.
+
+`rules.mentioned_documents` and `rules.resolve_attachments` resolve a selection's mentions to
+their own rules text, which is then sent as an `=== ATTACHED DOCUMENTS ===` block.
+`Answer.attachments` reports the names back, and the drawer shows them as removable lozenges -
+"what the model actually read" is part of the answer, because a missing attachment is
+*invisible* in the answer text.
+
+Four things this cost, each worth keeping:
+
+- **Matching must be case-sensitive and whole-name.** 132 of the corpus's 544 spells are
+  single common words, so matching against the corpus index (which is keyed on *folded* names)
+  attached the **Light** cantrip to "the light of the fire". A bare substring test attached
+  **Light** to "Daylight". The rule is `linkable_spell_names` (display spelling),
+  case-sensitive, with letter/apostrophe boundaries and longest-name-first.
+- **One mention rule, not two.** The front end already decided what a mention is - that is what
+  makes a word a link. `rules._mentions` mirrors `frontend/app/lib/spellNames.ts`'s
+  `buildSpellPattern` by hand, including its rule that a single-word name is rejected after a
+  capitalised word (so the Celestial's *Healing Light* does not attach the Light cantrip).
+  Two rules would eventually disagree about a faint mention, and the disagreement would be
+  invisible. The UI passes its own resolved list so the two agree by construction, and the
+  backend keeps the hand-written mirror only as a fallback for a caller that sends none.
+- **The variable-width lookbehind does not port.** JS accepts `(?<![A-Z][a-z]+ )`; Python's
+  `re` needs a fixed width and raises `PatternError: look-behind requires fixed-width pattern`.
+  The preceding-word test is done in code instead.
+- **An attached document is grounds to answer at all.** A selection made of vocabulary the SRD
+  lacks ("Rust Metal corrodes the plate") used to refuse. That refusal is right for a
+  *question*, but "Repelling Blast misses, so Thorn Whip pulls it" is a question about two
+  spells, and their descriptions are the rules. Documents therefore rescue a refusal - and with
+  no document the refusal correctly stands, which is still tested.
+
+### Do not let a drag on a link become a click
+
+Selecting prose across a spell mention is the *main* way this feature is used, and a browser
+fires a `click` on the link when the mouse comes up on it after a drag. That navigated to the
+rules tab and discarded the selection the reader was about to ask about.
+
+There is no way to tell that click from a real one except by knowing the pointer moved, so
+`SpellLink` records where the button went down and ignores a click that ended more than a few
+pixels away. A few pixels of slop, because a hand on a mouse is not perfectly still.
+
+### The prompt is an argument, so make it measurable
+
+`evals/` scores the contextual prompts. It exists because the only feedback on a prompt change
+is otherwise reading one answer and forming an impression, which is how a prompt gets worse
+over time and nobody notices.
+
+- **Each variant changes one thing**, so a moved score can be attributed. A variant that
+  changed three would produce a number that moves and an explanation that does not.
+- **A variant must *physically* omit a block it claims to omit.** `evals/variants.py`
+  assembles from a `Blocks` switch rather than trusting a label. The first draft had a
+  `Blocks` field that the builder ignored - it would have produced numbers that look like
+  evidence and are not. `--dry-run` checks `must_attach` before the model runs for exactly this
+  class of bug.
+- **Check the answer is right about something only the attachment carries.** `1d6` for Thorn
+  Whip is in that spell's text and nowhere else in the SRD, so the check cannot be satisfied by
+  recall. A model-graded rubric would score better by pleasing the grader.
+- **An answer that is right about a spell it was never given looks exactly like a good
+  answer.** Nothing in the text can reveal it, which is why attachments are checked against the
+  prompt.
+- **A dry run must print no score.** The first version reported a confident `0.57` for variants
+  that were never asked anything - the number was attachment checks, and the reader had no way
+  to tell. It prints `(dry)` now.
+- **Keep a case the current prompt fails.** `known_bad` marks one: an all-green suite measures
+  nothing.
 
 The surrounding sentence is sent with the selection, and it reaches **the prompt only, never
 retrieval**. A fragment is ambiguous in exactly the way its sentence resolves it ("2 beams"

@@ -125,8 +125,14 @@ export const api = {
    * prompt so the model can read "2 beams" as the *Eldritch Blast* beams. A 404 means the
    * SRD does not discuss the selection at all, which is a normal outcome to show.
    */
-  rulesContextual: (selectedText: string, context?: string) =>
-    request<Answer>(`/api/rules/contextual${query({ selected_text: selectedText, context })}`),
+  rulesContextual: (selectedText: string, context?: string, documents: string[] = []) => {
+    const params = new URLSearchParams({ selected_text: selectedText })
+    if (context) params.set('context', context)
+    // Repeated, not comma-joined: the backend declares it as a list query parameter, and a
+    // joined value would resolve as one document named "Thorn Whip, Repelling Blast".
+    for (const document of documents) params.append('document', document)
+    return request<Answer>(`/api/rules/contextual?${params.toString()}`)
+  },
 
   /** One spell's own text. A 404 means neither the SRD nor the corpus has that name. */
   spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),

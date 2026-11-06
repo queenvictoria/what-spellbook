@@ -7,10 +7,10 @@ import {
   ShieldAlert,
   Sparkles,
   Timer,
-} from 'lucide-react'
+} from "lucide-react"
 
-import type { SpellDamage, SpellStats } from '@/api/types'
-import { cn } from '@/lib/utils'
+import type { SpellDamage, SpellStats } from "@/api/types"
+import { cn } from "@/lib/utils"
 
 /**
  * A spell's stat block, as a strip of icon-led tiles.
@@ -27,14 +27,14 @@ import { cn } from '@/lib/utils'
 
 /** An action economy word reads as a category, so it gets a colour rather than plain text. */
 const ACTION_TONE: Record<string, string> = {
-  action: 'text-arcane-300',
-  'bonus action': 'text-verdant-400',
-  reaction: 'text-radiant-400',
+  action: "text-arcane-300",
+  "bonus action": "text-verdant-400",
+  reaction: "text-radiant-400",
 }
 
 function actionTone(castingTime: string) {
-  const head = castingTime.split(',')[0].trim().toLowerCase()
-  return ACTION_TONE[head] ?? 'text-parchment'
+  const head = castingTime.split(",")[0].trim().toLowerCase()
+  return ACTION_TONE[head] ?? "text-parchment"
 }
 
 function Tile({
@@ -53,17 +53,21 @@ function Tile({
   className?: string
 }) {
   return (
-    <div className={cn('flex items-start gap-2', className)}>
-      <span className="mt-0.5 text-parchment/35">{icon}</span>
+    <div className={cn("flex items-start gap-2", className)}>
+      <span className="mt-0.5 text-parchment/60">{icon}</span>
       <div className="min-w-0">
         <div className="text-[0.65rem] tracking-wide text-parchment/40 uppercase">
           {label}
         </div>
         {value && (
-          <div className={cn('text-sm leading-tight', valueClassName)}>{value}</div>
+          <div className={cn("text-sm leading-tight", valueClassName)}>
+            {value}
+          </div>
         )}
         {detail && (
-          <div className={cn('text-[0.7rem] text-parchment/45', value && 'mt-0.5')}>
+          <div
+            className={cn("text-[0.7rem] text-parchment/45", value && "mt-0.5")}
+          >
             {detail}
           </div>
         )}
@@ -78,8 +82,8 @@ function Damage({ entry }: { entry: SpellDamage }) {
     // No type to show, and inventing one would be worse than saying it is a choice.
     return (
       <span className="text-sm">
-        <span className="font-mono text-parchment">{entry.dice}</span>{' '}
-        <span className="text-parchment/50">of a type you choose</span>
+        <span className="font-mono text-parchment">{entry.dice}</span>{" "}
+        <span className="text-parchment/60">of a type you choose</span>
       </span>
     )
   }
@@ -87,7 +91,9 @@ function Damage({ entry }: { entry: SpellDamage }) {
   if (!entry.types.length) {
     // The text stated a roll and no type at all. Rare, and shown plainly rather than
     // dressed up as a choice that was not offered.
-    return <span className="text-sm font-mono text-parchment">{entry.dice}</span>
+    return (
+      <span className="text-sm font-mono text-parchment">{entry.dice}</span>
+    )
   }
 
   return (
@@ -95,9 +101,9 @@ function Damage({ entry }: { entry: SpellDamage }) {
       {/* `5x` is five separate instances, not five dice, and the `x` says so - so it is not
           followed by a space the way a roll is. */}
       <span className="font-mono text-parchment">
-        {entry.dice.endsWith('x') ? entry.dice : `${entry.dice} `}
+        {entry.dice.endsWith("x") ? entry.dice : `${entry.dice} `}
       </span>
-      <span className="text-parchment/55">{entry.types.join(' / ')}</span>
+      <span className="text-parchment/55">{entry.types.join(" / ")}</span>
     </span>
   )
 }
@@ -127,7 +133,7 @@ export function SpellStatsStrip({ stats }: { stats: SpellStats }) {
       {damage.length > 0 && (
         <Tile
           icon={<Sparkles className="h-4 w-4" />}
-          label={damage.length === 1 ? 'Damage' : 'Damage (each)'}
+          label={damage.length === 1 ? "Damage" : "Damage (each)"}
           detail={
             // A multi-type roll is one entry naming every type, and any one of them may
             // apply - so the types are joined rather than shown as separate amounts.
@@ -143,14 +149,14 @@ export function SpellStatsStrip({ stats }: { stats: SpellStats }) {
       <Tile
         icon={<Crosshair className="h-4 w-4" />}
         label="Range"
-        value={stats.range ?? '—'}
+        value={stats.range ?? "—"}
       />
 
       <Tile
         icon={<Hourglass className="h-4 w-4" />}
         label="Duration"
-        value={stats.duration ?? '—'}
-        valueClassName={stats.concentration ? 'text-radiant-400' : undefined}
+        value={stats.duration ?? "—"}
+        valueClassName={stats.concentration ? "text-radiant-400" : undefined}
         detail={
           stats.concentration && (
             <span className="inline-flex items-center gap-1 text-radiant-400">
@@ -163,17 +169,21 @@ export function SpellStatsStrip({ stats }: { stats: SpellStats }) {
 
       <Tile
         icon={<FlaskConical className="h-4 w-4" />}
-        label={components?.letters.length === 1 ? 'Component' : 'Components'}
+        label={components?.letters.length === 1 ? "Component" : "Components"}
         // The letters are expanded because the shorthand assumes a rule the reader may not
         // have to hand. The material is left exactly as the file wrote it, because *which*
         // material is what decides whether a component pouch covers the spell.
-        value={components ? components.expanded : '—'}
+        value={components ? components.expanded : "—"}
         detail={
           components?.material && (
             <span className="inline-flex flex-wrap items-center gap-1">
-              {components.consumed && <Coins className="h-3 w-3 text-radiant-400" />}
+              {components.consumed && (
+                <Coins className="h-3 w-3 text-radiant-400" />
+              )}
               {components.material}
-              {components.consumed && <span className="text-radiant-400">(consumed)</span>}
+              {components.consumed && (
+                <span className="text-radiant-400">(consumed)</span>
+              )}
             </span>
           )
         }

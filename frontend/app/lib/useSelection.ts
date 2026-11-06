@@ -21,17 +21,25 @@ function surroundingText(range: Range): string {
 }
 
 /**
- * Tracks the text selected inside `ref`, and the prose around it.
+ * Tracks the text selected inside `ref`, the prose around it, and the spells it names.
  *
  * The element is read from the ref *inside* the listener, never captured when the effect
  * runs. A ref is populated during the commit that renders the element, so a hook that
  * snapshots `ref.current` in its effect body sees `null` on the first pass and, because
  * the ref object itself never changes, never gets a second chance - which is how this hook
  * silently reported "nothing selected" for every selection ever made.
+ *
+ * `mentionsOf` is supplied as a function so the caller can decide what a mention is (the
+ * prose renderer already knows, from the corpus's spell list) without this hook taking a
+ * dependency on a context it does not otherwise need.
  */
-export function useSelection(ref: React.RefObject<HTMLElement | null>) {
+export function useSelection(
+  ref: React.RefObject<HTMLElement | null>,
+  mentionsOf: (text: string) => string[],
+) {
   const [selectedText, setSelectedText] = useState('')
   const [context, setContext] = useState('')
+  const [documents, setDocuments] = useState<string[]>([])
 
   useEffect(() => {
     const handleSelectionChange = () => {
@@ -43,6 +51,7 @@ export function useSelection(ref: React.RefObject<HTMLElement | null>) {
       if (!element || !selection || selection.rangeCount === 0 || selection.isCollapsed) {
         setSelectedText('')
         setContext('')
+        setDocuments([])
         return
       }
 
@@ -51,23 +60,28 @@ export function useSelection(ref: React.RefObject<HTMLElement | null>) {
       if (!text || !element.contains(range.commonAncestorContainer)) {
         setSelectedText('')
         setContext('')
+        setDocuments([])
         return
       }
 
       setSelectedText(text)
       setContext(surroundingText(range))
+      setDocuments(mentionsOf(text))
     }
 
     document.addEventListener('selectionchange', handleSelectionChange)
     return () => document.removeEventListener('selectionchange', handleSelectionChange)
-  }, [ref])
+    // `mentionsOf` must be stable or the listener is torn down and re-added on every
+    // render. It is the caller's, because only the caller knows what a mention is.
+  }, [ref, mentionsOf])
 
   /** Drop the selection, so the button goes away once it has been acted on. */
   const clearSelection = useCallback(() => {
     window.getSelection()?.removeAllRanges()
     setSelectedText('')
     setContext('')
+    setDocuments([])
   }, [])
 
-  return { selectedText, context, clearSelection }
+  return { selectedText, context, documents, clearSelection }
 }

@@ -1255,3 +1255,85 @@ def test_the_selection_path_quotes_the_selection_back_when_it_refuses():
     assert "Rust Metal" in str(caught.value)
     assert len(str(caught.value).splitlines()) == 1
     assert "..." in str(caught.value)
+
+
+# --- attaching documents named by a selection ----------------------------------
+#
+# A book's sentence names the spells it is about, and those names have to become their rules
+# or the answer can only report that the SRD does not cover them. Matching is case-sensitive
+# and whole-word, exactly as the markdown renderer links mentions - two rules would eventually
+# disagree about whether a faint mention counts, and the disagreement is invisible in the
+# answer.
+
+
+def test_the_spells_named_by_a_selection_are_attached():
+    """The session that prompted this, verbatim."""
+    selection = (
+        "If Repelling Blast misses or you need a second angle, Thorn Whip is a 30-ft "
+        "melee spell attack for 2d6 and pulls the rust monster 10 ft toward you"
+    )
+    names = [document["name"] for document in rules.mentioned_documents(selection)]
+    assert "Thorn Whip" in names
+    assert "Repelling Blast" in names
+
+
+def test_an_attached_document_carries_its_own_text():
+    """The document is the *rules*, not a pointer to them: the prompt gets the text."""
+    document = rules.resolve_attachments(["Thorn Whip"])[0]
+    # The cantrip-upgrade line is what makes "2d6 at level 5" answerable, and it appears
+    # nowhere else in the SRD.
+    assert "1d6" in document["text"]
+    assert document["source"] == rules.CORPUS_SOURCE
+
+
+def test_an_invocation_attaches_as_an_invocation_not_a_spell():
+    """An Eldritch Invocation is a class feature. Folding one in as a spell would be the
+    category error `/api/invocation` exists to avoid, and the source must say which it is.
+
+    Asserted on the *effect* rather than the name, because that is the part a spell-shaped
+    answer would get wrong: "Repelling Blast" is not a spell with a range and a duration, it
+    is a modification to a cantrip the character already knows.
+    """
+    document = rules.resolve_attachments(["Repelling Blast"])[0]
+    assert document["source"] == rules.RULES_SOURCE
+    assert "push the creature up to 10 feet" in document["text"]
+    # A spell description would carry a stats line. This must not, or it would read as
+    # something castable.
+    assert "_Level" not in document["text"]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        # Capitalisation is the signal. 132 of the corpus's spells are single common words,
+        # so a case-insensitive match would attach the *Light* cantrip to a sentence about a
+        # torch - and the reader would see a document they never asked about.
+        ("the light of the fire and a deep sleep", []),
+        # A single-word name is not matched inside a longer proper name. "Healing Light" is
+        # one feature; its trailing "Light" is not the cantrip.
+        ("Healing Light gives the fighter a boost", []),
+        ("cast Light on the fighter's shield", ["Light"]),
+        # Longest-first, so a name containing another name resolves as the longer one.
+        ("a Daylight spell fills the room", ["Daylight"]),
+        ("Ray of Frost and Thorn Whip", ["Ray of Frost", "Thorn Whip"]),
+        # Multi-word names are exempt from the preceding-word rule, so a capitalised word
+        # before them does not suppress the match.
+        ("Use Eldritch Blast.", ["Eldritch Blast"]),
+    ],
+)
+def test_a_mention_is_a_capitalised_whole_name(text, expected):
+    assert sorted(d["name"] for d in rules.mentioned_documents(text)) == sorted(expected)
+
+
+def test_attachment_resolution_dedupes_and_ignores_unknown_names():
+    """The names come from the UI, so a name it does not know must not invent a document."""
+    documents = rules.resolve_attachments(
+        ["Thorn Whip", "Repelling Blast", "Nonsense Spell", "Thorn Whip"])
+    assert [document["name"] for document in documents] == ["Thorn Whip", "Repelling Blast"]
+
+
+def test_attachments_are_capped():
+    """Each document is a full spell description, so a paragraph naming six spells must not
+    arrive with six behind it."""
+    selection = "Eldritch Blast, Ray of Frost, Thorn Whip, Mending, Light, Detect Magic"
+    assert len(rules.mentioned_documents(selection)) <= rules._ATTACHMENT_LIMIT

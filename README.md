@@ -28,7 +28,7 @@ tests/            pytest
 ```
 
 There is no `src/`. Nothing here compiles, so a `src/` root would only have meant inserting
-`src/` onto `sys.path` so that `from backend import config` resolved - a directory's *name*
+`src/` onto `sys.path` so that `from backend import config` resolved - a directory's _name_
 doing work its contents did not. The repo root is the import root instead, which is why
 every import is written in full as `backend.libs.<module>`.
 
@@ -115,7 +115,7 @@ uvicorn backend.api.main:get_app --factory --reload \
 `--reload` is what makes the API live: an edit to a module under `backend/` restarts it
 within about a second, and the front end picks up the new routes on its next request with
 no restart of its own. The two `--reload-dir` flags matter more than they look. Without
-them uvicorn watches the whole repository, and `.cache/` is written on *every run* — so
+them uvicorn watches the whole repository, and `.cache/` is written on _every run_ — so
 each generated book would restart the server, terminating the request that was writing it.
 Watching `context/` as well means editing a vendored SRD file or a class context file takes
 effect without a manual restart, which is the other half of the rule text this app reads.
@@ -124,35 +124,35 @@ Interactive docs are at `http://localhost:8000/docs`. The API contains no logic:
 route validates its input, calls one `SpellbookService` method, and maps the result or a
 typed error to a status code. That is what keeps the CLI and the API from drifting apart.
 
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/health` | Liveness, loaded model, index version |
-| `GET /api/characters` | Sheet names on disk, for a picker |
-| `GET /api/character` | The loaded sheet |
-| `GET /api/character/ask?question=` | The `/c` command |
-| `GET /api/sheet-keys` | Every value `/c` can look up |
-| `POST /api/scenario` | Generate, or replay the stored run for the same key |
-| `GET /api/cached?scenario=` | The stored run, or `null` — a miss is not an error |
-| `POST /api/ask?scenario=` | The `/ask` command |
-| `GET /api/history` | Every stored run, newest first |
-| `GET /api/runs/{id}` | One run reopened for reading |
-| `POST /api/runs/{id}/rate` | Record an outcome rating |
-| `GET /api/rules?question=` | The `/?` command, grounded in the 2024 SRD |
-| `GET /api/spell?name=` | One spell's description, for every spell mention in the UI |
-| `GET /api/invocation?name=` | One Eldritch Invocation, from the SRD's class chapter |
-| `GET /api/spells` | Every name the UI should link — spells and invocations |
+| Endpoint                           | Purpose                                                    |
+| ---------------------------------- | ---------------------------------------------------------- |
+| `GET /api/health`                  | Liveness, loaded model, index version                      |
+| `GET /api/characters`              | Sheet names on disk, for a picker                          |
+| `GET /api/character`               | The loaded sheet                                           |
+| `GET /api/character/ask?question=` | The `/c` command                                           |
+| `GET /api/sheet-keys`              | Every value `/c` can look up                               |
+| `POST /api/scenario`               | Generate, or replay the stored run for the same key        |
+| `GET /api/cached?scenario=`        | The stored run, or `null` — a miss is not an error         |
+| `POST /api/ask?scenario=`          | The `/ask` command                                         |
+| `GET /api/history`                 | Every stored run, newest first                             |
+| `GET /api/runs/{id}`               | One run reopened for reading                               |
+| `POST /api/runs/{id}/rate`         | Record an outcome rating                                   |
+| `GET /api/rules?question=`         | The `/?` command, grounded in the 2024 SRD                 |
+| `GET /api/spell?name=`             | One spell's description, for every spell mention in the UI |
+| `GET /api/invocation?name=`        | One Eldritch Invocation, from the SRD's class chapter      |
+| `GET /api/spells`                  | Every name the UI should link — spells and invocations     |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
 retrying could help:
 
-| Exception | Status |
-| --- | --- |
-| `ValueError` | 400 — bad input the caller can fix |
-| `CharacterNotFound`, `RulesUnavailable` | 404 |
-| `CharacterNotLoaded` | 409 |
-| `NoEligibleSpells` | 422 — the rules allow no picks; retrying is pointless |
-| `EmptyCompletion` | 502 — the model returned nothing; retrying may help |
-| `LLMUnavailable` | 503 |
+| Exception                               | Status                                                |
+| --------------------------------------- | ----------------------------------------------------- |
+| `ValueError`                            | 400 — bad input the caller can fix                    |
+| `CharacterNotFound`, `RulesUnavailable` | 404                                                   |
+| `CharacterNotLoaded`                    | 409                                                   |
+| `NoEligibleSpells`                      | 422 — the rules allow no picks; retrying is pointless |
+| `EmptyCompletion`                       | 502 — the model returned nothing; retrying may help   |
+| `LLMUnavailable`                        | 503                                                   |
 
 A run is identified by an opaque `id` (the cache directory name), never by a filesystem
 path: a browser cannot use a server path, and publishing the cache layout leaks
@@ -161,7 +161,7 @@ already knows what it wants can skip the listing.
 
 `POST /api/scenario` and `GET /api/runs/{id}` both return that `id` as `run_id`, and it is
 the only handle a client should rate with. Rating by scenario text is ambiguous, because a
-run is keyed on the scenario *and* the character, level and book count — two runs can share
+run is keyed on the scenario _and_ the character, level and book count — two runs can share
 a scenario, and the wrong one gets rated.
 
 ### CLI
@@ -181,7 +181,7 @@ python -m backend --refresh        # ignore cached books, regenerate everything
 ```
 
 Run from the repo root: the imports are `backend.*`, so the root is the import root. There
-is deliberately no `python backend/app.py` - running a file directly puts *its own*
+is deliberately no `python backend/app.py` - running a file directly puts _its own_
 directory on `sys.path`, so that command can never work, and a launch form that crashes is
 worse than one that does not exist.
 
@@ -242,7 +242,7 @@ flowchart LR
     I -->|illegal| K[Warning to user]
 ```
 
-**Stage 1 — build a legal pool.** What a character may prepare is a *rules*
+**Stage 1 — build a legal pool.** What a character may prepare is a _rules_
 question, so the scenario is never allowed to widen it. Books of Shadows take
 exactly 3 cantrips and 2 level 1 rituals, so both lanes are fetched
 **exhaustively** from indexed metadata rather than by similarity search — a
@@ -256,12 +256,12 @@ which spells get their full text included) and drives the tactical write-up.
 **Rules grounding.** `context/` is laid out as `context/[class]/[pact|subclass]/`
 and injected by prompt builders, not hard-coded:
 
-| Context file | Applies to |
-| --- | --- |
-| `context/spells.md` | Every character (casting economy) |
-| `context/classes/warlock/base.md` | Any Warlock |
-| `context/classes/warlock/pact/tome.md` | Pact of the Tome |
-| `context/classes/warlock/subclass/celestial.md` | Celestial Patron |
+| Context file                                    | Applies to                        |
+| ----------------------------------------------- | --------------------------------- |
+| `context/spells.md`                             | Every character (casting economy) |
+| `context/classes/warlock/base.md`               | Any Warlock                       |
+| `context/classes/warlock/pact/tome.md`          | Pact of the Tome                  |
+| `context/classes/warlock/subclass/celestial.md` | Celestial Patron                  |
 
 Context files hold **rules only** and never a character's name or level; the
 sheet holds the character's values. Development learnings live in `AGENTS.md`.
@@ -276,7 +276,7 @@ book is only discovered at the table.
 so they are read as a union: Warlock picks, the patron's always-prepared list,
 species and feat cantrips, and free casts. The book cannot duplicate anything the
 character already has, so all of them are excluded from the pool and listed
-explicitly in the prompt. The book's *current* loadout is deliberately **not**
+explicitly in the prompt. The book's _current_ loadout is deliberately **not**
 excluded — the book is conjured fresh each rest, so re-picking remains legal.
 
 ### Result cache and ratings
@@ -304,7 +304,7 @@ the three books, so they live in `run.json` rather than being copied into each b
 (~47KB once instead of three times). **Each book gets its own file** because a book
 is the unit of rating, so rating one never rewrites its siblings.
 
-A hit requires the *whole* key plus a fingerprint of the character sheet, so editing
+A hit requires the _whole_ key plus a fingerprint of the character sheet, so editing
 the sheet between runs regenerates instead of replaying advice for a character that
 no longer exists. Cached answers are re-validated against the eligibility rules
 rather than trusted, since an entry may predate a rules change. A partial directory
@@ -462,6 +462,10 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [ ] Switch to Lucide icons
 - [ ] When switching "tabs" keep the running processes going. eg Scenario planning, question asking. Update the tabs with progress meters.
 - [ ] Let's write evals for the scenario planning
+- [ ] Reduce duplication in the display of books: in the scenario view book, title, and spells are all duplicated
+- [ ] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
+- [ ] As we have a local copy of the rules list them out on the rules page and enable a quick UI only search on titles. Then enable a vector search over the documents.
+- [ ] Provide a history search
 
 ### Choosing the model
 
@@ -469,12 +473,12 @@ whatever a one-line fake SRD implies rather than what the real one does.
 means is inferred from the name, because the two conventions are unambiguous — an
 OpenRouter id is `vendor/model` (contains `/`), an Ollama name is `name:tag` (does not):
 
-| `LLM_MODEL` | Backend used |
-| --- | --- |
-| unset, `OPENROUTER_API_KEY` set | OpenRouter, `deepseek/deepseek-v4.1-flash-1017` |
-| unset, no key | Ollama, `qwen3.5:4b` |
-| `deepseek/deepseek-v4.1-flash-1017` | OpenRouter |
-| `qwen2.5-coder:7b-instruct` | Ollama — **even with a key present** |
+| `LLM_MODEL`                         | Backend used                                    |
+| ----------------------------------- | ----------------------------------------------- |
+| unset, `OPENROUTER_API_KEY` set     | OpenRouter, `deepseek/deepseek-v4.1-flash-1017` |
+| unset, no key                       | Ollama, `qwen3.5:4b`                            |
+| `deepseek/deepseek-v4.1-flash-1017` | OpenRouter                                      |
+| `qwen2.5-coder:7b-instruct`         | Ollama — **even with a key present**            |
 
 That last row is the point: it lets a key stay in `.env` for occasional use while
 running locally by default. A remote model id with no key falls back to Ollama and says

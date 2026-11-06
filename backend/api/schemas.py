@@ -90,13 +90,17 @@ class AnswerSchema(BaseModel):
     field_name: str | None = None
     citations: list[str] = Field(default_factory=list)
     from_cache: bool = False
+    # The documents this answer was given, by name. Exposed because an answer that reports
+    # the SRD does not cover a spell reads very differently once the reader can see the
+    # spell was never attached - and that difference is invisible from the text alone.
+    attachments: list[str] = Field(default_factory=list)
 
     @classmethod
     def from_answer(cls, answer) -> "AnswerSchema":
         return cls(
             question=answer.question, answer=answer.answer, source=answer.source,
             field_name=answer.field_name, citations=list(answer.citations or []),
-            from_cache=answer.from_cache,
+            from_cache=answer.from_cache, attachments=list(answer.attachments or []),
         )
 
 

@@ -1,18 +1,18 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useRef, useState } from "react"
+import { useSearchParams } from "react-router-dom"
 
-import { api, ApiError } from '@/api/client'
-import type { Book, Generation } from '@/api/types'
-import { BookPanel } from '@/components/BookPanel'
-import { Markdown } from '@/components/Markdown'
-import { StageProgress } from '@/components/StageProgress'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Textarea } from '@/components/ui/textarea'
-import { median } from '@/lib/format'
+import { api, ApiError } from "@/api/client"
+import type { Book, Generation } from "@/api/types"
+import { BookPanel } from "@/components/BookPanel"
+import { Markdown } from "@/components/Markdown"
+import { StageProgress } from "@/components/StageProgress"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Textarea } from "@/components/ui/textarea"
+import { median } from "@/lib/format"
 
-type Phase = 'idle' | 'running' | 'done' | 'error'
+type Phase = "idle" | "running" | "done" | "error"
 
 /**
  * Generate a recommendation, or replay the stored one for the same scenario.
@@ -26,12 +26,12 @@ type Phase = 'idle' | 'running' | 'done' | 'error'
 export function ScenarioScreen() {
   // Seeded from ?scenario= so the history screen can link straight into a stored run.
   const [params] = useSearchParams()
-  const [scenario, setScenario] = useState(() => params.get('scenario') ?? '')
+  const [scenario, setScenario] = useState(() => params.get("scenario") ?? "")
   const [generation, setGeneration] = useState<Generation | null>(null)
   // A run opened from history is not a cache hit: nothing was generated or looked up, the
   // stored books were read back. Labelling it "from cache" would imply the model ran.
   const [storedAt, setStoredAt] = useState<string | null>(null)
-  const [phase, setPhase] = useState<Phase>('idle')
+  const [phase, setPhase] = useState<Phase>("idle")
   const [error, setError] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
   const [estimate, setEstimate] = useState<number | null>(null)
@@ -42,7 +42,7 @@ export function ScenarioScreen() {
   // timings only exist after the run, so this is a display heuristic: retrieval is
   // quick and local, the model call dominates.
   useEffect(() => {
-    if (phase !== 'running') return
+    if (phase !== "running") return
     const timer = setInterval(() => {
       const seconds = (performance.now() - started.current) / 1000
       setElapsed(seconds)
@@ -60,7 +60,9 @@ export function ScenarioScreen() {
       .then((runs) => {
         const totals = runs
           .map((run) => run.timings.total_seconds)
-          .filter((value): value is number => typeof value === 'number' && value > 0)
+          .filter(
+            (value): value is number => typeof value === "number" && value > 0,
+          )
         if (!cancelled && totals.length) {
           setEstimate(median(totals))
         }
@@ -76,7 +78,7 @@ export function ScenarioScreen() {
   // Arriving from history with ?run= means the user asked to read a stored run, not to
   // start one. Loading it here is what makes the prompt and the results appear together:
   // seeding the textarea alone left the screen looking like an unrun scenario.
-  const runId = params.get('run')
+  const runId = params.get("run")
 
   useEffect(() => {
     if (!runId) return
@@ -88,22 +90,26 @@ export function ScenarioScreen() {
         setStoredAt(stored.created_at)
         setGeneration({
           scenario: stored.scenario,
-          answer: '',
+          answer: "",
           books: stored.books,
-          prompt: '',
+          prompt: "",
           warnings: [],
           from_cache: true,
           model: null,
-          timings: { total_seconds: null, phases: {}, unaccounted_seconds: null },
+          timings: {
+            total_seconds: null,
+            phases: {},
+            unaccounted_seconds: null,
+          },
           // The id we just loaded by, so a book opened from history is rateable too.
           run_id: runId,
         })
-        setPhase('done')
+        setPhase("done")
       })
       .catch((e: unknown) => {
         if (cancelled) return
         setError(e instanceof ApiError ? e.message : String(e))
-        setPhase('error')
+        setPhase("error")
       })
     return () => {
       cancelled = true
@@ -112,7 +118,7 @@ export function ScenarioScreen() {
 
   const generate = useCallback(async () => {
     if (!scenario.trim()) return
-    setPhase('running')
+    setPhase("running")
     setError(null)
     setGeneration(null)
     setElapsed(0)
@@ -121,10 +127,10 @@ export function ScenarioScreen() {
     try {
       const result = await api.scenario(scenario)
       setGeneration(result)
-      setPhase('done')
+      setPhase("done")
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e))
-      setPhase('error')
+      setPhase("error")
     }
   }, [scenario])
 
@@ -142,30 +148,36 @@ export function ScenarioScreen() {
               placeholder="A rust monster eats the fighter's plate armour mid-fight."
               onChange={(e) => setScenario(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) generate()
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate()
               }}
             />
             <Button
               className="w-full"
               onClick={generate}
-              disabled={phase === 'running' || !scenario.trim()}
+              disabled={phase === "running" || !scenario.trim()}
             >
-              {phase === 'running' ? 'Scribing…' : 'Recommend spells'}
+              {phase === "running" ? "Scribing…" : "Recommend spells"}
             </Button>
             <p className="text-xs text-parchment/45">
-              ⌘/Ctrl + Enter to run. Repeating the same scenario re-opens the stored
-              result instead of asking the model again.
+              ⌘/Ctrl + Enter to run. Repeating the same scenario re-opens the
+              stored result instead of asking the model again.
             </p>
           </CardContent>
         </Card>
 
-        {phase === 'running' && (
+        {phase === "running" && (
           <Card>
             <CardContent className="pt-4">
               {runId ? (
-                <p className="text-sm text-parchment/50">Opening the stored run…</p>
+                <p className="text-sm text-parchment/60">
+                  Opening the stored run…
+                </p>
               ) : (
-                <StageProgress stage={stage} elapsed={elapsed} estimate={estimate} />
+                <StageProgress
+                  stage={stage}
+                  elapsed={elapsed}
+                  estimate={estimate}
+                />
               )}
             </CardContent>
           </Card>
@@ -197,7 +209,9 @@ export function ScenarioScreen() {
             <CardContent className="space-y-2 text-xs text-parchment/55">
               {storedAt && <p className="font-mono">{formatDate(storedAt)}</p>}
               <Timings generation={generation} />
-              {generation.model && <p className="font-mono">{generation.model}</p>}
+              {generation.model && (
+                <p className="font-mono">{generation.model}</p>
+              )}
               {generation.warnings.length > 0 && (
                 <div className="space-y-1 pt-2">
                   {generation.warnings.map((warning, i) => (
@@ -213,9 +227,9 @@ export function ScenarioScreen() {
       </div>
 
       <div className="space-y-4">
-        {!generation && phase !== 'running' && !runId && (
+        {!generation && phase !== "running" && !runId && (
           <Card>
-            <CardContent className="pt-4 text-sm text-parchment/50">
+            <CardContent className="pt-4 text-sm text-parchment/60">
               Describe the encounter to get books of spells built for it.
             </CardContent>
           </Card>
@@ -249,10 +263,10 @@ function formatDate(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   })
 }
 
@@ -276,6 +290,5 @@ function Timings({ generation }: { generation: Generation }) {
     </div>
   )
 }
-
 
 export type { Book }

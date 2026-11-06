@@ -1,20 +1,20 @@
-import { useRef, useState } from 'react'
-import { ChevronDown, ChevronRight, Star, MessageSquare } from 'lucide-react'
+import { useRef, useState } from "react"
+import { ChevronDown, ChevronRight, Star, MessageSquare } from "lucide-react"
 
-import { api, ApiError } from '@/api/client'
-import { RulesContextDrawerProvider } from '@/components/RulesContextDrawer'
-import { RulesContextButton } from '@/components/RulesContextButton'
-import type { Answer, Book } from '@/api/types'
-import { Markdown } from '@/components/Markdown'
-import { SourceBadge } from '@/components/SourceBadge'
-import { SpellLink } from '@/components/SpellLink'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { cn } from '@/lib/utils'
+import { api, ApiError } from "@/api/client"
+import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
+import { RulesContextButton } from "@/components/RulesContextButton"
+import type { Answer, Book } from "@/api/types"
+import { Markdown } from "@/components/Markdown"
+import { SourceBadge } from "@/components/SourceBadge"
+import { SpellLink } from "@/components/SpellLink"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Input } from "@/components/ui/input"
+import { cn } from "@/lib/utils"
 
-const OUTCOMES = ['won', 'lost', 'unused', 'partial'] as const
+const OUTCOMES = ["won", "lost", "unused", "partial"] as const
 
 /**
  * One book, with its picks, its text, a rating, and a place to ask about it.
@@ -42,7 +42,7 @@ export function BookPanel({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const [question, setQuestion] = useState('')
+  const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
 
@@ -104,12 +104,9 @@ export function BookPanel({
           )}
           <div>
             <CardTitle>
-              <span className="text-parchment/35">Book {book.index}: </span>
+              <span className="text-parchment/60">Book {book.index}: </span>
               {book.name}
             </CardTitle>
-            <p className="mt-0.5 text-xs text-parchment/45">
-              {picks.length} categor{picks.length === 1 ? 'y' : 'ies'} of picks
-            </p>
           </div>
         </button>
 
@@ -120,15 +117,22 @@ export function BookPanel({
               onClick={() => saveScore(score)}
               disabled={saving || !rateable}
               aria-label={`Rate ${score} out of 5`}
-              title={rateable ? undefined : 'This run was not stored, so it cannot be rated'}
-              className={cn('p-0.5', !rateable && 'cursor-not-allowed opacity-40')}
+              title={
+                rateable
+                  ? undefined
+                  : "This run was not stored, so it cannot be rated"
+              }
+              className={cn(
+                "p-0.5",
+                !rateable && "cursor-not-allowed opacity-40",
+              )}
             >
               <Star
                 className={cn(
-                  'h-4 w-4 transition-colors',
+                  "h-4 w-4 transition-colors",
                   rating !== null && score <= rating
-                    ? 'fill-radiant-400 text-radiant-400'
-                    : 'text-parchment/25 hover:text-radiant-400',
+                    ? "fill-radiant-400 text-radiant-400"
+                    : "text-parchment/25 hover:text-radiant-400",
                 )}
               />
             </button>
@@ -144,18 +148,20 @@ export function BookPanel({
             {picks.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
                 {picks.map(([group, names]) => (
-                  <Badge key={group} tone="arcane">
-                    {group}:{' '}
-                    {names.map((name, i) => (
-                      <span key={name}>
-                        {i > 0 && ', '}
+                  <div
+                    key={group}
+                    className="flex flex-wrap items-center gap-1.5"
+                  >
+                    <span className="text-xs text-parchment/60">{group}</span>
+                    {names.map((name) => (
+                      <Badge key={name} tone="arcane">
                         {/* The same link the prose uses, so a pick and a mention behave
                             alike - both open the drawer on a click and keep the href for
                             Ctrl+click. */}
                         <SpellLink name={name} className="text-inherit" />
-                      </span>
+                      </Badge>
                     ))}
-                  </Badge>
+                  </div>
                 ))}
               </div>
             )}
@@ -174,10 +180,10 @@ export function BookPanel({
                 value={question}
                 placeholder="Ask about this scenario, e.g. what if it has fire resistance?"
                 onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && ask()}
+                onKeyDown={(e) => e.key === "Enter" && ask()}
               />
               <Button variant="secondary" onClick={ask} disabled={asking}>
-                {asking ? '…' : 'Ask'}
+                {asking ? "…" : "Ask"}
               </Button>
             </div>
             {answer && (
@@ -189,7 +195,10 @@ export function BookPanel({
 
             <div className="flex items-center gap-2 text-sm text-parchment/60">
               <MessageSquare className="h-4 w-4" />
-              <span>Or select text in the book above and click the button to ask about it</span>
+              <span>
+                Or select text in the book above and click the button to ask
+                about it
+              </span>
             </div>
           </div>
 
@@ -209,7 +218,7 @@ export function BookPanel({
  */
 function OutcomeRow({ book, runId }: { book: Book; runId: string | null }) {
   const [outcome, setOutcome] = useState(book.rating?.outcome ?? null)
-  const [notes, setNotes] = useState(book.rating?.notes ?? '')
+  const [notes, setNotes] = useState(book.rating?.notes ?? "")
   const [saved, setSaved] = useState(false)
   const [failed, setFailed] = useState(false)
 
@@ -244,13 +253,13 @@ function OutcomeRow({ book, runId }: { book: Book; runId: string | null }) {
           key={option}
           onClick={() => save(option)}
           disabled={disabled}
-          title={disabled ? 'Rate the book first' : undefined}
+          title={disabled ? "Rate the book first" : undefined}
           className={cn(
-            'rounded-full border px-2 py-0.5 transition-colors',
-            disabled && 'cursor-not-allowed opacity-40',
+            "rounded-full border px-2 py-0.5 transition-colors",
+            disabled && "cursor-not-allowed opacity-40",
             outcome === option
-              ? 'border-arcane-500/50 bg-arcane-500/15 text-arcane-300'
-              : 'border-void-700 text-parchment/50 hover:text-parchment',
+              ? "border-arcane-500/50 bg-arcane-500/15 text-arcane-300"
+              : "border-void-700 text-parchment/60 hover:text-parchment",
           )}
         >
           {option}
@@ -258,7 +267,7 @@ function OutcomeRow({ book, runId }: { book: Book; runId: string | null }) {
       ))}
       <Input
         value={notes}
-        placeholder={disabled ? 'rate the book first' : 'notes'}
+        placeholder={disabled ? "rate the book first" : "notes"}
         disabled={disabled}
         onChange={(e) => setNotes(e.target.value)}
         onBlur={() => !disabled && notes && outcome && save(outcome)}
@@ -269,5 +278,3 @@ function OutcomeRow({ book, runId }: { book: Book; runId: string | null }) {
     </div>
   )
 }
-
-

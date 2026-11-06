@@ -1,7 +1,9 @@
+import { useCallback } from 'react'
 import type { RefObject } from 'react'
 import { MessageSquare } from 'lucide-react'
 
 import { useRulesContext } from '@/lib/rulesContext'
+import { extractSpellNames, useSpellNames } from '@/lib/spellNames'
 import { useSelection } from '@/lib/useSelection'
 
 /**
@@ -16,7 +18,14 @@ import { useSelection } from '@/lib/useSelection'
  * can read "2 beams" as the *Eldritch Blast* beams.
  */
 export function RulesContextButton({ target }: { target: RefObject<HTMLElement | null> }) {
-  const { selectedText, context, clearSelection } = useSelection(target)
+  const names = useSpellNames()
+  // The renderer's own mention rule, so what is attached is exactly what is linked. Stable
+  // across renders because `useSelection` takes it as an effect dependency.
+  const mentionsOf = useCallback(
+    (text: string) => extractSpellNames(text, names),
+    [names],
+  )
+  const { selectedText, context, documents, clearSelection } = useSelection(target, mentionsOf)
   const { ask } = useRulesContext()
 
   if (!selectedText) return null
@@ -26,7 +35,12 @@ export function RulesContextButton({ target }: { target: RefObject<HTMLElement |
   const handleClick = () => {
     // Ask first, then drop the selection: the drawer holds the text from here, and the
     // highlight would otherwise sit over the prose behind the panel.
-    ask(selectedText, context)
+    //
+    // `documents` is passed explicitly because *this* component is what sits on the prose
+    // and can see which words are links. Handing the names over rather than letting the
+    // drawer re-derive them from the text keeps "what the reader was shown as a link" and
+    // "what the model was given" the same list.
+    ask(selectedText, context, documents)
     clearSelection()
   }
 

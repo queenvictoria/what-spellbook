@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState } from "react"
 
-import { api, ApiError } from '@/api/client'
-import type { Answer, Character, Health } from '@/api/types'
-import { Markdown } from '@/components/Markdown'
-import { SourceBadge } from '@/components/SourceBadge'
-import { Input } from '@/components/ui/input'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
+import { api, ApiError } from "@/api/client"
+import type { Answer, Character, Health } from "@/api/types"
+import { Markdown } from "@/components/Markdown"
+import { SourceBadge } from "@/components/SourceBadge"
+import { Input } from "@/components/ui/input"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Badge } from "@/components/ui/badge"
 
 /**
  * The character sheet, plus a box to ask about it.
@@ -24,7 +24,7 @@ export function CharacterScreen() {
   const [keys, setKeys] = useState<string[]>([])
   const [error, setError] = useState<string | null>(null)
 
-  const [question, setQuestion] = useState('')
+  const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
   const [askError, setAskError] = useState<string | null>(null)
@@ -36,7 +36,9 @@ export function CharacterScreen() {
         setHealth(status)
         setKeys(sheetKeys)
       })
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : String(e)))
+      .catch((e: unknown) =>
+        setError(e instanceof ApiError ? e.message : String(e)),
+      )
   }, [])
 
   async function ask(text = question) {
@@ -53,22 +55,23 @@ export function CharacterScreen() {
   }
 
   if (error) return <p className="text-sm text-red-300">{error}</p>
-  if (!character) return <p className="text-sm text-parchment/50">Loading…</p>
+  if (!character) return <p className="text-sm text-parchment/60">Loading…</p>
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
       <Card>
         <CardHeader className="flex-row items-center justify-between">
           <CardTitle>{character.name}</CardTitle>
-          {health && (
-            <Badge tone="muted">index v{health.index_version}</Badge>
-          )}
+          {health && <Badge tone="muted">index v{health.index_version}</Badge>}
         </CardHeader>
         <CardContent>
           <dl className="divide-y divide-void-800">
             {Object.entries(character.sheet).map(([key, value]) => (
-              <div key={key} className="grid grid-cols-[10rem_1fr] gap-4 py-2 text-sm">
-                <dt className="text-parchment/50">{key}</dt>
+              <div
+                key={key}
+                className="grid grid-cols-[10rem_1fr] gap-4 py-2 text-sm"
+              >
+                <dt className="text-parchment/60">{key}</dt>
                 <dd className="text-parchment/90">{renderValue(value)}</dd>
               </div>
             ))}
@@ -87,10 +90,10 @@ export function CharacterScreen() {
                 value={question}
                 placeholder="perception, dex save, why two Light spells…"
                 onChange={(e) => setQuestion(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && ask()}
+                onKeyDown={(e) => e.key === "Enter" && ask()}
               />
               <Button onClick={() => ask()} disabled={asking}>
-                {asking ? '…' : 'Ask'}
+                {asking ? "…" : "Ask"}
               </Button>
             </div>
 
@@ -103,7 +106,7 @@ export function CharacterScreen() {
                       setQuestion(key)
                       ask(key)
                     }}
-                    className="rounded-full border border-void-700 px-2 py-0.5 text-[0.7rem] text-parchment/50 hover:text-parchment"
+                    className="rounded-full border border-void-700 px-2 py-0.5 text-[0.7rem] text-parchment/60 hover:text-parchment"
                   >
                     {key}
                   </button>
@@ -125,7 +128,7 @@ export function CharacterScreen() {
         {health && (
           <Card>
             <CardContent className="space-y-1 pt-4 font-mono text-xs text-parchment/45">
-              <p>model: {health.model ?? 'unknown'}</p>
+              <p>model: {health.model ?? "unknown"}</p>
               <p>status: {health.status}</p>
             </CardContent>
           </Card>
