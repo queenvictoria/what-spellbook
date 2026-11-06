@@ -1,110 +1,119 @@
-import { useState } from 'react'
+import { useCallback, useState } from 'react'
 import type { ReactNode } from 'react'
-import React from 'react'
 import { X } from 'lucide-react'
 
 import { Drawer, DrawerClose, DrawerContent, DrawerDescription, DrawerTitle } from '@/components/ui/drawer'
 import { Input } from '@/components/ui/input'
-import { api } from '@/api/client'
+import { Markdown } from '@/components/Markdown'
 import { SourceBadge } from '@/components/SourceBadge'
+import { api } from '@/api/client'
+import type { Answer } from '@/api/types'
+import { RulesContext, useRulesContext } from '@/lib/rulesContext'
 
 /**
- * A pull-out panel for contextual rules explanations based on selected text.
+ * The contextual menu: select prose from a book, click the button, read the explanation.
  *
- * When a user selects text from the book prose (e.g., "2 beams" from Eldritch Blast),
- * this drawer shows an explanation of what that means in the context of D&D 5.5e rules.
- *
- * The panel is Base UI's Drawer, which is what shadcn's current drawer wraps, so Escape,
- * the focus trap and the `aria-*` wiring come from the primitive rather than being redone
- * here.
+ * The selection lives here rather than beside the button, because the button is per-book
+ * and the panel is per-book too, but the *text* has to survive the selection being cleared
+ * before the request is made - clicking the button collapses the selection, so reading the
+ * selection at click time would send an empty string every time.
  */
 export function RulesContextDrawerProvider({ children }: { children: ReactNode }) {
   const [open, setOpen] = useState(false)
   const [selectedText, setSelectedText] = useState('')
   const [loading, setLoading] = useState(false)
-  const [answer, setAnswer] = useState<string | null>(null)
+  const [answer, setAnswer] = useState<Answer | null>(null)
   const [error, setError] = useState<string | null>(null)
 
-  const handleAsk = async () => {
-    if (!selectedText.trim()) return
+  const ask = useCallback(async (text?: string, context?: string) => {
+    const question = (text ?? '').trim()
+    if (!question) return
+
+    setSelectedText(question)
+    setOpen(true)
     setLoading(true)
     setError(null)
     setAnswer(null)
     try {
-      const result = await api.rulesContextual(selectedText)
-      setAnswer(result.answer)
+      setAnswer(await api.rulesContextual(question, context || undefined))
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to get answer')
+      setError(err instanceof Error ? err.message : 'Could not reach the rules lookup.')
     } finally {
       setLoading(false)
     }
-  }
+  }, [])
 
   return (
-    <RulesContextContext.Provider value={{ open, setOpen, selectedText, setSelectedText, handleAsk, loading, answer, error }}>
+    <RulesContext.Provider
+      value={{ open, setOpen, selectedText, setSelectedText, ask, loading, answer, error }}
+    >
       {children}
       <RulesContextDrawer />
-    </RulesContextContext.Provider>
+    </RulesContext.Provider>
   )
 }
 
-const RulesContextContext = React.createContext<{
-  open: boolean
-  setOpen: (open: boolean) => void
-  selectedText: string
-  setSelectedText: (text: string) => void
-  handleAsk: () => void
-  loading: boolean
-  answer: string | null
-  error: string | null
-} | null>(null)
 
 function RulesContextDrawer() {
-  const context = React.useContext(RulesContextContext)
-  if (!context) throw new Error('RulesContextDrawer must be used within RulesContextDrawerProvider')
-
-  const { open, setOpen, selectedText, setSelectedText, handleAsk, loading, answer, error } = context
+  const { open, setOpen, selectedText, setSelectedText, ask, loading, answer, error } =
+    useRulesContext()
 
   return (
     <Drawer open={open} onOpenChange={setOpen} swipeDirection="right">
       <DrawerContent>
         <DrawerTitle className="sr-only">Rules Context</DrawerTitle>
         <DrawerDescription className="sr-only">
-          An explanation of selected text in the context of D&D 5.5e rules.
+          An explanation of the selected text in the context of D&D 5.5e rules.
         </DrawerDescription>
 
         <div className="border-b border-void-800 p-4">
           <div className="flex gap-2">
             <Input
-              placeholder="Selected text..."
+              placeholder="Text to explain, e.g. 2 beams"
               value={selectedText}
               onChange={(e) => setSelectedText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleAsk()
+                if (e.key === 'Enter') ask(selectedText)
               }}
               className="flex-1"
             />
             <button
-              onClick={handleAsk}
+              onClick={() => ask(selectedText)}
               disabled={loading || !selectedText.trim()}
               className="rounded-md bg-parchment px-4 py-2 text-void-900 transition-colors hover:bg-parchment/90 disabled:opacity-50"
             >
-              {loading ? '...' : 'Ask'}
+              {loading ? '…' : 'Ask'}
             </button>
           </div>
-          {error && (
-            <p className="mt-2 text-sm text-red-400">{error}</p>
-          )}
+          {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
         </div>
 
         <div className="flex-1 overflow-y-auto p-4">
-          {answer ? (
-            <div className="prose prose-invert max-w-none">
-              <SourceBadge source="rules" />
-              <div className="whitespace-pre-wrap">{answer}</div>
+          {loading && <p className="text-center text-parchment/60">Consulting the 2024 SRD…</p>}
+          {!loading && answer && (
+            <div className="space-y-2">
+              {/* The provenance badge is the point of this panel: a `rules` answer is
+                  quoted from the SRD and a `rules-inferred` one is the model's reading of
+                  related text. Showing the second as the first is the failure the badge
+                  exists to prevent. */}
+              <SourceBadge source={answer.source} field={answer.field_name} />
+              <Markdown text={answer.answer} className="prose-spell" />
+              {answer.citations.length > 0 && (
+                <p className="text-xs text-parchment/40">
+                  {answer.from_cache ? 'Cached · ' : ''}
+                  {answer.citations.join(', ')}
+                </p>
+              )}
             </div>
-          ) : (
-            <p className="text-center text-parchment/60">Select text and click Ask to get an explanation</p>
+          )}
+          {/* Only when nothing has been asked yet. Once an answer is on screen the entry
+              hint is gone, because this panel renders the search box but not the spelling
+              of every request the backend accepts (`/api/rules/contextual` is a GET, not a
+              POST) - and a hint that overstates what a control does is worse than none. */}
+          {!loading && !answer && (
+            <p className="text-center text-parchment/60">
+              Select text in a book and click the button to get an explanation.
+            </p>
           )}
         </div>
 

@@ -30,7 +30,8 @@ backend/
     prompts.py      prompt templates + context-file resolution
     cache.py        per-run/per-book result cache
     lookup.py       deterministic sheet answers (/c), duplicate-spell origins
-    rules.py        2024 SRD retrieval for /? (host allow-list, heading match, cache)
+    rules.py        2024 SRD retrieval for /? and the contextual menu (heading match,
+                    selection match, spell and invocation lookup, cache)
     timing.py       per-phase aggregation behind the ETA
     llm.py          backend selection, response normalisation, typed errors
     service.py      SpellbookService - the application layer
@@ -530,6 +531,13 @@ Two consequences worth remembering, because both look like bugs and are not:
   only says "as detailed in the Cover table"; the +2 and +5 bonuses are in the markup.
   A converter that drops `<table>` leaves a confident answer with its numbers missing.
 
+**This contract holds for questions, and only for questions.** A phrase highlighted in a
+book is neither phrased in the SRD's words nor about something the SRD necessarily names
+under a heading, so it takes a separate path - `rules.gather_from_selection`, which ranks by
+how much of the selection's own vocabulary a section accounts for and always answers as
+`rules-inferred`. Loosening the three mechanisms above to accommodate it would re-break
+every failure they exist to prevent; see *A selection is not a question* below.
+
 ### Verify rule numbers programmatically
 
 Do not transcribe a rules table by hand. Pull the source, parse it, and diff it against
@@ -810,6 +818,87 @@ does not have, and the two front ends would drift within a week.
 - **Never let a smoke test write into real user data.** Exercising `POST
   /api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
   you touched, and prefer a request that only reads.
+
+### A selection is not a question
+
+The contextual menu takes a phrase copied out of a generated book. It is the one input in
+this project that is neither a question nor written in the rulebook's vocabulary, and every
+existing path was built on the assumption that it is a question:
+
+- `gather` requires a heading to *name* the subject. The SRD's heading for "2 beams" is
+  **Cantrip Upgrade**; for "nonmagical plate" it is **Crafting Nonmagical Items**. In both,
+  the words that identify the rule are in the section *body*, so the anchor refuses a
+  selection that a reader is obviously pointing at.
+- `gather_inferred` keeps the anchor and relaxes only the subject floor, so it refuses the
+  same fragments.
+- `ask_rules_contextual` tried those two and nothing else, so **every** realistic selection
+  ended at "The 2024 SRD has no section matching…".
+
+`rules.gather_from_selection` is a third path for exactly this, and the anchored paths are
+deliberately left unloosened. What separates them is not permission but *labelling*: a
+question is phrased in the rulebook's words and can be quoted, a selection names its subject
+in the book's words and can only be interpreted. So a selection answer is always
+`rules-inferred`, which is what makes answering one safe.
+
+Three things were learned building it, and each changed the design:
+
+- **Coverage is the gate, because a score threshold cannot be.** The first attempt reused
+  the anchored scorer and required a minimum score. Measured against real selections, the
+  right answer for "Help action" scored **1.66** and the right answer for "Thorn Whip"
+  **0.58** - while a *wrong* answer for "how does two weapon fighting work" scored **0.84**.
+  Any floor high enough to reject the wrong one also rejected a correct one, because the
+  scorer measures how well a heading repeats the input, which is precisely the signal a
+  selection does not carry. What does separate them is vocabulary: `_coverage` asks how much
+  of the selection consists of words the SRD uses at all. A word it never writes weighs
+  zero, so "Rust Metal" and "flanking" score near zero and are refused, while every fragment
+  that needs this path clears 0.55.
+- **The gate is length-sensitive, and that is a boundary worth stating.** A whole sentence
+  has enough real words to clear any floor, so a sentence is let through even when the thing
+  it names is absent from the SRD. Measured: "Rust Metal" alone is refused, "Rust Metal
+  corrodes the fighter's plate and every other nonmagical metal object" is not. That is
+  acceptable *because* it is bounded - only 400 characters of contact prose are ever sent,
+  the answer is labelled `rules-inferred`, and the prompt requires naming the gap (the live
+  model did: *"that part comes from your selected context, not from the retrieved SRD
+  text"*). Nothing was available on 2024 - an embedding search would have the same
+  property.
+- **Weighted coverage beats aligned coverage for a multi-word phrase.** Scored on
+  max-coverage alignment, "2 beams" preferred the honours-course **Spells** chapter - which
+  contains both words once - over the **Eldritch Blast** section the words were copied from,
+  since two words align equally well wherever both appear. Weighting by rarity and summing
+  gives the section that accounts for *all* of the selection, which is the one that explains
+  it.
+
+### The plumbing, not the matcher, was most of the bug
+
+Four independent failures sat between the highlight and the answer, and fixing only the
+matcher would have left the feature just as dead. Each is a shape worth recognising:
+
+- **A query parameter must match the name FastAPI declared.** The client sent
+  `selectedText`, the route declared `selected_text`, and *every* request 422'd. Worse, the
+  service path was correct, so any test at the service level passed; only a request through
+  the real app could see it. `tests/test_api.py` now exercises the endpoint for that reason.
+- **A ref read in an effect body is `null` and stays `null`.** `useSelection` did
+  `const element = ref.current; if (!element) return`, and the ref object itself never
+  changes - so the effect never re-ran and the hook reported "nothing selected" for every
+  selection ever made. `RulesContextButton` then made it unfixable by passing
+  `{ current: null }`, a ref that can never point at anything. Read the ref *inside* the
+  listener. A hook that takes an element to watch also needs an element to watch: the button
+  is now handed the book's prose container, and the selection is scoped to it.
+- **A click that clears the selection before reading it sends an empty string.** The
+  button's handler only called `clearSelection()`. The selected text has to be captured and
+  handed to the drawer first; the drawer holds it, so the highlight can then be dropped
+  without losing what was asked.
+- **A component that renders `null` unconditionally cannot be debugged from the outside.**
+  "The button never appears" had three separate causes stacked in one small component, and
+  each hid the next. When a guard makes a component invisible, check the guard's input is
+  ever non-empty before looking at the guard.
+
+The surrounding sentence is sent with the selection, and it reaches **the prompt only, never
+retrieval**. A fragment is ambiguous in exactly the way its sentence resolves it ("2 beams"
+could be any spell), but the selection is what was asked about - letting a sentence steer the
+search answers the book's prose instead of the phrase the reader highlighted. The *source
+badge* still does the real work, and the live run shows why: the answer quoted the SRD for
+the beams and then said plainly that the Repelling Blast wording came from the selection.
 
 ### Where a fake would hide the thing under test, keep the real path
 

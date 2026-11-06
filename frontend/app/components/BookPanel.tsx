@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Star, MessageSquare } from 'lucide-react'
 
 import { api, ApiError } from '@/api/client'
@@ -45,6 +45,11 @@ export function BookPanel({
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
+
+  // The prose the contextual menu watches. Selection is scoped to this element, so a
+  // selection in another book - or in the drawer's own input - cannot raise this book's
+  // button.
+  const prose = useRef<HTMLDivElement>(null)
 
   const picks = Object.entries(book.picks ?? {})
 
@@ -133,26 +138,35 @@ export function BookPanel({
 
       {expanded && (
         <CardContent className="space-y-4">
-          {picks.length > 0 && (
-            <div className="flex flex-wrap gap-1.5">
-              {picks.map(([group, names]) => (
-                <Badge key={group} tone="arcane">
-                  {group}:{' '}
-                  {names.map((name, i) => (
-                    <span key={name}>
-                      {i > 0 && ', '}
-                      {/* The same link the prose uses, so a pick and a mention behave
-                          alike - both open the drawer on a click and keep the href for
-                          Ctrl+click. */}
-                      <SpellLink name={name} className="text-inherit" />
-                    </span>
-                  ))}
-                </Badge>
-              ))}
-            </div>
-          )}
+          {/* The provider wraps the prose and the button together, because the button
+              needs the drawer's `ask` and the drawer's panel is per book. */}
+          <RulesContextDrawerProvider>
+            {picks.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {picks.map(([group, names]) => (
+                  <Badge key={group} tone="arcane">
+                    {group}:{' '}
+                    {names.map((name, i) => (
+                      <span key={name}>
+                        {i > 0 && ', '}
+                        {/* The same link the prose uses, so a pick and a mention behave
+                            alike - both open the drawer on a click and keep the href for
+                            Ctrl+click. */}
+                        <SpellLink name={name} className="text-inherit" />
+                      </span>
+                    ))}
+                  </Badge>
+                ))}
+              </div>
+            )}
 
-          <Markdown text={book.text} className="prose-spell" />
+            {/* The book's markdown, and the only place a selection may come from. */}
+            <div ref={prose}>
+              <Markdown text={book.text} className="prose-spell" />
+            </div>
+
+            <RulesContextButton target={prose} />
+          </RulesContextDrawerProvider>
 
           <div className="border-t border-void-800 pt-3 space-y-3">
             <div className="flex gap-2">
@@ -175,13 +189,9 @@ export function BookPanel({
 
             <div className="flex items-center gap-2 text-sm text-parchment/60">
               <MessageSquare className="h-4 w-4" />
-              <span>Or select text and click the context button to ask about it</span>
+              <span>Or select text in the book above and click the button to ask about it</span>
             </div>
           </div>
-
-          <RulesContextDrawerProvider>
-            <RulesContextButton />
-          </RulesContextDrawerProvider>
 
           {error && <p className="text-xs text-red-300">{error}</p>}
 

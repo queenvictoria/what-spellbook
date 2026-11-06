@@ -385,3 +385,35 @@ def test_prompt_budget_warning_fires_for_oversized_prompts():
     warning = prompts.prompt_budget_warning("x" * (prompts.PROMPT_CHAR_BUDGET + 1))
     assert warning is not None
     assert "context" in warning.lower()
+
+
+# --- the contextual menu's selection block -------------------------------------
+#
+# A selection is a phrase, not a question, so the surrounding sentence is what resolves it:
+# "2 beams" means nothing on its own and everything beside "Eldritch Blast".
+
+
+@pytest.mark.parametrize("build", [prompts.rules_prompt, prompts.rules_inferred_prompt])
+def test_no_selection_means_no_selection_block(build):
+    """An ordinary rules question must not gain a heading for a thing that does not exist."""
+    text = build(question="what is a short rest", rule_text="R", rule_context="")
+    assert "WHERE THE SELECTED TEXT APPEARS" not in text
+    assert "=== QUESTION ===" in text
+
+
+@pytest.mark.parametrize("build", [prompts.rules_prompt, prompts.rules_inferred_prompt])
+def test_a_selection_block_carries_the_surrounding_prose(build):
+    text = build(question="2 beams", rule_text="R", rule_context="",
+                 selection_context="Eldritch Blast creates two beams at level 5.")
+    assert "WHERE THE SELECTED TEXT APPEARS" in text
+    assert "Eldritch Blast creates two beams at level 5." in text
+    # The selection is still the question; the sentence is context for it, not a replacement.
+    assert "2 beams" in text.split("=== QUESTION ===")[1]
+
+
+@pytest.mark.parametrize("build", [prompts.rules_prompt, prompts.rules_inferred_prompt])
+def test_blank_selection_context_is_treated_as_absent(build):
+    """A selection made inside a word has no sentence around it, and a stray newline or a
+    run of spaces is not one either."""
+    assert "WHERE THE SELECTED TEXT APPEARS" not in build(
+        question="q", rule_text="R", rule_context="", selection_context="   \n ")

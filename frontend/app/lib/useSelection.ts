@@ -1,45 +1,73 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
+
+/** Enough surrounding prose to disambiguate a fragment, without pasting the paragraph. */
+const CONTEXT_LIMIT = 400
 
 /**
- * Hook to detect text selection in a ref.
+ * The block of prose a selection sits in, so the backend can read a fragment in context.
  *
- * Returns the selected text and a callback to clear the selection.
+ * "2 beams" means nothing on its own and everything beside "Eldritch Blast". The nearest
+ * block element is where the Markdown renderer puts a paragraph or a list item, so its
+ * text is the surrounding prose - and it is taken whole rather than split into sentences,
+ * because sentence splitting on model-authored prose finds the wrong full stop often
+ * enough to be worse than the extra words.
+ */
+function surroundingText(range: Range): string {
+  const node = range.startContainer
+  const element = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement
+  const block = element?.closest('p, li, h1, h2, h3, h4, td') ?? element
+  const text = block?.textContent?.replace(/\s+/g, ' ').trim() ?? ''
+  return text.length > CONTEXT_LIMIT ? text.slice(0, CONTEXT_LIMIT).trim() : text
+}
+
+/**
+ * Tracks the text selected inside `ref`, and the prose around it.
+ *
+ * The element is read from the ref *inside* the listener, never captured when the effect
+ * runs. A ref is populated during the commit that renders the element, so a hook that
+ * snapshots `ref.current` in its effect body sees `null` on the first pass and, because
+ * the ref object itself never changes, never gets a second chance - which is how this hook
+ * silently reported "nothing selected" for every selection ever made.
  */
 export function useSelection(ref: React.RefObject<HTMLElement | null>) {
   const [selectedText, setSelectedText] = useState('')
+  const [context, setContext] = useState('')
 
   useEffect(() => {
-    const element = ref.current
-    if (!element) return
-
     const handleSelectionChange = () => {
+      const element = ref.current
       const selection = window.getSelection()
-      if (!selection || selection.rangeCount === 0) {
+
+      // An empty range, or one outside the prose this hook watches - a selection in the
+      // drawer's own input, say - means there is nothing to ask about.
+      if (!element || !selection || selection.rangeCount === 0 || selection.isCollapsed) {
         setSelectedText('')
+        setContext('')
         return
       }
 
       const range = selection.getRangeAt(0)
       const text = range.toString().trim()
-
-      // Only consider selections that are not empty and are within the element
-      if (text.length > 0 && element.contains(range.commonAncestorContainer)) {
-        setSelectedText(text)
-      } else {
+      if (!text || !element.contains(range.commonAncestorContainer)) {
         setSelectedText('')
+        setContext('')
+        return
       }
+
+      setSelectedText(text)
+      setContext(surroundingText(range))
     }
 
     document.addEventListener('selectionchange', handleSelectionChange)
-    return () => {
-      document.removeEventListener('selectionchange', handleSelectionChange)
-    }
+    return () => document.removeEventListener('selectionchange', handleSelectionChange)
   }, [ref])
 
-  const clearSelection = () => {
+  /** Drop the selection, so the button goes away once it has been acted on. */
+  const clearSelection = useCallback(() => {
     window.getSelection()?.removeAllRanges()
     setSelectedText('')
-  }
+    setContext('')
+  }, [])
 
-  return { selectedText, clearSelection }
+  return { selectedText, context, clearSelection }
 }

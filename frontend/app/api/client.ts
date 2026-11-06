@@ -115,9 +115,18 @@ export const api = {
 
   rules: (question: string) => request<Answer>(`/api/rules${query({ question })}`),
 
-  /** Contextual rules answer based on selected text. A 404 means the SRD has no rule. */
-  rulesContextual: (selectedText: string) =>
-    request<Answer>(`/api/rules/contextual${query({ selectedText })}`),
+  /**
+   * Explain a phrase selected from a book's prose.
+   *
+   * `selected_text`, not `selectedText`: FastAPI names the parameter and the query key
+   * comes from it, so the camelCase spelling 422'd on every request.
+   *
+   * `context` is the sentence the selection came from, which the backend threads into the
+   * prompt so the model can read "2 beams" as the *Eldritch Blast* beams. A 404 means the
+   * SRD does not discuss the selection at all, which is a normal outcome to show.
+   */
+  rulesContextual: (selectedText: string, context?: string) =>
+    request<Answer>(`/api/rules/contextual${query({ selected_text: selectedText, context })}`),
 
   /** One spell's own text. A 404 means neither the SRD nor the corpus has that name. */
   spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),

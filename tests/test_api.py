@@ -413,6 +413,93 @@ def test_a_question_no_heading_names_is_answered_as_interpreted(api, monkeypatch
     assert len(prompts) == 1, "the second ask must not have reached the model"
 
 
+def test_contextual_explains_a_fragment_selected_from_prose(api, monkeypatch):
+    """The contextual menu's whole path, from the query parameter to the badge.
+
+    The parameter is spelled ``selected_text`` because FastAPI names it, and the front end
+    spent its entire life sending ``selectedText`` - every request 422'd, so the feature was
+    never once exercised end to end. Retrieval is real here so that the path the selection
+    takes is the thing under test: "2 beams" is refused by both anchored paths and is only
+    answered by the selection path, so stubbing retrieval would decide the outcome in the
+    stub.
+    """
+    prompts = []
+
+    def fake_invoke(*args, **kwargs):
+        prompts.append(args[1] if len(args) > 1 else kwargs.get("prompt", ""))
+        return "At level 5 Eldritch Blast creates two beams."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    response = api.get("/api/rules/contextual", params={"selected_text": "2 beams"})
+    assert response.status_code == 200
+    body = response.json()
+    # A fragment is never quoted, so the badge must not claim it is.
+    assert body["source"] == "rules-inferred"
+    assert body["question"] == "2 beams"
+    assert body["citations"][0].startswith("context/srd/")
+    assert "Eldritch Blast" in prompts[0]
+
+    # The surrounding sentence reaches the prompt, which is what lets the model read
+    # "2 beams" as the Eldritch Blast beams rather than two beams of anything.
+    with_context = api.get("/api/rules/contextual", params={
+        "selected_text": "the beams at level 5",
+        "context": "Eldritch Blast creates two beams at level 5.",
+    })
+    assert with_context.status_code == 200
+    assert "WHERE THE SELECTED TEXT APPEARS" in prompts[1]
+    assert "Eldritch Blast creates two beams" in prompts[1]
+
+
+def test_contextual_rejects_a_selection_rooted_in_no_srd_vocabulary(api, monkeypatch):
+    """The vocabulary gate, reached through the API rather than through the service.
+
+    "Rust Metal" is a monster ability the 2024 SRD does not carry, so there is no rule to
+    quote and a 404 is the honest report. Answering it from nearby prose would read as
+    sourced.
+    """
+
+    def fail_invoke(*args, **kwargs):
+        raise AssertionError("the model must not be called for an unanswerable selection")
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fail_invoke)
+    response = api.get("/api/rules/contextual", params={"selected_text": "Rust Metal"})
+    assert response.status_code == 404
+    assert "Rust Metal" in response.json()["detail"]
+
+
+def test_contextual_requires_a_selection(api):
+    """An empty selection is the caller's request being wrong, not a rules gap."""
+    assert api.get("/api/rules/contextual", params={"selected_text": ""}).status_code == 422
+    assert api.get("/api/rules/contextual").status_code == 422
+
+
+def test_a_contextual_answer_is_cached_under_the_selection(api, monkeypatch):
+    """Re-asking costs nothing, and the *interpretation* label survives the cache.
+
+    The label is recomputed nowhere on a hit - retrieval does not run - so it has to have
+    been stored. Serving an interpretation as a quotation is the failure the label exists
+    to prevent.
+    """
+    calls = []
+
+    def fake_invoke(*args, **kwargs):
+        calls.append(args)
+        return "Two beams means two separate attack rolls."
+
+    monkeypatch.setattr("backend.libs.llm.invoke", fake_invoke)
+
+    first = api.get("/api/rules/contextual", params={"selected_text": "2 beams"}).json()
+    assert first["from_cache"] is False
+    assert first["source"] == "rules-inferred"
+
+    second = api.get("/api/rules/contextual", params={"selected_text": "2 beams"}).json()
+    assert second["from_cache"] is True
+    assert second["source"] == "rules-inferred"
+    assert second["answer"] == first["answer"]
+    assert len(calls) == 1, "the second ask must not have reached the model"
+
+
 def test_rules_reports_a_missing_rule_as_404(api, monkeypatch):
     """A question the SRD does not discuss at all is the caller's request being wrong.
 

@@ -424,19 +424,43 @@ class SpellbookService:
         return Answer(question=question, answer=answer, source=source,
                       citations=[retrieved["url"]])
 
-    def ask_rules_contextual(self, selected_text: str, progress=None) -> Answer:
-        """Answer a contextual rules question based on selected text, grounded in the 2024 SRD.
+    def ask_rules_contextual(self, selected_text: str, context: str = "",
+                             progress=None) -> Answer:
+        """Explain a phrase selected out of a book's prose, grounded in the 2024 SRD.
 
-        This method uses RAG to find relevant passages from the SRD that explain the
-        selected text in the context of D&D 5.5e rules. It falls back to the generative
-        rules path when no heading matches the question.
+        A selection is a fragment, not a question, so the answer is assembled rather than
+        quoted and is always labelled. Three retrieval paths are tried, in falling order of
+        how precisely each one can identify what the selection is about - and the label
+        records which one ran, because an interpretation must never wear a quotation's
+        badge:
 
-        The selected text is used as the question, so the model can explain it in the
-        context of the rules. For example, selecting "2 beams" from "Eldritch Blast" would
-        result in a question like "What does 2 beams mean in the context of Eldritch Blast?".
+        1. ``rules`` - a heading names the selection. "Eldritch Blast" and "Pact Magic" are
+           rules in their own right, and quoting them verbatim is the best answer there is.
+        2. ``rules-inferred`` - no heading names it, but the SRD defines the subject under
+           a heading whose words differ. "spell attack" is answered by the glossary's own
+           "Spell Attack".
+        3. ``rules-inferred`` from :func:`rules.gather_from_selection` - for the fragments
+           neither of the above can reach, where the words that identify the rule are in a
+           section's *body* ("2 beams" under "Cantrip Upgrade", "nonmagical plate" under
+           "Crafting Nonmagical Items"). It still refuses a selection the SRD has the
+           vocabulary for nowhere, so "Rust Metal" reports the gap.
+
+        ``context`` is the surrounding sentence, when the caller has it. It reaches the
+        prompt only - never retrieval - because the selection is what was asked about and
+        letting a whole sentence steer the search would answer the book's prose instead.
+        It is what lets "2 beams" be read as *two beams of Eldritch Blast*, which is the
+        phrase the reader highlighted.
         """
         if not selected_text.strip():
             raise ValueError("Please provide selected text.")
+
+        # Read before retrieving: the answer is a pure function of the selection, and every
+        # retrieval path below costs a pass over the whole SRD.
+        cached = rules.load_cached(selected_text, self.cache_dir)
+        if cached is not None:
+            return Answer(question=selected_text, answer=cached["answer"],
+                          source=cached.get("answer_source", "rules"),
+                          citations=[cached["url"]], from_cache=True)
 
         emit = progress or (lambda _message: None)
         emit("Consulting the 2024 SRD")
@@ -444,21 +468,21 @@ class SpellbookService:
             retrieved = rules.gather(selected_text, cache_dir=self.cache_dir)
             source = "rules"
         except rules.RulesUnavailable:
-            # No heading names the question. Fall back to the best related text, which
-            # raises in turn when the SRD does not discuss the subject at all.
-            retrieved = rules.gather_inferred(selected_text, cache_dir=self.cache_dir)
+            try:
+                retrieved = rules.gather_inferred(selected_text, cache_dir=self.cache_dir)
+            except rules.RulesUnavailable:
+                # Neither anchored path can take a fragment. The selection path ranks the
+                # selection's own words, and raises in turn when the SRD has none of them -
+                # so a fragment the rulebook cannot speak to still reports the gap.
+                retrieved = rules.gather_from_selection(selected_text)
             source = "rules-inferred"
-
-        if retrieved["from_cache"] and (cached := rules.load_cached(selected_text, self.cache_dir)):
-            return Answer(question=selected_text, answer=cached["answer"],
-                          source=cached.get("answer_source") or source,
-                          citations=[cached["url"]], from_cache=True)
 
         emit("Reading the rules")
         build = (prompts.rules_prompt if source == "rules"
                  else prompts.rules_inferred_prompt)
         prompt = build(
-            question=selected_text, rule_text=retrieved["text"], rule_context=self.rule_context,
+            question=selected_text, rule_text=retrieved["text"],
+            rule_context=self.rule_context, selection_context=context,
         )
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(selected_text, answer, passages=retrieved["passages"],

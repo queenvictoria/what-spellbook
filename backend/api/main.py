@@ -375,22 +375,32 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
 
     @app.get("/api/rules/contextual", response_model=schemas.AnswerSchema, tags=["rules"])
     def get_rules_contextual(selected_text: str = Query(min_length=1,
-                                                         description="Selected text from the book prose"),
+                                                         description="Text selected from the book prose"),
+                              context: str | None = Query(default=None,
+                                                          description="The sentence the selection came from"),
                               character: str | None = Query(default=None)):
-        """Ask a contextual rules question based on selected text, grounded in the 2024 SRD.
+        """Explain a phrase selected from a book's prose, grounded in the 2024 SRD.
 
-        This endpoint uses RAG to find relevant passages from the SRD that explain the
-        selected text in the context of D&D 5.5e rules. It falls back to the generative
-        rules path when no heading matches the question.
+        Three retrieval paths are tried in falling order of precision - a heading naming the
+        selection, a heading naming its subject, and finally the selection's own words - so
+        a fragment like "2 beams" is answered from the "Cantrip Upgrade" rule it came from
+        rather than being refused for lacking a heading of its own. ``source`` says which
+        path ran; ``rules`` is a quotation and ``rules-inferred`` is not.
 
-        A 404 here means the SRD genuinely has no rule for the question - rests, the
-        Rules Glossary and most conditions are not in it. That is reported rather than
-        answered from the model's memory, which is how 2014 numbers leak into 2024
-        answers.
+        ``context`` is the sentence around the selection, and it reaches the prompt only.
+        A fragment is ambiguous in the way its sentence resolves ("2 beams" could be any
+        spell), but the selection is what was asked about, so the sentence never steers
+        retrieval.
+
+        A 404 here means the SRD does not discuss the selection at all - a monster ability
+        it does not carry, or a term like "flanking" that appears nowhere in 2024. That is
+        reported rather than answered from the model's memory, which is how 2014 numbers
+        leak into 2024 answers.
         """
         svc = service_for(character)
         try:
-            return schemas.AnswerSchema.from_answer(svc.ask_rules_contextual(selected_text))
+            return schemas.AnswerSchema.from_answer(
+                svc.ask_rules_contextual(selected_text, context=context or ""))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
         except llm.EmptyCompletion as e:

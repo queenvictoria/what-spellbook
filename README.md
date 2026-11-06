@@ -452,14 +452,16 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [x] Opening in the scenario screen should show the results as well as the prompt.
 - [x] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
 - [x] The pull out drawer of spells should have a search box at the top to search all spells.
-- [ ] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
-- [ ] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
-- [ ] When showing spells or other information contextualise it to the current character: Goodbye, Warlock should be Goodbye Louis, Eldritch blast should show "2 beams (L5)"
 - [x] Spells display parsing: Expand Components to their full meaning (V, S, D, M), add Damage (if any) to the description at the top next to Casting time, add icons to duration, casting time, damage, components, range.
 - [x] Asking a question in the rules search like "explain the initiative system to me like I'm 12yo" should respond with a generative answer based on the rules if it can't find a precise rule not "The 2024 SRD has no section matching 'explain the initiative system to me like I'm 12yo'. The SRD covers the core rules, not every option in the Player's Handbook."
+- [x] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
+- [x] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
+- [ ] When showing spells or other information contextualise it to the current character: "Goodbye, Warlock" should be "Goodbye Louis", "Eldritch blast" should show "2 beams (L5)". Use a small fast model for contextualising rules to levels.
 - [ ] When you press the "read books" button it flashes some other text briefly (Open something) and then flips back only changing the caret. It should say something like "hide books".
 - [ ] We have 'Fetching spells from [the] Grimoire' in multiple places. It should be a const or enum.
 - [ ] Switch to Lucide icons
+- [ ] When switching "tabs" keep the running processes going. eg Scenario planning, question asking. Update the tabs with progress meters.
+- [ ] Let's write evals for the scenario planning
 
 ### Choosing the model
 

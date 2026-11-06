@@ -57,7 +57,10 @@ RULES_SOURCE = "vendored-srd-5.2.1"
 # 4: a verb now folds to the noun the rulebook names the rule with, so "concentrate"
 #    reaches the heading "Concentration". Questions that were refused, or answered from
 #    unrelated prose, now retrieve the rule - so answers cached under 3 are stale.
-RETRIEVAL_VERSION = 4
+# 5: the selection path was added. A fragment copied out of a book's prose is no longer
+#    refused for want of a heading naming it, so contextual answers cached under 4 hold a
+#    refusal where there is now a passage.
+RETRIEVAL_VERSION = 5
 
 # Used when a spell is in the retrieval corpus but not the SRD. The distinction is shown
 # in the UI, because the SRD is the 2024 authority and the corpus is not.
@@ -1148,6 +1151,159 @@ def gather_inferred(question: str, *, files=None, cache_dir=None) -> dict:
     found = _format(qualifying, sections=sections)
     return {"passages": found, "url": _reference(path), "text": "\n\n".join(found),
             "from_cache": False}
+
+
+# The floor for the selection path: at least this much of the selection, weighted by how
+# much each word narrows the search, must be words the SRD actually uses. A word the SRD
+# never writes weighs nothing, so "how does flanking work" scores zero here and is refused
+# rather than answered from whatever prose happens to be nearby.
+#
+# 0.55 measured against the selections that actually reach this path. Every fragment that
+# needs it - "pull the rust monster" is the lowest at 0.57 - clears the floor, and every
+# selection it refuses ("spell attack" at 0.50, "ranged spell attack" at 0.51, "damage" at
+# 0.54) is one the inferred path above already answers, so the floor costs nothing.
+#
+# The gate is *vocabulary*, and it is length-sensitive by nature: a sentence has enough
+# real words to clear any floor, so a whole sentence is let through even when the ability it
+# is about is not in the SRD. That is deliberate and it is bounded - the answer is labelled
+# ``rules-inferred``, the prompt names the gap, and only 400 characters of surrounding prose
+# are ever sent - but it is why this gate refuses *words* and not *sentences*. Requiring a
+# score as well was tried and rejected: the right answer for "Help action" (1.66) outranks
+# the right answer for "Thorn Whip" (0.58), so any floor high enough to reject a wrong
+# 0.84 ("how does two weapon fighting work") also rejected a correct 0.58.
+_MIN_COVERAGE = 0.55
+
+
+def gather_from_selection(selection: str, *, files=None) -> dict:
+    """The SRD text bearing on a phrase selected out of prose, for an interpreted answer.
+
+    A selection is not a question. This path exists only for the contextual menu, where the
+    input is a fragment copied out of a generated book ("2 beams", "crackling energy",
+    "nonmagical plate"), and neither of the other two paths can take it:
+
+    * :func:`gather` requires a heading to *name* the selection. The SRD's heading for
+      "2 beams" is "Cantrip Upgrade", and for "nonmagical plate" it is "Crafting
+      Nonmagical Items" - the words that identify the rule are in its body, not its
+      heading, so a heading-anchored path refuses both. That anchor is correct for a
+      *question* and is deliberately left alone here.
+    * :func:`gather_inferred` keeps the anchor and only relaxes the subject floor, so it
+      refuses the same fragments.
+
+    So this ranks by how much of the *selection* a section accounts for rather than by
+    whether its heading repeats a word. A heading hit still outranks a body hit, because a
+    section whose heading uses the word is more likely to be about it, but a heading hit is
+    no longer required.
+
+    The one gate is coverage, and it is what keeps this honest: a selection whose words the
+    SRD does not use is refused, so "how does flanking work" (no *flanking* anywhere in the
+    SRD) and "Rust Metal" (*rust* nowhere, and it is a monster ability the SRD does not
+    carry) both report the gap instead of quoting unrelated prose. The caller labels any
+    answer ``rules-inferred``, so a passage that merely *bears on* the selection is never
+    presented as a quotation - which is the protection that matters, since the SRD's
+    headings and a book's prose are written in different words on purpose.
+    """
+    weights = _selection_weights(selection)
+    if _coverage(weights) < _MIN_COVERAGE:
+        raise RulesUnavailable(
+            f"The 2024 SRD does not discuss '{_elide(selection)}'. The SRD covers the core "
+            "rules, not every option in the Player's Handbook."
+        )
+
+    candidates = list(files) if files is not None else candidate_files(search_all=True)
+    if not candidates:
+        raise RulesUnavailable(
+            f"No SRD text found at {srd_dir()}. The vendored rules are required for "
+            "lookups; see context/srd/PROVENANCE.md."
+        )
+
+    patterns = {term: _term_pattern(term) for term, weight in weights.items() if weight > 0}
+    best = None
+    for path in candidates:
+        try:
+            text = markdown_to_text(read_srd(path))
+        except RulesUnavailable as e:
+            logging.debug(f"Skipping {path}: {e}")
+            continue
+        scored = _score_for_selection(_sections(text), weights, patterns)
+        if not scored:
+            continue
+        scored.sort(key=lambda item: (-item[0], item[1]))
+        if best is None or scored[0][0] > best[0][0][0]:
+            best = (scored, path, _sections(text))
+
+    if best is None:
+        raise RulesUnavailable(
+            f"The 2024 SRD does not discuss '{_elide(selection)}'. The SRD covers the core "
+            "rules, not every option in the Player's Handbook."
+        )
+
+    scored, path, sections = best
+    found = _format(scored[:_PASSAGE_LIMIT], sections=sections)
+    return {"passages": found, "url": _reference(path), "text": "\n\n".join(found),
+            "from_cache": False}
+
+
+def _selection_weights(selection: str) -> dict[str, float]:
+    """The selection's words and how much each one narrows the search, zeros included.
+
+    Zeros are kept rather than filtered so they count against coverage: a selection whose
+    every other word is one the SRD never writes is not one the SRD can explain.
+    """
+    return {term: term_weight(term) for term in _terms(selection)}
+
+
+def _coverage(weights: dict[str, float]) -> float:
+    """The share of a selection the SRD's vocabulary accounts for, in ``0.0``-``1.0``."""
+    return sum(weights.values()) / len(weights) if weights else 0.0
+
+
+def _score_for_selection(sections: list[tuple[str, str, int]],
+                         weights: dict[str, float],
+                         patterns: dict[str, re.Pattern]) -> list:
+    """``(score, position, heading, body, parent)`` for every section bearing on a selection.
+
+    Weighted *coverage* rather than :func:`_score_sections`' maximum-coverage alignment,
+    because a selection names several things and the section that accounts for all of them
+    is the one that explains it. Scored on the alignment instead, "2 beams" preferred the
+    honours-course "Spells" chapter - which contains both words once - over the "Eldritch
+    Blast" section the words were copied from, since aligning on two words scores the same
+    everywhere. The heading bonus is still the largest single term, so a section whose
+    heading uses a selected word outranks one that merely mentions it.
+    """
+    known = {term: weight for term, weight in weights.items() if weight > 0}
+    if not known:
+        return []
+    total = sum(known.values()) or 1.0
+
+    scored = []
+    for position, (heading, body, parent) in enumerate(sections):
+        heading_lower, body_lower = heading.lower(), body.lower()
+        # A catalogue entry or a structural heading is never the rule, exactly as in the
+        # anchored paths - a price list entry must not answer a selection either.
+        if heading and (_ITEM_HEADING.search(heading) or _NON_RULE_HEADINGS.search(heading)):
+            continue
+
+        named = [term for term, pattern in patterns.items() if pattern.search(heading_lower)]
+        mentioned = [term for term, pattern in patterns.items()
+                     if term not in named and pattern.search(body_lower)]
+        if not named and not mentioned:
+            continue
+
+        score = 1.35 * sum(known[term] for term in named) / total
+        score += 0.6 * sum(known[term] for term in mentioned) / total
+        # How much of the selection this section accounts for at all, occupying a smaller
+        # share of the score than the weighted terms - the words still have to be the
+        # *right* ones, or a long chapter mentioning everything would win every selection.
+        score += 0.35 * (len(named) + len(mentioned)) / len(known)
+        score /= 1 + len(body) / 2500
+        scored.append((score, position, heading, body, parent))
+    return scored
+
+
+def _elide(text: str, limit: int = 60) -> str:
+    """A selection quoted back in a refusal, short enough to read in one line."""
+    collapsed = " ".join(str(text).split())
+    return collapsed if len(collapsed) <= limit else collapsed[:limit].rstrip() + "..."
 
 
 # --- spell descriptions --------------------------------------------------------

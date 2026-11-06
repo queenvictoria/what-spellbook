@@ -1,15 +1,15 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import { ArrowRight, ChevronDown, ChevronRight } from "lucide-react";
 
-import { api, ApiError } from '@/api/client'
-import type { Book, RunSummary } from '@/api/types'
-import { BookPanel } from '@/components/BookPanel'
-import { formatSeconds } from '@/lib/format'
-import { cn } from '@/lib/utils'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { api, ApiError } from "@/api/client";
+import type { Book, RunSummary } from "@/api/types";
+import { BookPanel } from "@/components/BookPanel";
+import { formatSeconds } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
  * Every stored run, newest first.
@@ -19,32 +19,34 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
  * renders, so the reading experience is identical either way.
  */
 export function HistoryScreen() {
-  const [runs, setRuns] = useState<RunSummary[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [runs, setRuns] = useState<RunSummary[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   // Which run is open lives here rather than inside each card, because the card's own
   // width depends on it: an open run takes the full row, and a child cannot widen its
   // parent. Only one is open at a time, which also keeps the listing scannable.
-  const [openId, setOpenId] = useState<string | null>(null)
+  const [openId, setOpenId] = useState<string | null>(null);
 
   useEffect(() => {
     api
       .history()
       .then(setRuns)
-      .catch((e: unknown) => setError(e instanceof ApiError ? e.message : String(e)))
-  }, [])
+      .catch((e: unknown) =>
+        setError(e instanceof ApiError ? e.message : String(e)),
+      );
+  }, []);
 
   if (error) {
-    return <p className="text-sm text-red-300">{error}</p>
+    return <p className="text-sm text-red-300">{error}</p>;
   }
   if (runs === null) {
-    return <p className="text-sm text-parchment/50">Loading…</p>
+    return <p className="text-sm text-parchment/50">Loading…</p>;
   }
   if (runs.length === 0) {
     return (
       <p className="text-sm text-parchment/50">
         Nothing has been run yet. Generate a scenario and it will appear here.
       </p>
-    )
+    );
   }
 
   return (
@@ -57,12 +59,14 @@ export function HistoryScreen() {
           <Card
             key={run.id}
             className={cn(
-              'w-full',
-              openId !== run.id && 'sm:w-[calc(50%-0.375rem)]',
+              "w-full",
+              openId !== run.id && "sm:w-[calc(50%-0.375rem)]",
             )}
           >
             <CardHeader className="flex-row items-start justify-between gap-3">
-              <CardTitle className="text-sm leading-6">{run.scenario}</CardTitle>
+              <CardTitle className="text-sm leading-6">
+                {run.scenario}
+              </CardTitle>
               <Badge tone="muted">{run.book_count} books</Badge>
             </CardHeader>
             <CardContent className="space-y-2 text-xs text-parchment/55">
@@ -79,7 +83,7 @@ export function HistoryScreen() {
                 <span>
                   {run.timings.total_seconds
                     ? formatSeconds(run.timings.total_seconds)
-                    : '—'}
+                    : "—"}
                 </span>
               </div>
               <ViewRun
@@ -92,7 +96,7 @@ export function HistoryScreen() {
         ))}
       </div>
     </div>
-  )
+  );
 }
 
 /**
@@ -112,38 +116,49 @@ function ViewRun({
   open,
   onToggle,
 }: {
-  run: RunSummary
-  open: boolean
-  onToggle: () => void
+  run: RunSummary;
+  open: boolean;
+  onToggle: () => void;
 }) {
-  const [books, setBooks] = useState<Book[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [books, setBooks] = useState<Book[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
 
   async function toggle() {
     if (open) {
-      onToggle()
-      return
+      onToggle();
+      return;
     }
-    setLoading(true)
-    setError(null)
+    setLoading(true);
+    setError(null);
     try {
-      const result = await api.run(run.id)
-      setBooks(result.books)
-      onToggle()
+      const result = await api.run(run.id);
+      setBooks(result.books);
+      onToggle();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e instanceof ApiError ? e.message : String(e));
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
   }
 
   return (
-    <div className="pt-1">
+    <div className="pt-1 flex gap-2 justify-between">
       <Button variant="outline" size="sm" onClick={toggle} disabled={loading}>
-        {open ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        {loading ? 'Opening…' : 'Read books'}
+        {open ? (
+          <ChevronDown className="h-4 w-4" />
+        ) : (
+          <ChevronRight className="h-4 w-4" />
+        )}
+        {loading ? "Opening…" : "Read books"}
       </Button>
+      <Link
+        to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
+        className="inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-400 disabled:pointer-events-none disabled:opacity-50 border border-void-700 bg-transparent hover:bg-void-800 h-8 px-3 text-xs"
+      >
+        Open in the scenario screen
+        <ArrowRight className="h-4 w-4" />
+      </Link>
       {error && <p className="pt-1 text-red-300">{error}</p>}
       {open && (
         <div className="mt-3 space-y-3 border-t border-void-800 pt-3">
@@ -155,26 +170,20 @@ function ViewRun({
               runId={run.id}
             />
           ))}
-          <Link
-            to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
-            className="inline-block text-arcane-300 hover:text-arcane-400"
-          >
-            Open in the scenario screen →
-          </Link>
         </div>
       )}
     </div>
-  )
+  );
 }
 
 function formatDate(value: string | null) {
-  if (!value) return 'unknown'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+  if (!value) return "unknown";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }

@@ -1151,3 +1151,107 @@ def test_a_magic_item_is_not_offered_as_a_spell(item):
     link.
     """
     assert rules.find_spell(item) is None
+
+
+# --- the selection path --------------------------------------------------------
+#
+# The contextual menu takes a phrase copied out of a generated book, which is not a
+# question and is not written in the rulebook's vocabulary. "2 beams" is the SRD's own
+# "Cantrip Upgrade" rule; "nonmagical plate" is its "Crafting Nonmagical Items". Neither
+# heading names the selection, so both anchored paths refuse them, and both are exactly
+# what the reader highlights while reading a book.
+
+
+def test_a_selection_finds_the_rule_its_words_came_from():
+    """The regression this path exists for, and the heading it must land on.
+
+    Asserted on the heading rather than the passage because the heading is the stable
+    contract: "2 beams" is the Eldritch Blast cantrip-upgrade rule, and the text of that
+    rule may be reissued.
+    """
+    result = rules.gather_from_selection("2 beams")
+    assert result["url"] == "context/srd/spells.md"
+    assert result["passages"][0].startswith("## Eldritch Blast")
+    assert "two beams" in result["passages"][0]
+
+
+@pytest.mark.parametrize(
+    "selection,heading",
+    [
+        # The words that identify the rule are in the section's body, not its heading -
+        # which is why the anchored paths cannot take a selection at all.
+        ("crackling energy", "Eldritch Blast"),
+        ("nonmagical plate", "Crafting Nonmagical Items"),
+        ("1d10 Force damage", "Damage against Multiple Targets"),
+        ("Peel, Stabilize, Patch", "Stabilizing a Character"),
+        ("30-ft range at level 5", "Multiattack"),
+        # A selection that *is* a term the SRD defines, so this path must agree with the
+        # glossary rather than finding something arbitrary.
+        ("Help action", "Help [Action]"),
+        ("Ritual", "Ritual Adept"),
+    ],
+)
+def test_the_heading_a_selection_lands_on(selection, heading):
+    result = rules.gather_from_selection(selection)
+    headings = [
+        line.removeprefix("## ")
+        for line in result["passages"][0].splitlines()
+        if line.startswith("## ")
+    ]
+    assert any(heading.lower() in h.lower() for h in headings), headings
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        # "rust" appears nowhere in the SRD's text and "flank" nowhere in its headings, so
+        # neither selection has a rule to find. Reporting the gap is the honest outcome;
+        # quoting nearby prose would read as sourced.
+        "Rust Metal",
+        "how does flanking work",
+    ],
+)
+def test_a_selection_the_srd_cannot_speak_to_is_refused(selection):
+    with pytest.raises(rules.RulesUnavailable):
+        rules.gather_from_selection(selection)
+
+
+@pytest.mark.parametrize(
+    "selection",
+    [
+        # Generic words the rulebook uses everywhere. The anchored paths above find their
+        # rules by heading, which is the signal this path does not have - so it must defer
+        # to them rather than guess. Each of these is answered by `gather` or
+        # `gather_inferred` today, so refusing here costs a reader nothing.
+        "spell attack",
+        "ranged spell attack",
+        "damage",
+        "action",
+    ],
+)
+def test_the_selection_path_defers_what_the_anchored_paths_can_answer(selection):
+    """Coverage is the gate, and this is why it is drawn where it is.
+
+    A score threshold was tried first and rejected: the right answer for "Help action"
+    scored *lower* than a wrong one for "how does a spear work". What actually separates
+    them is how much of the selection consists of words the SRD uses at all.
+    """
+    with pytest.raises(rules.RulesUnavailable):
+        rules.gather_from_selection(selection)
+    assert rules._coverage(rules._selection_weights(selection)) < rules._MIN_COVERAGE
+
+
+def test_the_selection_path_reports_a_missing_corpus():
+    with pytest.raises(rules.RulesUnavailable, match="No SRD text found"):
+        rules.gather_from_selection("2 beams", files=[])
+
+
+def test_the_selection_path_quotes_the_selection_back_when_it_refuses():
+    """The refusal is read by someone who just highlighted something, so it has to say what
+    it could not explain - and stay one line wide when the selection is a whole sentence."""
+    long_selection = "Rust Metal corrodes nonmagical metal plating whenever the flumph is flanked"
+    with pytest.raises(rules.RulesUnavailable) as caught:
+        rules.gather_from_selection(long_selection)
+    assert "Rust Metal" in str(caught.value)
+    assert len(str(caught.value).splitlines()) == 1
+    assert "..." in str(caught.value)

@@ -234,12 +234,36 @@ Rules for your answer:
 """
 
 
-def rules_prompt(*, question: str, rule_text: str, rule_context: str = "") -> str:
+def _selection_block(selection_context: str) -> str:
+    """The block naming where a selected phrase came from, or an empty string.
+
+    Only the contextual menu has this, and only sometimes: a selection made inside a word
+    or a heading has no sentence around it. The block is the *only* thing the surrounding
+    sentence is allowed to influence, because the selection is what was asked about -
+    letting a whole sentence reach retrieval would answer the book's prose rather than the
+    phrase the reader highlighted.
+
+    Worth having anyway, because a fragment is ambiguous in exactly the way the sentence
+    resolves: "2 beams" means nothing on its own and everything next to "Eldritch Blast".
+    """
+    if not selection_context.strip():
+        return ""
+    return (
+        "=== WHERE THE SELECTED TEXT APPEARS ===\n"
+        f"{selection_context.strip()}\n\n"
+    )
+
+
+def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
+                 selection_context: str = "") -> str:
     """Prompt for a rules question, grounded in fetched 2024 SRD text.
 
     The rule text is the only permitted source. A model asked a rules question answers
     from memory across editions, which is precisely how a 2014 invocation count ends up
     in a 2024 recommendation - so it is told to use the passage and nothing else.
+
+    ``selection_context`` is set when the question is a phrase highlighted in a book's
+    prose rather than a question someone typed; see :func:`_selection_block`.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
@@ -249,7 +273,7 @@ def rules_prompt(*, question: str, rule_text: str, rule_context: str = "") -> st
 === CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
-=== QUESTION ===
+{_selection_block(selection_context)}=== QUESTION ===
 {question}
 
 Rules for your answer:
@@ -263,7 +287,8 @@ Rules for your answer:
 """
 
 
-def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = "") -> str:
+def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = "",
+                          selection_context: str = "") -> str:
     """Prompt for a rules question the SRD does not define under its own heading.
 
     The retrieved text is related to the question rather than being the rule itself, so
@@ -271,6 +296,9 @@ def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = 
     the precise prompt forbids going beyond the passage, which is right when the passage
     *is* the rule, but here the passage is the surrounding text and refusing to connect it
     would make the fallback useless.
+
+    ``selection_context`` is set when the question is a phrase highlighted in a book's
+    prose rather than a question someone typed; see :func:`_selection_block`.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
@@ -284,7 +312,7 @@ the rule itself.
 === CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
-=== QUESTION ===
+{_selection_block(selection_context)}=== QUESTION ===
 {question}
 
 Rules for your answer:
