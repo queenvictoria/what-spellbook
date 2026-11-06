@@ -23,6 +23,11 @@ export interface Rating {
 export interface Book {
   index: number
   name: string
+  /**
+   * The book's prose only. A run stored before the delimited format was introduced still
+   * has its title and pick list inside this text, because the old format had nowhere else
+   * to put them; `name` and `picks` are authoritative either way.
+   */
   text: string
   picks: Record<string, string[]>
   cache_path: string | null
@@ -33,6 +38,10 @@ export interface Generation {
   scenario: string
   answer: string
   books: Book[]
+  /** Reasoning that applies to every book. Empty when the model wrote none. */
+  preamble: string
+  /** Which prepared spells and features pair with each book. Empty when none was written. */
+  pairings: string
   prompt: string
   warnings: string[]
   from_cache: boolean
@@ -58,6 +67,10 @@ export interface RunBooks {
   scenario: string
   created_at: string | null
   books: Book[]
+  /** Reasoning that applies to every book. Empty when the model wrote none. */
+  preamble: string
+  /** Which prepared spells and features pair with each book. */
+  pairings: string
   /** The run's id, so a book opened from history is rateable. */
   run_id: string | null
 }

@@ -1,7 +1,14 @@
 /**
  * Preparing a generated book's markdown for display.
  *
- * The model opens every book with its own title and its pick lists:
+ * **This is now a legacy path.** A book generated in the delimited format arrives with its
+ * title and picks already separated - `name` and `picks` on the book, `preamble` and
+ * `pairings` on the generation - so there is nothing left to strip. What remains here is for
+ * the runs stored before that format existed, whose title and pick list are still inside
+ * `book.text` because the old format had nowhere else to put them. It can go once those runs
+ * are cleaned out.
+ *
+ * The model used to open every book with its own title and its pick lists:
  *
  *     **Book 1 — “Peel, Stabilize, Patch”**
  *
@@ -23,6 +30,11 @@
 // A book's own title line: `**Book 1 — Name**`, `## Book 1 — Name`, `**Book 1: Name**`.
 // Matched on the first non-empty line only - see `withoutBookHeader`.
 const TITLE_LINE = /^\s*#{0,4}\s*\*{0,2}\s*Book\s*\d+\s*[—–:-]/
+
+// The delimited format's book marker: `=== BOOK 1 ===`. A delimiter can never be prose, which
+// is the whole reason the format changed - the model's summary used to be written in the same
+// shape as a book heading (`**Book 3 pairs with:**`) and was read as one.
+const DELIMITED_BOOK = /^\s*={2,}\s*BOOK\s*\d+\s*={2,}\s*$/im
 
 // A pick label: `**Cantrips:**`, `**Level 1 Rituals:**`, `- **Level 1 rituals:** ...`.
 // The vocabulary is `backend/libs/spells.py`'s `_SECTION_NAMES`, and the shape is its
@@ -114,6 +126,20 @@ const BOOK_HEADING = /^\s*#{0,4}\s*\*{0,2}\s*Book\s*\d+/i
  * 8 go straight into Book 1, so a card that always renders would be eight parts pure
  * duplication to four parts content.
  */
+/**
+ * The reasoning that applies to every book, for the "Overall reasoning" card.
+ *
+ * A delimited answer carries it in `preamble`, so the field is authoritative. A legacy answer
+ * has no such field and the text before its first book heading is the reasoning - but that
+ * fallback must not run on a delimited answer, because `reasoningOnly` finds no *legacy*
+ * heading there and would return the whole reply, rendering every book a second time.
+ */
+export function preambleOf(generation: { answer: string; preamble?: string }) {
+  if (generation.preamble) return generation.preamble
+  if (DELIMITED_BOOK.test(generation.answer)) return ""
+  return reasoningOnly(generation.answer)
+}
+
 export function reasoningOnly(answer: string) {
   const lines = answer.split('\n')
   const first = lines.findIndex((line) => BOOK_HEADING.test(line))

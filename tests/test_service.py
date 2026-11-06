@@ -207,3 +207,121 @@ def test_shell_is_constructible_around_any_service():
     """The shell holds no logic the API needs; it only renders this object."""
     assert hasattr(shell_mod.SpellbookShell, "do_scenario")
     assert isinstance(service.SpellbookService, type)
+
+
+# --- the delimited format reaches the caller ---
+
+DELIMITED_ANSWER = """Rust is the threat here.
+
+=== BOOK 1 ===
+Title: Peel and Patch
+Cantrips: Thorn Whip, Spare the Dying, Mending
+Rituals: Find Familiar, Unseen Servant
+How to use:
+**Thorn Whip** pulls it off the fighter.
+
+=== BOOK 2 ===
+Title: Hold the Line
+Cantrips: Eldritch Blast, Mind Sliver, Minor Illusion
+Rituals: Identify, Detect Magic
+How to use:
+**Repelling Blast** pushes it away.
+
+=== PAIRINGS ===
+**Book 1 pairs with:** Hex
+"""
+
+
+def test_generation_carries_the_preamble_and_pairings(svc, fake_llm):
+    fake_llm.response = DELIMITED_ANSWER
+    generation = svc.scenario(SCENARIO)
+    assert generation.preamble.startswith("Rust is the threat")
+    assert "Book 1 pairs with" in generation.pairings
+    assert [b.name for b in generation.books] == ["Peel and Patch", "Hold the Line"]
+
+
+def test_a_book_does_not_contain_the_summary(svc, fake_llm):
+    fake_llm.response = DELIMITED_ANSWER
+    generation = svc.scenario(SCENARIO)
+    for book in generation.books:
+        assert "pairs with" not in book.text
+
+
+def test_a_cache_hit_carries_the_preamble_and_pairings(svc, fake_llm):
+    """The replay path must produce the same shape as a fresh generation.
+
+    A cache hit that dropped these fields would render differently from the run it is
+    replaying, which is the whole point of storing them.
+    """
+    fake_llm.response = DELIMITED_ANSWER
+    first = svc.scenario(SCENARIO)
+    second = svc.scenario(SCENARIO)
+    assert second.from_cache is True
+    assert second.preamble == first.preamble
+    assert second.pairings == first.pairings
+    assert [b.name for b in second.books] == [b.name for b in first.books]
+
+
+def test_a_legacy_run_has_its_summary_derived_on_read(svc, fake_llm, tmp_path):
+    """A run stored before the delimited format has no `pairings` key.
+
+    Its summary is still at the end of its last book, so it is recovered from the response
+    rather than left to render inside that book. The books themselves are not re-cut - they
+    were already recorded.
+    """
+    legacy = (
+        '### Book 1: "Ambush and Control"\n\n'
+        "**Cantrips:**\n1. **Light** - illuminates.\n2. **Sacred Flame** - damage.\n"
+        "3. **Friends** - talking.\n\n"
+        "**Rituals:**\n1. **Identify** - loot.\n2. **Find Familiar** - scouts.\n\n"
+        "**How to Use:**\n- Open with Light.\n\n"
+        "## 4. Existing spells and invocations that pair with each book\n"
+        "- **Book 1:** pair **Light** with **Sacred Flame**.\n"
+    )
+    fake_llm.response = legacy
+    svc.scenario(SCENARIO)
+
+    # Strip the keys the new format writes, leaving the run as an old one would be.
+    run_path = next((tmp_path / "cache").rglob("run.json"))
+    run = json.loads(run_path.read_text())
+    run.pop("pairings", None)
+    run.pop("preamble", None)
+    run_path.write_text(json.dumps(run))
+
+    replayed = svc.scenario(SCENARIO)
+    assert replayed.from_cache is True
+    assert "pair with each book" not in replayed.books[-1].text
+    assert replayed.pairings.startswith("- **Book 1:** pair **Light**")
+
+
+def test_a_legacy_summary_is_not_shown_twice(svc, fake_llm, tmp_path):
+    """Deriving the pairings must also trim them from the book they were recorded in.
+
+    The books of a stored run are read back as written, so a legacy run's summary is still
+    inside its last book's text. Without the trim the same text renders twice - once at the
+    end of the book and once in the pairings card.
+    """
+    legacy = (
+        '### Book 1: "Ambush and Control"\n\n'
+        "**Cantrips:**\n1. **Light** - illuminates.\n2. **Sacred Flame** - damage.\n"
+        "3. **Friends** - talking.\n\n"
+        "**Rituals:**\n1. **Identify** - loot.\n2. **Find Familiar** - scouts.\n\n"
+        "**How to Use:**\n- Open with Light.\n\n"
+        "## 4. Existing spells and invocations that pair with each book\n"
+        "- **Book 1:** pair **Light** with **Sacred Flame**.\n"
+    )
+    fake_llm.response = legacy
+    svc.scenario(SCENARIO)
+
+    run_path = next((tmp_path / "cache").rglob("run.json"))
+    run = json.loads(run_path.read_text())
+    run.pop("pairings", None)
+    run.pop("preamble", None)
+    run_path.write_text(json.dumps(run))
+
+    replayed = svc.scenario(SCENARIO)
+    assert "pair with each book" not in replayed.books[-1].text
+    assert "pair with each book" not in replayed.pairings
+    assert replayed.pairings.startswith("- **Book 1:** pair **Light**")
+    # The book's own prose survives the trim.
+    assert "Open with Light." in replayed.books[-1].text

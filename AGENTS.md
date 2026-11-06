@@ -982,6 +982,65 @@ search answers the book's prose instead of the phrase the reader highlighted. Th
 badge* still does the real work, and the live run shows why: the answer quoted the SRD for
 the beams and then said plainly that the Repelling Blast wording came from the selection.
 
+### A book is delimited, not inferred
+
+The model used to write each book as prose with its own heading, and the reader had to work
+out where one book ended. It now writes explicit sections:
+
+```
+=== PREAMBLE ===
+=== BOOK 1 ===
+Title: ...
+Cantrips: ...
+Rituals: ...
+How to use:
+<prose>
+=== PAIRINGS ===
+```
+
+`cache.split_answer()` returns `{"preamble", "books", "pairings"}` and is the only parser;
+`split_books()` delegates to it so the two can never disagree about where a book ends. The
+title and picks are read as *data* - `Title:`, `Cantrips:` and `Rituals:` are single lines -
+so the panel renders them from fields rather than stripping them out of the prose.
+
+**The reason is a collision, not tidiness.** The model's trailing summary was written in the
+same shape as a book heading - `**Book 3 pairs with:**` - so the parser read it as a fourth
+book and left the real summary recited inside the last one. Book 3 literally ended with
+"Book 1 pairs with... Book 2 pairs with... Book 3 pairs with...". `_is_book_heading` existed
+to reject exactly those lines and was load-bearing in **6 of 12 stored runs**. A delimiter can
+never be prose, so the collision is gone structurally rather than by heuristic.
+
+- **A format change needs a fallback, and the fallback needs a parity check.** Every stored
+  run is in the old format and carries real ratings, so `_legacy_split` stays. It was verified
+  by parsing all 12 stored runs through both paths and comparing names, indices and picks.
+- **Recover what the old format lost, but only where it is unambiguous.** A legacy summary is
+  recovered when the model gave it a *markdown heading* of its own - 7 of the 12 runs did.
+  A bolded label (`**4. Pairings and invocations**`) is deliberately **not** accepted: the
+  vocabulary that identifies a summary ("pair", "invocation", "existing") also appears in a
+  book's own prose, and the bold pattern matched `**Book 1 - Rust-Monster Triage / Armor
+  Repair**` on the "pair" inside "Repair". Truncating a real book to recover one summary is
+  the worse trade.
+- **Derive on read rather than migrating.** A legacy run has no `pairings` key, so
+  `service._stored_sections` re-splits its *response* to recover one. The books themselves are
+  **not** re-cut - they were already recorded, and a parser change must not silently re-split
+  an answer that was already written.
+- **Deriving a field is not enough if the text it came from is still rendered.** The first
+  version showed the legacy summary twice: once as the pairings card and once still inside the
+  last book's recorded text. `service._trim_legacy_summary` trims it, sharing
+  `cache.legacy_summary_heading` with the parser so the two cannot disagree about where the
+  summary is.
+- **Record the book count at write time.** `save_run` stores `book_count`, because a run saved
+  without it had no record of how many books to expect - so a book deleted from the *end* of a
+  set looked complete and the reader was shown fewer books than the model produced. Contiguity
+  of the indices catches a deletion from the middle; only a count catches one from the end.
+- **An added optional field is not a schema change.** `preamble` and `pairings` were added
+  without bumping `SCHEMA_VERSION`, because a reader already treats a missing key as "no data".
+  Bumping would have invalidated every cached run and every rating for nothing.
+- **The prompt is where compliance is won.** The template is a worked example with the
+  delimiters spelled out, and it says why they matter ("they are how the answer is split into
+  books"). The live run followed it exactly on the first attempt - preamble, three books,
+  pairings, no spurious fourth book.
+
 ### Where a fake would hide the thing under test, keep the real path
 
 `test_rules_answers_are_grounded_and_cached` stubs only the model call and runs real

@@ -617,3 +617,137 @@ def test_unrated_slots_do_not_inherit_a_rating(tmp_path):
     books = sorted(_book_files(_save(tmp_path)), key=lambda p: p.name)
     assert json.loads(books[0].read_text(encoding="utf-8"))["rating"]["score"] == 4
     assert json.loads(books[1].read_text(encoding="utf-8"))["rating"]["score"] is None
+
+
+# --- the delimited format ---
+
+DELIMITED = """The rust monster's rusting touch is the threat.
+
+=== BOOK 1 ===
+Title: Peel and Patch
+Cantrips: Thorn Whip, Spare the Dying, Mending
+Rituals: Find Familiar, Unseen Servant
+How to use:
+**Thorn Whip** pulls it off the fighter.
+
+=== BOOK 2 ===
+Title: Hold the Line
+Cantrips: Eldritch Blast, Mind Sliver, Minor Illusion
+Rituals: Identify, Detect Magic
+How to use:
+**Repelling Blast** pushes it away.
+
+=== PAIRINGS ===
+**Book 1 pairs with:** Hex
+**Book 2 pairs with:** Armor of Agathys
+"""
+
+
+def test_delimited_answer_splits_into_books():
+    out = cache.split_answer(DELIMITED)
+    assert [b["name"] for b in out["books"]] == ["Peel and Patch", "Hold the Line"]
+    assert [b["index"] for b in out["books"]] == [1, 2]
+
+
+def test_delimited_fields_are_read_as_data_not_prose():
+    out = cache.split_answer(DELIMITED)
+    assert out["books"][0]["picks"] == {
+        "cantrips": ["Thorn Whip", "Spare the Dying", "Mending"],
+        "rituals": ["Find Familiar", "Unseen Servant"],
+    }
+    # The panel renders the name and the picks itself, so leaving them in the prose shows
+    # the same three things twice.
+    for book in out["books"]:
+        assert "Title:" not in book["text"]
+        assert "Cantrips:" not in book["text"]
+        assert "Rituals:" not in book["text"]
+        assert "How to use:" not in book["text"]
+
+
+def test_delimited_preamble_and_pairings_are_separate():
+    out = cache.split_answer(DELIMITED)
+    assert out["preamble"].startswith("The rust monster's")
+    assert "Book 1 pairs with" in out["pairings"]
+    assert "Book 2 pairs with" in out["pairings"]
+
+
+def test_the_summary_is_never_read_as_a_book():
+    """The defect the delimited format exists to fix.
+
+    The model's summary is written in the same shape as a book heading - `**Book 3 pairs
+    with:**` - so the legacy parser read it as a fourth book and left the real summary
+    recited inside the last one. A delimiter can never be prose, so the collision is gone
+    structurally rather than by heuristic.
+    """
+    out = cache.split_answer(DELIMITED)
+    assert len(out["books"]) == 2
+    for book in out["books"]:
+        assert "pairs with" not in book["text"]
+
+
+def test_a_delimited_answer_ignores_a_book_shaped_summary():
+    answer = DELIMITED.replace(
+        "=== PAIRINGS ===",
+        "=== PAIRINGS ===\n**Book 3 pairs with:** Hex, Guiding Bolt",
+    )
+    out = cache.split_answer(answer)
+    assert len(out["books"]) == 2
+    assert "Book 3 pairs with" in out["pairings"]
+
+
+def test_legacy_summary_heading_is_recovered():
+    """A stored run whose summary had a heading of its own.
+
+    Seven of the twelve stored runs do this, and without recovering it the summary is
+    rendered inside the last book.
+    """
+    answer = ANSWER + (
+        "\n## 4. Existing spells/features and invocations that pair with each book\n"
+        "- **Book 1:** pair **Light** with **Sacred Flame**.\n"
+    )
+    out = cache.split_answer(answer)
+    assert len(out["books"]) == 2
+    # The heading is the label and is stripped; the body is what is kept.
+    assert out["pairings"].startswith("- **Book 1:** pair **Light**")
+    assert "pair with each book" not in out["books"][-1]["text"]
+    assert out["books"][-1]["picks"]["cantrips"] == ["Booming Blade", "Chill Touch", "Mending"]
+
+
+def test_a_book_subheading_is_not_mistaken_for_the_summary():
+    """The summary is the *trailing* section, so a heading inside a book cannot be it."""
+    answer = ANSWER.replace(
+        "**How to Use:**",
+        "## Existing spells to pair with this book\n\n**How to Use:**",
+    )
+    out = cache.split_answer(answer)
+    assert out["pairings"] == ""
+    assert "Existing spells to pair with this book" in out["books"][0]["text"]
+
+
+def test_split_books_agrees_with_split_answer():
+    assert cache.split_books(DELIMITED) == cache.split_answer(DELIMITED)["books"]
+
+
+def test_save_run_records_the_book_count(tmp_path):
+    """So a book deleted from the end of a set is still detected as a partial set.
+
+    The key carries the count too when the caller supplies one, but a run saved without it
+    had no record of how many books to expect.
+    """
+    _save(tmp_path)
+    run = json.loads(next(tmp_path.rglob("run.json")).read_text())
+    assert run["book_count"] == 2
+
+
+def test_save_run_stores_the_pairings_and_preamble(tmp_path):
+    _save(tmp_path, answer=DELIMITED)
+    run = json.loads(next(tmp_path.rglob("run.json")).read_text())
+    assert run["preamble"].startswith("The rust monster's")
+    assert "Book 1 pairs with" in run["pairings"]
+
+
+def test_save_run_stores_picks_without_reparsing(tmp_path):
+    """The picks are written from the parsed book, not re-derived from its text."""
+    _save(tmp_path, answer=DELIMITED)
+    book = json.loads(next(p for p in tmp_path.rglob("*.json") if p.name.startswith("1-")).read_text())
+    assert book["output"]["picks"]["cantrips"] == ["Thorn Whip", "Spare the Dying", "Mending"]

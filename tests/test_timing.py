@@ -260,7 +260,8 @@ def test_full_prompt_asks_for_the_requested_number_of_books(count):
         books=count,
     )
     assert f"Produce EXACTLY {count} distinct" in prompt
-    assert f'"Book {count}"' in prompt
+    assert f"=== BOOK {count} ===" in prompt
+    assert f"=== BOOK {count + 1} ===" not in prompt
     # The old hard-coded wording must be gone, or the model gets two instructions.
     assert "EXACTLY 3" not in prompt or count == 3
 
@@ -271,8 +272,8 @@ def test_full_prompt_labels_every_book():
         pool_text="POOL", books=4,
     )
     for n in range(1, 5):
-        assert f'"Book {n}"' in prompt
-    assert '"Book 5"' not in prompt
+        assert f"=== BOOK {n} ===" in prompt
+    assert "=== BOOK 5 ===" not in prompt
 
 
 def test_full_prompt_defaults_to_the_configured_count():

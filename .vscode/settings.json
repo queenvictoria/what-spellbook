@@ -1,3 +1,7 @@
 {
-  "python.terminal.useEnvFile": true
+  "python.terminal.useEnvFile": true,
+  "chat.tools.terminal.autoApprove": {
+    "uniq": true,
+    ".venv/bin/python": true
+  }
 }

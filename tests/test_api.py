@@ -747,3 +747,17 @@ def test_contextual_reports_the_documents_a_cached_answer_used(api, monkeypatch)
     assert second["from_cache"] is True
     assert second["attachments"] == ["Thorn Whip"]
     assert len(calls) == 1
+
+
+def test_scenario_returns_the_preamble_and_pairings(api):
+    """Both are separate fields, so a client never has to parse them out of a book."""
+    body = api.post("/api/scenario", json={"scenario": SCENARIO}).json()
+    assert "preamble" in body and "pairings" in body
+
+
+def test_a_reopened_run_carries_the_preamble_and_pairings(api):
+    """A run read from history must render exactly as it did when generated."""
+    api.post("/api/scenario", json={"scenario": SCENARIO})
+    run = api.get("/api/history").json()[0]["id"]
+    body = api.get(f"/api/runs/{run}").json()
+    assert "preamble" in body and "pairings" in body

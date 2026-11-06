@@ -16,7 +16,7 @@ import logging
 import re
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from . import cache, characters, config, llm, lookup, prompts, retrieval, rules, spells
@@ -66,6 +66,12 @@ class Generation:
     # scenario text is not a reliable handle, because a run is keyed on the scenario
     # *and* the character, level and book count, so two runs can share a scenario.
     run_id: str | None = None
+    # Reasoning that applies to all the books, and the "which prepared spells pair with
+    # each book" summary. Both are sections of the answer rather than of any one book, so
+    # they are carried here instead of being left inside the last book's prose - which is
+    # where the old format stranded the summary, making Book 3 recite Books 1 and 2.
+    preamble: str = ""
+    pairings: str = ""
 
     @property
     def summary(self) -> str:
@@ -225,10 +231,17 @@ class SpellbookService:
 
         run = cached["run"]
         books = [Book.from_cache(entry) for entry in cached["books"]]
+        # Read back from the run, not re-derived from the response: the stored sections are
+        # what the model actually produced, and a parser change must not silently re-split an
+        # answer that was already recorded.
+        preamble, pairings = self._stored_sections(run)
+        books = self._trim_legacy_summary(books, run.get("response") or "")
         return Generation(
             scenario=scenario,
             answer=run.get("response", ""),
             books=books,
+            preamble=preamble,
+            pairings=pairings,
             prompt=(run.get("prompt") or {}).get("prompt", ""),
             from_cache=True,
             model=run.get("model"),
@@ -295,11 +308,14 @@ class SpellbookService:
         with timer.phase("books"):
             answer = llm.invoke(self.llm, full_prompt)
 
+        books, preamble, pairings = self._split_books(answer)
         generation = Generation(
             scenario=scenario,
             answer=answer,
             prompt=full_prompt,
-            books=self._split_books(answer),
+            books=books,
+            preamble=preamble,
+            pairings=pairings,
             model=llm.model_name(self.llm),
             pool=bucket,
             timings=timer.measured(),
@@ -331,11 +347,14 @@ class SpellbookService:
             ) if previous.pool else "",
         )
         answer = llm.invoke(self.llm, prompt)
+        books, preamble, pairings = self._split_books(answer)
         return Generation(
             scenario=previous.scenario,
             answer=answer,
             prompt=prompt,
-            books=self._split_books(answer),
+            books=books,
+            preamble=preamble,
+            pairings=pairings,
             model=llm.model_name(self.llm),
             pool=previous.pool,
         )
@@ -576,11 +595,16 @@ class SpellbookService:
         run = stored["run"]
         pool = self._pool_from_context(run.get("context") or {})
         answer = run.get("response", "")
+        preamble, pairings = self._stored_sections(run)
+        books = self._trim_legacy_summary(
+            [Book.from_cache(entry) for entry in stored["books"]], answer)
         return Generation(
             run_id=Path(directory).name,
             scenario=(run.get("key") or {}).get("scenario_text", ""),
             answer=answer,
-            books=[Book.from_cache(entry) for entry in stored["books"]],
+            books=books,
+            preamble=preamble,
+            pairings=pairings,
             prompt=(run.get("prompt") or {}).get("prompt", ""),
             from_cache=True,
             model=run.get("model"),
@@ -607,12 +631,62 @@ class SpellbookService:
     # --- internals ---
 
     @staticmethod
-    def _split_books(answer: str) -> list[Book]:
-        return [
-            Book(index=b["index"], name=b["name"], text=b["text"],
-                 picks=cache.parse_picks(b["text"]))
-            for b in cache.split_books(answer)
+    def _stored_sections(run: dict) -> tuple[str, str]:
+        """``(preamble, pairings)`` for a stored run, deriving them when it predates them.
+
+        A run written before the delimited format has neither key, and its summary is still
+        sitting at the end of its last book. Re-splitting the *response* recovers it - the
+        legacy parser looks for a trailing heading naming pairings or invocations, which the
+        model wrote in 7 of the 12 stored runs - and the books themselves are left alone,
+        because those were already recorded and a parser change must not re-cut them.
+
+        Deriving rather than storing is deliberate: it needs no migration, and a run whose
+        summary has no heading of its own still yields an empty string, which is the honest
+        answer for it.
+        """
+        if run.get("pairings") or run.get("preamble"):
+            return run.get("preamble") or "", run.get("pairings") or ""
+        split = cache.split_answer(run.get("response") or "")
+        return split["preamble"], split["pairings"]
+
+    @staticmethod
+    def _trim_legacy_summary(books: list[Book], answer: str) -> list[Book]:
+        """Drop a legacy answer's trailing summary from the last book's recorded text.
+
+        The books of a stored run are read back as they were written, not re-cut, so the
+        summary a legacy run left inside its last book is still there. Deriving the pairings
+        without trimming them would show the same text twice - once at the end of the book
+        and once in the pairings card.
+        """
+        heading = cache.legacy_summary_heading(answer)
+        if heading is None or not books:
+            return books
+        last = books[-1]
+        # The recorded text is a slice of the answer, so its offset locates the heading
+        # within it. A book whose text is not found is left alone rather than guessed at.
+        offset = answer.find(last.text)
+        if offset < 0 or heading.start() <= offset:
+            return books
+        trimmed = answer[offset:heading.start()].rstrip()
+        if not trimmed:
+            return books
+        books[-1] = replace(last, text=trimmed)
+        return books
+
+    @staticmethod
+    def _split_books(answer: str) -> tuple[list[Book], str, str]:
+        """``(books, preamble, pairings)`` from one model answer.
+
+        Returns all three rather than just the books because the other two sections *are*
+        the answer - the pairings say which prepared spells and invocations belong with each
+        book, and dropping them would lose content the model was asked for.
+        """
+        split = cache.split_answer(answer)
+        books = [
+            Book(index=b["index"], name=b["name"], text=b["text"], picks=b["picks"])
+            for b in split["books"]
         ]
+        return books, split["preamble"], split["pairings"]
 
     @staticmethod
     def _pool_from_context(context: dict) -> dict:

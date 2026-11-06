@@ -156,6 +156,31 @@ def _ordinal_word(number: int) -> str:
             6: "six", 7: "seven", 8: "eight", 9: "nine"}.get(number, str(number))
 
 
+def _book_template(count: int) -> str:
+    """The exact shape one book must take, with the requested count spelled out.
+
+    Shown rather than described because the delimiters are load-bearing: the answer is split
+    on them, so a model that invents its own heading produces a run whose books cannot be
+    separated. A worked example is the only instruction that cannot be paraphrased.
+    """
+    books = "\n\n".join(
+        f"""=== BOOK {n} ===
+Title: <a short tactical theme name>
+Cantrips: <3 names from the pool, comma-separated>
+Rituals: <2 names from the pool, comma-separated>
+How to use:
+<markdown prose tying the picks to the scenario>"""
+        for n in range(1, count + 1)
+    )
+    return f"""=== PREAMBLE ===
+<any reasoning that applies to all books, or leave this section out entirely>
+
+{books}
+
+=== PAIRINGS ===
+<which prepared spells and class features pair with each book, and the invocations to use>"""
+
+
 def full_prompt(
     *,
     character_text: str,
@@ -173,7 +198,6 @@ def full_prompt(
     """
     count = max(1, int(books))
     word = _ordinal_word(count)
-    labels = ", ".join(f'"Book {n}"' for n in range(1, count + 1))
     return f"""{system_prompt()}
 
 === RULES CONTEXT ===
@@ -189,18 +213,28 @@ def full_prompt(
 {_format_spell_pool(pool_text, spell_text)}
 
 === OUTPUT REQUIREMENTS ===
-Produce EXACTLY {count} distinct Book of Shadows loadouts, labelled {labels}.
+Produce EXACTLY {count} distinct Book of Shadows loadouts, in the {word} sections
+delimited below. Copy the delimiters exactly - `=== BOOK 1 ===` on its own line, and so
+on. They are how the answer is split into books, so an answer that is missing one, or
+that writes a heading of its own instead, cannot be read.
 
-For each book:
-1. A short tactical theme name.
-2. Its 3 cantrips and 2 level 1 rituals, taken only from the legal pool above.
-3. A "How to use" breakdown tying the picks to this scenario, naming the specific
-   spells involved.
+{_book_template(count)}
 
-After the {word} books, add:
-4. Which of the character's existing prepared spells and class features pair with each
-   book, and any invocation the character should be using (only those already
-   available at their level).
+Rules for the sections:
+- Inside a book, `Title:`, `Cantrips:` and `Rituals:` are single lines and are read as
+  data. Write the picks as plain comma-separated names, with no annotation, no bold and
+  no bullet: `Cantrips: Light, Sacred Flame, Message`.
+- `Cantrips:` takes exactly 3 names and `Rituals:` exactly 2, all from the legal pool
+  above. Put nothing else on those lines.
+- Everything after `How to use:` is prose, written in markdown, tying the picks to this
+  scenario and naming the specific spells involved.
+- Do NOT write a book number, a title or a pick list anywhere else inside a book - not as
+  a heading, and not as a repeat at the end.
+
+After the last book, add a `=== PAIRINGS ===` section exactly as shown above: which of the
+character's existing prepared spells and class features pair with each book, and any
+invocation the character should be using (only those already available at their level).
+It sits OUTSIDE the book sections, so it is never read as part of a book.
 """
 
 

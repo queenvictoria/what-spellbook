@@ -218,8 +218,9 @@ def test_full_prompt_includes_shortlisted_spell_text():
 def test_full_prompt_asks_for_three_labelled_books():
     prompt = _full()
     assert "EXACTLY 3" in prompt
-    for book in ("Book 1", "Book 2", "Book 3"):
+    for book in ("=== BOOK 1 ===", "=== BOOK 2 ===", "=== BOOK 3 ==="):
         assert book in prompt
+    assert "=== BOOK 4 ===" not in prompt
 
 
 def test_full_prompt_degrades_when_no_rules_found():

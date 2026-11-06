@@ -280,6 +280,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             scenario=generation.scenario,
             created_at=(stored.get("run") or {}).get("created_at"),
             run_id=generation.run_id,
+            preamble=generation.preamble,
+            pairings=generation.pairings,
             books=[
                 schemas.BookSchema(index=b.index, name=b.name, text=b.text,
                                    picks=b.picks or {}, cache_path=b.cache_path,

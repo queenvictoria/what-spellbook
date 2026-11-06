@@ -20,6 +20,9 @@ from pydantic import BaseModel, Field
 class BookSchema(BaseModel):
     index: int
     name: str
+    # The book's prose only. A run stored before the delimited format was introduced has
+    # its title and pick list still inside this text, because the old format had nowhere
+    # else to put them; `picks` and `name` are authoritative either way.
     text: str
     picks: dict[str, list[str]] = Field(default_factory=dict)
     cache_path: str | None = None
@@ -38,6 +41,10 @@ class GenerationSchema(BaseModel):
     scenario: str
     answer: str
     books: list[BookSchema] = Field(default_factory=list)
+    # Reasoning that applies to every book, and the pairing summary. Both used to be
+    # inside the last book's text, which is why they are separate fields now.
+    preamble: str = ""
+    pairings: str = ""
     warnings: list[str] = Field(default_factory=list)
     from_cache: bool = False
     model: str | None = None
@@ -53,6 +60,8 @@ class GenerationSchema(BaseModel):
             scenario=generation.scenario,
             run_id=generation.run_id,
             answer=generation.answer,
+            preamble=generation.preamble,
+            pairings=generation.pairings,
             books=[
                 BookSchema(
                     index=book.index, name=book.name, text=book.text,
@@ -227,6 +236,10 @@ class RunBooksSchema(BaseModel):
     scenario: str
     created_at: str | None = None
     books: list[BookSchema] = Field(default_factory=list)
+    # The same two fields `GenerationSchema` carries, so a run reopened from history renders
+    # exactly as it did when it was generated.
+    preamble: str = ""
+    pairings: str = ""
     # Carried so a book opened from history is rateable without a second lookup.
     run_id: str | None = None
 

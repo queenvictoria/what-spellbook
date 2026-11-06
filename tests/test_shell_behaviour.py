@@ -63,7 +63,8 @@ def test_scenario_prompt_asks_for_three_books(shell, fake_llm):
     shell.onecmd("/scenario anything")
     prompt = fake_llm.prompts[0]
     assert "EXACTLY 3" in prompt
-    assert "Book 1" in prompt and "Book 2" in prompt and "Book 3" in prompt
+    for book in ("=== BOOK 1 ===", "=== BOOK 2 ===", "=== BOOK 3 ==="):
+        assert book in prompt
 
 
 def test_scenario_without_args_does_not_call_llm(shell, fake_llm, caplog):

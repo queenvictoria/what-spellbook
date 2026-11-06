@@ -463,10 +463,15 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [ ] When switching "tabs" keep the running processes going. eg Scenario planning, question asking. Update the tabs with progress meters.
 - [ ] Let's write evals for the scenario planning
 - [x] Reduce duplication in the display of books: in the scenario view book, title, and spells are all duplicated
+- [x] Replace the model's prose book format with explicit `=== BOOK n ===` sections, so splitting a book no longer relies on heuristics. This also removes the spurious extra "books" the trailing summary produced (`**Book 3 pairs with:**` was read as a fourth book and recited inside the last one).
+- [ ] Clean out the runs stored in the old prose format, and delete the legacy parser and the front end's `withoutBookHeader`/`reasoningOnly` once they are gone.
 - [x] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
 - [ ] As we have a local copy of the rules list them out on the rules page and enable a quick UI only search on titles. Then enable a vector search over the documents.
 - [ ] Provide a history search.
 - [ ] Context documents and attachments should be links to the rules.
+- [ ] The context menu provided for the book should work for the character
+- [ ] The context menu should support "ask" and "search".
+- [ ] "Ask" box on the Rules tab should: filter rules by title, heading, subheading; search the text using vector search; and ask the question of the llm.
 
 ### Choosing the model
 
