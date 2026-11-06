@@ -73,7 +73,7 @@ export function SpellLink({
         openSpell(name)
       }}
       className={cn(
-        "text-arcane-300 underline underline-offset-4 decoration-arcane-300/0 hover:decoration-arcane-500 hover:text-arcane-500 transition-colors",
+        "text-arcane-300 underline underline-offset-4 decoration-arcane-300/0 hover:decoration-arcane-500/60 hover:text-arcane-500 transition-colors",
         className,
       )}
       title={`Look up ${name} in the rules`}

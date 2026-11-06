@@ -457,15 +457,16 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [x] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
 - [x] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
 - [ ] When showing spells or other information contextualise it to the current character: "Goodbye, Warlock" should be "Goodbye Louis", "Eldritch blast" should show "2 beams (L5)". Use a small fast model for contextualising rules to levels.
-- [ ] When you press the "read books" button it flashes some other text briefly (Open something) and then flips back only changing the caret. It should say something like "hide books".
+- [x] When you press the "read books" button it flashes some other text briefly (Open something) and then flips back only changing the caret. It should say something like "hide books".
 - [ ] We have 'Fetching spells from [the] Grimoire' in multiple places. It should be a const or enum.
-- [ ] Switch to Lucide icons
+- [x] Switch to Lucide icons
 - [ ] When switching "tabs" keep the running processes going. eg Scenario planning, question asking. Update the tabs with progress meters.
 - [ ] Let's write evals for the scenario planning
-- [ ] Reduce duplication in the display of books: in the scenario view book, title, and spells are all duplicated
-- [ ] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
+- [x] Reduce duplication in the display of books: in the scenario view book, title, and spells are all duplicated
+- [x] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
 - [ ] As we have a local copy of the rules list them out on the rules page and enable a quick UI only search on titles. Then enable a vector search over the documents.
-- [ ] Provide a history search
+- [ ] Provide a history search.
+- [ ] Context documents and attachments should be links to the rules.
 
 ### Choosing the model
 

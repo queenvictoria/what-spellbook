@@ -6,6 +6,7 @@ import type { Book, Generation } from "@/api/types"
 import { BookPanel } from "@/components/BookPanel"
 import { Markdown } from "@/components/Markdown"
 import { StageProgress } from "@/components/StageProgress"
+import { reasoningOnly } from "@/lib/bookText"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -37,6 +38,9 @@ export function ScenarioScreen() {
   const [estimate, setEstimate] = useState<number | null>(null)
   const [stage, setStage] = useState(0)
   const started = useRef(0)
+  // Derived rather than stored: it is a pure function of the answer, and recomputing it on
+  // render keeps it correct when a stored run is loaded from history.
+  const reasoning = reasoningOnly(generation?.answer ?? "")
 
   // A rough three-stage split, matching what the CLI records. The real per-stage
   // timings only exist after the run, so this is a display heuristic: retrieval is
@@ -244,13 +248,18 @@ export function ScenarioScreen() {
           />
         ))}
 
-        {generation && generation.answer && (
+        {reasoning && (
           <Card>
             <CardHeader>
               <CardTitle>Overall reasoning</CardTitle>
             </CardHeader>
             <CardContent>
-              <Markdown text={generation.answer} className="prose-spell" />
+              {/* Only the prose before the first book. `generation.answer` is the model's
+                  entire reply, so rendering all of it here showed every book twice - once
+                  raw, once rendered by the panel below. Eight of the twelve stored runs
+                  open straight into Book 1, which is why this renders nothing when there is
+                  no reasoning rather than showing an empty card. */}
+              <Markdown text={reasoning} className="prose-spell" />
             </CardContent>
           </Card>
         )}

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { useSearchParams } from "react-router-dom"
-import { Search } from "lucide-react"
+import { BookOpenIcon, Search } from "lucide-react"
 
 import { api, ApiError } from "@/api/client"
 import type { Answer, Spell } from "@/api/types"
@@ -182,7 +182,7 @@ export function RulesScreen() {
                 {answer.citations.map((path) => (
                   <p
                     key={path}
-                    className="truncate font-mono text-parchment/40"
+                    className="truncate font-mono text-parchment/60"
                   >
                     {path}
                   </p>
@@ -190,11 +190,31 @@ export function RulesScreen() {
               </div>
             )}
             {answer.from_cache && (
-              <p className="text-xs text-parchment/40">Answered from cache.</p>
+              <p className="text-xs text-parchment/60">Answered from cache.</p>
             )}
           </CardContent>
         </Card>
       )}
+
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-parchment">
+        <BookOpenIcon />
+        Rules
+      </h3>
+      <p className="text-sm text-parchment/60">
+        List the md files, and their headings and subheadings, as an indented,
+        collapsible list of links. Clicking on the link displays the rules as
+        formatted markdown.
+      </p>
+      <ul className="list-disc pl-4 text-sm text-parchment/60">
+        <li className="space-y-1">
+          <a href="context/srd/classes.md">Classes</a>
+          <ul className="list-disc space-y-1 pl-4">
+            <li>
+              <a href="context/srd/classes.md#warlock">Warlock</a>
+            </li>
+          </ul>
+        </li>
+      </ul>
     </div>
   )
 }

@@ -1,10 +1,10 @@
-import type { Spell } from '@/api/types'
-import { Markdown } from '@/components/Markdown'
-import { SourceBadge } from '@/components/SourceBadge'
-import { SpellStatsStrip } from '@/components/SpellStats'
-import { Badge } from '@/components/ui/badge'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
-import { withoutStatLines } from '@/lib/spellText'
+import type { Spell } from "@/api/types"
+import { Markdown } from "@/components/Markdown"
+import { SourceBadge } from "@/components/SourceBadge"
+import { SpellStatsStrip } from "@/components/SpellStats"
+import { Badge } from "@/components/ui/badge"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { withoutStatLines } from "@/lib/spellText"
 
 /**
  * Saying where a spell's text came from.
@@ -15,8 +15,9 @@ import { withoutStatLines } from '@/lib/spellText'
  * would let a transcription look like a rule.
  */
 function SpellSource({ source }: { source: string }) {
-  if (source === 'vendored-srd-5.2.1') return <SourceBadge source="rules" />
-  if (source === 'class-context') return <Badge tone="muted">Eldritch Invocation</Badge>
+  if (source === "vendored-srd-5.2.1") return <SourceBadge source="rules" />
+  if (source === "class-context")
+    return <Badge tone="muted">Eldritch Invocation</Badge>
   return <Badge tone="muted">From the spell corpus</Badge>
 }
 
@@ -53,7 +54,7 @@ export function SpellCard({
           className="prose-spell"
           linkSpells={false}
         />
-        <p className="border-t border-void-800 pt-2 font-mono text-xs text-parchment/40">
+        <p className="border-t border-void-800 pt-2 font-mono text-xs text-parchment/60">
           {spell.url}
         </p>
       </CardContent>

@@ -206,7 +206,7 @@ function RulesContextDrawer({
                 </>
               ) : (
                 selectedText.trim() && (
-                  <p className="text-xs text-parchment/40">
+                  <p className="text-xs text-parchment/60">
                     No spell is named in this selection, so nothing is attached.
                   </p>
                 )
@@ -242,7 +242,7 @@ function RulesContextDrawer({
               <Markdown text={answer.answer} className="prose-spell" />
               {answer.attachments.length > 0 && (
                 <div className="space-y-1.5">
-                  <p className="text-xs text-parchment/40">Documents read:</p>
+                  <p className="text-xs text-parchment/60">Documents read:</p>
                   <AttachmentChips
                     names={answer.attachments}
                     removable={false}
@@ -250,7 +250,7 @@ function RulesContextDrawer({
                 </div>
               )}
               {answer.citations.length > 0 && (
-                <p className="text-xs text-parchment/40">
+                <p className="text-xs text-parchment/60">
                   {answer.from_cache ? "Cached · " : ""}
                   {answer.citations.map((citation) => (
                     <span key={citation}>{citation}</span>

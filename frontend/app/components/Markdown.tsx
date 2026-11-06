@@ -7,11 +7,11 @@
  * output into the page as HTML. Here the text is escaped by React and stays text.
  */
 
-import { SpellLink } from '@/components/SpellLink'
-import { splitSpells, useSpellNames } from '@/lib/spellNames'
+import { SpellLink } from "@/components/SpellLink"
+import { splitSpells, useSpellNames } from "@/lib/spellNames"
 
 interface Block {
-  kind: 'heading' | 'paragraph' | 'list' | 'ordered'
+  kind: "heading" | "paragraph" | "list" | "ordered"
   items: string[]
 }
 
@@ -25,20 +25,20 @@ function toBlocks(text: string): Block[] {
     list = null
   }
 
-  for (const raw of text.split('\n')) {
+  for (const raw of text.split("\n")) {
     const line = raw.trimEnd()
     const heading = /^(#{1,4})\s+(.*)$/.exec(line)
     if (heading) {
       endList()
-      blocks.push({ kind: 'heading', items: [heading[2]] })
+      blocks.push({ kind: "heading", items: [heading[2]] })
       continue
     }
 
     const bullet = /^[-*]\s+(.*)$/.exec(line.trim())
     if (bullet) {
-      if (list?.kind !== 'list') {
+      if (list?.kind !== "list") {
         endList()
-        list = { kind: 'list', items: [] }
+        list = { kind: "list", items: [] }
       }
       list.items.push(bullet[1])
       continue
@@ -46,9 +46,9 @@ function toBlocks(text: string): Block[] {
 
     const ordered = /^\d+[.)]\s+(.*)$/.exec(line.trim())
     if (ordered) {
-      if (list?.kind !== 'ordered') {
+      if (list?.kind !== "ordered") {
         endList()
-        list = { kind: 'ordered', items: [] }
+        list = { kind: "ordered", items: [] }
       }
       list.items.push(ordered[1])
       continue
@@ -60,7 +60,7 @@ function toBlocks(text: string): Block[] {
     }
 
     endList()
-    blocks.push({ kind: 'paragraph', items: [line] })
+    blocks.push({ kind: "paragraph", items: [line] })
   }
   endList()
   return blocks
@@ -84,21 +84,32 @@ function inline(text: string, names: ReadonlySet<string>, linkSpells = true) {
     .split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|(?<![\w])_[^_\n]+_(?![\w]))/g)
     .filter(Boolean)
   return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i}>{withSpells(part.slice(2, -2), names, i, linkSpells)}</strong>
-    }
-    if (part.startsWith('`') && part.endsWith('`')) {
+    if (part.startsWith("**") && part.endsWith("**")) {
       return (
-        <code key={i} className="rounded bg-void-800 px-1 py-0.5 text-arcane-300">
+        <strong key={i}>
+          {withSpells(part.slice(2, -2), names, i, linkSpells)}
+        </strong>
+      )
+    }
+    if (part.startsWith("`") && part.endsWith("`")) {
+      return (
+        <code
+          key={i}
+          className="rounded bg-void-800 px-1 py-0.5 text-arcane-300"
+        >
           {part.slice(1, -1)}
         </code>
       )
     }
-    if (part.startsWith('*') && part.endsWith('*')) {
-      return <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+    if (part.startsWith("*") && part.endsWith("*")) {
+      return (
+        <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+      )
     }
-    if (part.startsWith('_') && part.endsWith('_')) {
-      return <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+    if (part.startsWith("_") && part.endsWith("_")) {
+      return (
+        <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+      )
     }
     return withSpells(part, names, i, linkSpells)
   })
@@ -134,14 +145,17 @@ export function Markdown({
   return (
     <div className={className}>
       {blocks.map((block, i) => {
-        if (block.kind === 'heading') {
+        if (block.kind === "heading") {
           return (
-            <h3 key={i} className="mt-4 mb-1 text-sm font-semibold text-arcane-300">
+            <h3
+              key={i}
+              className="mt-4 mb-1 text-sm font-semibold text-arcane-300"
+            >
               {inline(block.items[0], names, linkSpells)}
             </h3>
           )
         }
-        if (block.kind === 'list') {
+        if (block.kind === "list") {
           return (
             <ul key={i} className="my-2 list-disc space-y-1 pl-5">
               {block.items.map((item, j) => (
@@ -150,7 +164,7 @@ export function Markdown({
             </ul>
           )
         }
-        if (block.kind === 'ordered') {
+        if (block.kind === "ordered") {
           return (
             <ol key={i} className="my-2 list-decimal space-y-1 pl-5">
               {block.items.map((item, j) => (

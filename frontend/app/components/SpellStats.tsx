@@ -56,7 +56,7 @@ function Tile({
     <div className={cn("flex items-start gap-2", className)}>
       <span className="mt-0.5 text-parchment/60">{icon}</span>
       <div className="min-w-0">
-        <div className="text-[0.65rem] tracking-wide text-parchment/40 uppercase">
+        <div className="text-[0.65rem] tracking-wide text-parchment/60 uppercase">
           {label}
         </div>
         {value && (

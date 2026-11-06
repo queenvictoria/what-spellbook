@@ -143,23 +143,25 @@ function ViewRun({
   }
 
   return (
-    <div className="pt-1 flex gap-2 justify-between">
-      <Button variant="outline" size="sm" onClick={toggle} disabled={loading}>
-        {open ? (
-          <ChevronDown className="h-4 w-4" />
-        ) : (
-          <ChevronRight className="h-4 w-4" />
-        )}
-        {loading ? "Opening…" : "Read books"}
-      </Button>
-      <Link
-        to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
-        className="inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-400 disabled:pointer-events-none disabled:opacity-50 border border-void-700 bg-transparent hover:bg-void-800 h-8 px-3 text-xs"
-      >
-        Open in the scenario screen
-        <ArrowRight className="h-4 w-4" />
-      </Link>
-      {error && <p className="pt-1 text-red-300">{error}</p>}
+    <div className="pt-1">
+      <div className="pt-1 flex gap-2 justify-between">
+        <Button variant="outline" size="sm" onClick={toggle} disabled={loading}>
+          {open ? (
+            <ChevronDown className="h-4 w-4" />
+          ) : (
+            <ChevronRight className="h-4 w-4" />
+          )}
+          {open ? "Hide books" : "Read books"}
+        </Button>
+        <Link
+          to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
+          className="inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-400 disabled:pointer-events-none disabled:opacity-50 border border-void-700 bg-transparent hover:bg-void-800 h-8 px-3 text-xs"
+        >
+          Open in the scenario screen
+          <ArrowRight className="h-4 w-4" />
+        </Link>
+        {error && <p className="pt-1 text-red-300">{error}</p>}
+      </div>
       {open && (
         <div className="mt-3 space-y-3 border-t border-void-800 pt-3">
           {books.map((book) => (

@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { withoutBookHeader } from "@/lib/bookText"
 import { cn } from "@/lib/utils"
 
 const OUTCOMES = ["won", "lost", "unused", "partial"] as const
@@ -98,9 +99,9 @@ export function BookPanel({
           aria-expanded={expanded}
         >
           {expanded ? (
-            <ChevronDown className="mt-0.5 h-4 w-4 text-parchment/40" />
+            <ChevronDown className="mt-0.5 h-4 w-4 text-parchment/60" />
           ) : (
-            <ChevronRight className="mt-0.5 h-4 w-4 text-parchment/40" />
+            <ChevronRight className="mt-0.5 h-4 w-4 text-parchment/60" />
           )}
           <div>
             <CardTitle>
@@ -166,9 +167,16 @@ export function BookPanel({
               </div>
             )}
 
-            {/* The book's markdown, and the only place a selection may come from. */}
+            {/* The book's markdown, and the only place a selection may come from.
+                The model's own title and pick lists are dropped: the card above already
+                shows both - the name in its header, the picks as linked badges - and the
+                badges are links *because* the prose carried its own copy, so leaving it
+                in made a feature look like duplication. */}
             <div ref={prose}>
-              <Markdown text={book.text} className="prose-spell" />
+              <Markdown
+                text={withoutBookHeader(book.text)}
+                className="prose-spell"
+              />
             </div>
 
             <RulesContextButton target={prose} />

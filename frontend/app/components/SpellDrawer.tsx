@@ -149,7 +149,7 @@ function SpellSearch() {
         </ul>
       )}
       {query.trim().length >= 2 && matches.length === 0 && (
-        <p className="mt-2 text-xs text-parchment/40">No spell by that name.</p>
+        <p className="mt-2 text-xs text-parchment/60">No spell by that name.</p>
       )}
     </div>
   )
@@ -171,7 +171,7 @@ function SpellBody({ name }: { name: string }) {
   }
 
   if (!spell)
-    return <p className="text-sm text-parchment/40">Looking up {name}…</p>
+    return <p className="text-sm text-parchment/60">Looking up {name}…</p>
 
   return <SpellCard spell={spell} />
 }
