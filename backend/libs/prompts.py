@@ -135,6 +135,9 @@ def system_prompt() -> str:
         "per-level spread.\n"
         "- Obey the level gates in the invocations table; do not propose an invocation "
         "above the character's level.\n"
+        "- When a '2024 SRD TEXT FOR THIS SCENARIO' section is present, it is the authority "
+        "on how the situation works. Do not contradict it, and do not state a rule it does "
+        "not support - the 2014 rules differ in ways that matter.\n"
         "\n"
         "Be concrete and tactical. Prefer naming specific spells and specific combos over "
         "general advice."
@@ -148,6 +151,23 @@ def _format_spell_pool(pool_text: str, spell_text: str = "") -> str:
     if spell_text.strip():
         return f"{pool_text}\n\n--- FULL TEXT FOR SHORTLISTED SPELLS ---\n\n{spell_text}"
     return pool_text
+
+
+def _srd_context_block(srd_context: str) -> str:
+    """The 2024 SRD text retrieved for this scenario, or nothing at all.
+
+    Omitted entirely when empty rather than rendered as an empty section. A heading with
+    nothing under it reads to a model as "the rules for this scenario are missing", which
+    invites it to fill the gap from memory - the opposite of what the block is for.
+    """
+    if not srd_context.strip():
+        return ""
+    return (
+        "=== 2024 SRD TEXT FOR THIS SCENARIO ===\n"
+        "Retrieved from the vendored 2024 SRD because it bears on the scenario. It is the\n"
+        "authority on how the situation works; the class context above is not.\n\n"
+        f"{srd_context.strip()}\n\n"
+    )
 
 
 def _ordinal_word(number: int) -> str:
@@ -189,12 +209,19 @@ def full_prompt(
     pool_text: str,
     spell_text: str = "",
     books: int = config.BOOK_COUNT,
+    srd_context: str = "",
 ) -> str:
     """Build the first-pass prompt that produces the book loadouts.
 
     The requested count is interpolated rather than hard-coded, so raising ``BOOKS``
     cannot leave the prompt still demanding three - which would produce three books and
     a run that looks broken.
+
+    ``srd_context`` is the 2024 SRD text retrieved for *this scenario* - the rules a
+    situation turns on, rather than the character's class rules. It is separate from
+    ``rule_context`` because the two are different kinds of document: the class context
+    describes the character, the SRD block describes the situation, and a model told they
+    are the same thing will cite the wrong one.
     """
     count = max(1, int(books))
     word = _ordinal_word(count)
@@ -203,7 +230,7 @@ def full_prompt(
 === RULES CONTEXT ===
 {rule_context or "(no rule files found under context/) "}
 
-=== CHARACTER SHEET ===
+{_srd_context_block(srd_context)}=== CHARACTER SHEET ===
 {character_text}
 
 === TACTICAL SCENARIO ===
@@ -238,13 +265,34 @@ It sits OUTSIDE the book sections, so it is never read as part of a book.
 """
 
 
-def character_prompt(*, question: str, character_text: str, rule_context: str = "") -> str:
+def _history_block(history: str) -> str:
+    """The earlier turns of a conversation, or an empty string.
+
+    A follow-up is only meaningful beside what it follows: "and a grapple?" has no subject
+    on its own. The block is the *only* thing a prior turn is allowed to influence - it is
+    context for reading the new question, not a source of rules. A model that answered a
+    follow-up out of its own earlier answer would be quoting itself, which is exactly how a
+    first-turn mistake becomes a thread of them.
+    """
+    if not history.strip():
+        return ""
+    return (
+        "=== EARLIER IN THIS CONVERSATION ===\n"
+        f"{history.strip()}\n\n"
+    )
+
+
+def character_prompt(*, question: str, character_text: str, rule_context: str = "",
+                     history: str = "") -> str:
     """Prompt for a question about the character that the sheet lookup could not answer.
 
     The sheet is supplied in full and the model is told to say so when the sheet does not
     contain the answer. Without that instruction a model asked "why do I have two Light
     spells?" will invent a rule rather than report that the sheet does not explain it,
     and the user has no way to tell a quoted field from a plausible fabrication.
+
+    ``history`` carries the earlier turns of the same conversation, so a follow-up is read
+    in context. It is context only: the sheet above is still the authority.
     """
     return f"""You are answering a player's question about their own D&D 5.5e (2024) character.
 
@@ -254,7 +302,7 @@ def character_prompt(*, question: str, character_text: str, rule_context: str = 
 === RULES CONTEXT ===
 {rule_context or "(no rule files loaded)"}
 
-=== QUESTION ===
+{_history_block(history)}=== QUESTION ===
 {question}
 
 Rules for your answer:
@@ -264,6 +312,8 @@ Rules for your answer:
   value, and do not generalise from what such a character "usually" has.
 - If the question concerns why the character has something twice, explain which sheet
   fields grant it. Check each field before answering.
+- Earlier turns are context for reading the question, not a source of facts. Re-check the
+  sheet rather than repeating an earlier answer.
 - Be brief: two or three sentences, plus a short bullet list only if it genuinely helps.
 """
 
@@ -313,7 +363,7 @@ def _attachments_block(documents) -> str:
 
 
 def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
-                 selection_context: str = "", attachments=()) -> str:
+                 selection_context: str = "", attachments=(), history: str = "") -> str:
     """Prompt for a rules question, grounded in fetched 2024 SRD text.
 
     The rule text is the only permitted source. A model asked a rules question answers
@@ -323,6 +373,9 @@ def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
     ``selection_context`` is set when the question is a phrase highlighted in a book's
     prose rather than a question someone typed; ``attachments`` carries that selection's
     spell texts. See :func:`_selection_block` and :func:`_attachments_block`.
+
+    ``history`` carries the earlier turns of the same conversation, so a follow-up is read
+    in context. It is context only - the retrieved text above is still the authority.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
@@ -332,7 +385,7 @@ def rules_prompt(*, question: str, rule_text: str, rule_context: str = "",
 {_attachments_block(attachments)}=== CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
-{_selection_block(selection_context)}=== QUESTION ===
+{_selection_block(selection_context)}{_history_block(history)}=== QUESTION ===
 {question}
 
 Rules for your answer:
@@ -342,13 +395,16 @@ Rules for your answer:
   costs an invocation). Do not fill a gap from memory or from the earlier edition.
 - If the retrieved text and the attached documents do not answer the question, say so
   plainly and say which part is missing. That is a better answer than a guess.
+- Earlier turns are context for reading the question, not a source of rules. Answer from
+  the retrieved text above, not from what you said before.
 - Quote the rule's own wording where it settles the question.
 - Be brief and concrete. Two or three sentences is usually enough.
 """
 
 
 def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = "",
-                          selection_context: str = "", attachments=()) -> str:
+                          selection_context: str = "", attachments=(),
+                          history: str = "") -> str:
     """Prompt for a rules question the SRD does not define under its own heading.
 
     The retrieved text is related to the question rather than being the rule itself, so
@@ -362,6 +418,9 @@ def rules_inferred_prompt(*, question: str, rule_text: str, rule_context: str = 
     spell texts - which is what turns "the SRD does not cover these spells" into an answer,
     so this prompt is told to prefer them over the retrieved excerpt. See
     :func:`_selection_block` and :func:`_attachments_block`.
+
+    ``history`` carries the earlier turns of the same conversation, so a follow-up is read
+    in context. It is context only - the material above is still the authority.
     """
     return f"""You are answering a D&D 5.5e (2024) rules question for a player.
 
@@ -375,7 +434,7 @@ the rule itself.
 {_attachments_block(attachments)}=== CHARACTER CONTEXT ===
 {rule_context or "(no character context loaded)"}
 
-{_selection_block(selection_context)}=== QUESTION ===
+{_selection_block(selection_context)}{_history_block(history)}=== QUESTION ===
 {question}
 
 Rules for your answer:
@@ -389,6 +448,8 @@ Rules for your answer:
 - Say plainly which part of the answer the material above does not cover. The reader is
   being told this is an interpretation, so naming the gap is part of the answer.
 - Do not present a guess as a rule. If the material does not support an answer, say so.
+- Earlier turns are context for reading the question, not a source of rules. Answer from
+  the material above, not from what you said before.
 - Be brief and concrete. Two or three sentences is usually enough.
 """
 
@@ -400,11 +461,16 @@ def refine_prompt(
     scenario: str,
     rule_context: str = "",
     pool_text: str = "",
+    history: str = "",
 ) -> str:
     """Build the follow-up prompt for /ask.
 
     The legality constraints are restated so a follow-up cannot quietly introduce a
     spell that was never in the pool.
+
+    ``history`` carries the earlier turns of the same conversation. ``previous_response``
+    is the recommendation being refined, which is a different thing: the history is what
+    was *asked*, and the previous response is what is being changed.
     """
     return f"""You are continuing as the D&D 5.5e (2024) tactical optimizer.
 
@@ -422,12 +488,47 @@ def refine_prompt(
 === LEGAL SPELL POOL ===
 {pool_text or "(not re-supplied)"}
 
-=== USER REQUEST ===
+{_history_block(history)}=== USER REQUEST ===
 {question}
 
 Adjust the recommendation or answer the question. Stay inside the legal pool and the
 Book of Shadows pick counts. If the request cannot be satisfied legally, say so and
 offer the closest legal alternative.
+"""
+
+
+def scaling_prompt(*, name: str, text: str, level: int, character_text: str = "") -> str:
+    """Ask the fast model what a spell does at this character's level.
+
+    Only reached for a spell whose own text states a level but whose scaling sentence the
+    deterministic reader could not parse - a cantrip that scales at 5th/11th/17th in prose
+    rather than in a table. The text is supplied in full and the model is told to answer
+    from it alone, because the whole value of the note is that it is the spell's own rule
+    applied to this character rather than a recollection of what such a spell usually does.
+
+    The answer is a phrase, not a sentence: it is rendered as a badge beside the spell's
+    name, so "2 beams" fits and "At 5th level, the spell creates two beams" does not.
+    """
+    return f"""You are stating one D&D 5.5e (2024) spell's effect at a specific character level.
+
+=== SPELL TEXT (the only authority) ===
+{text}
+
+=== CHARACTER ===
+{character_text or "(no sheet loaded)"}
+Level: {level}
+
+=== TASK ===
+State what "{name}" does at level {level} that it does not do at level 1 - the upgraded
+damage, the number of beams or targets, the increased range, and so on.
+
+Rules for your answer:
+- Answer from the spell text above and nothing else. If it states no level-based change,
+  reply exactly: none
+- Reply with the value alone, as a short phrase: "2 beams", "2d10 damage", "range 30 feet".
+- Do not write a sentence, do not explain, do not name the spell, and do not add a level
+  label - the caller adds that.
+- If the text scales by spell slot rather than by character level, reply exactly: none
 """
 
 

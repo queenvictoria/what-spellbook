@@ -374,7 +374,7 @@ def test_rules_answers_are_grounded_and_cached(api, monkeypatch):
     # clickable and lead nowhere.
     assert len(first["citations"]) == 1
     assert first["citations"][0].startswith("context/srd/")
-    assert first["citations"][0].endswith(".md")
+    assert first["citations"][0].split("#")[0].endswith(".md")
     assert len(calls) == 1
 
     second = api.get("/api/rules", params={"question": "how does cover work"}).json()
@@ -503,17 +503,19 @@ def test_a_contextual_answer_is_cached_under_the_selection(api, monkeypatch):
 def test_rules_reports_a_missing_rule_as_404(api, monkeypatch):
     """A question the SRD does not discuss at all is the caller's request being wrong.
 
-    Both retrieval paths must fail for this to be a 404: the precise path refuses a
-    question no heading names, and the inferred path refuses one whose subject the SRD
-    never mentions. Stubbing only ``gather`` would let the real inferred path answer from
-    the live corpus, and the test would pass while proving nothing.
+    All three retrieval paths must fail for this to be a 404: the precise path refuses a
+    question no heading names, the inferred path refuses one whose subject the SRD never
+    mentions, and the index lane refuses one whose embedding finds no SRD section. Stubbing
+    only ``gather`` would let a real path answer from the live corpus, and the test would
+    pass while proving nothing.
     """
 
-    def fake_gather(question, **kwargs):
+    def fake_gather(question, *args, **kwargs):
         raise rules.RulesUnavailable("the SRD does not define a Short Rest")
 
     monkeypatch.setattr(rules, "gather", fake_gather)
     monkeypatch.setattr(rules, "gather_inferred", fake_gather)
+    monkeypatch.setattr(rules, "gather_from_index", fake_gather)
     response = api.get("/api/rules", params={"question": "what is a short rest"})
     assert response.status_code == 404
     assert "Short Rest" in response.json()["detail"]
@@ -553,7 +555,9 @@ def test_spell_returns_the_vendored_text_verbatim(api):
     body = response.json()
     assert body["name"] == "Fireball"
     assert "8d6 Fire damage" in body["text"]
-    assert body["url"] == "context/srd/spells.md"
+    # Anchored to the spell's own heading, so the path is a link to the rule rather than to
+    # 325KB of spell descriptions.
+    assert body["url"] == "context/srd/spells.md#fireball"
     assert body["source"] == "vendored-srd-5.2.1"
 
 
@@ -586,11 +590,89 @@ def test_an_srd_spell_prefers_the_srd(api):
     """The SRD is the 2024 authority, so it wins when both sources have the spell."""
     body = api.get("/api/spell", params={"name": "Fireball"}).json()
     assert body["source"] == "vendored-srd-5.2.1"
-    assert body["url"] == "context/srd/spells.md"
+    assert body["url"] == "context/srd/spells.md#fireball"
 
 
 def test_spell_requires_a_name(api):
     assert api.get("/api/spell", params={"name": ""}).status_code == 422
+
+
+def test_a_spell_is_contextualised_to_the_loaded_character(api):
+    """The card shows what the spell does at *this* character's level.
+
+    Lois is a level 5 Warlock, so Eldritch Blast has two beams - and the note is read out
+    of the spell's own text, so it is a rule rather than a model's recollection of one.
+    """
+    body = api.get("/api/spell", params={"name": "Eldritch Blast"}).json()
+    assert body["scaling"] == "2 beams (L5)"
+
+
+def test_the_note_follows_the_character_level(api):
+    """The same spell, a different sheet: the note is about the character, not the spell."""
+    api.sheet = {**LOIS, "Current Level": 11}
+    body = api.get("/api/spell", params={"name": "Eldritch Blast"}).json()
+    assert body["scaling"] == "3 beams (L11)"
+
+
+def test_a_spell_that_does_not_scale_has_no_note(api):
+    """Null rather than an empty string, so the card can tell "nothing" from "unknown"."""
+    body = api.get("/api/spell", params={"name": "Fireball"}).json()
+    assert body["scaling"] is None
+
+
+def test_a_cantrip_below_its_first_upgrade_has_no_note(api):
+    """A level 3 Warlock's Eldritch Blast has one beam, and the level 5 row would be wrong."""
+    api.sheet = {**LOIS, "Current Level": 3}
+    body = api.get("/api/spell", params={"name": "Eldritch Blast"}).json()
+    assert body["scaling"] is None
+
+
+def test_an_invocation_has_no_note(api):
+    """An invocation's effect is not a value that changes with level."""
+    body = api.get("/api/invocation", params={"name": "Agonizing Blast"}).json()
+    assert body["scaling"] is None
+
+
+def test_the_note_is_absent_without_a_character(api):
+    """No sheet means no level, and a guessed level is worse than no note."""
+    api.sheet = {k: v for k, v in LOIS.items() if k != "Current Level"}
+    body = api.get("/api/spell", params={"name": "Eldritch Blast"}).json()
+    assert body["scaling"] is None
+
+
+def test_a_missing_sheet_does_not_break_the_spell_lookup(api, monkeypatch):
+    """The note is an addition to a card whose text comes from a file.
+
+    A sheet that cannot be read must not turn a working spell lookup into a 404 - the spell
+    is still quotable, it just cannot be contextualised.
+    """
+    def missing(name, **kwargs):
+        raise characters.CharacterNotFound(f"No character sheet at '{name}.yaml'.")
+
+    monkeypatch.setattr("backend.libs.characters.load_character_data", missing)
+    response = api.get("/api/spell", params={"name": "Eldritch Blast"})
+    assert response.status_code == 200
+    assert response.json()["scaling"] is None
+    assert "crackling energy" in response.json()["text"]
+
+
+def test_a_contextualised_note_is_cached_across_requests(api, monkeypatch):
+    """A drawer opened twice must not pay for the same phrase twice.
+
+    Booming Blade is the one corpus cantrip whose scaling the reader cannot parse, so it is
+    the only spell that reaches the model - which makes it the only one a cache can help.
+    """
+    calls = []
+
+    def counting(_backend, prompt):
+        calls.append(prompt)
+        return "extra 1d8 thunder damage on hit"
+
+    monkeypatch.setattr("backend.libs.llm.invoke", counting)
+    first = api.get("/api/spell", params={"name": "Booming Blade"}).json()
+    second = api.get("/api/spell", params={"name": "Booming Blade"}).json()
+    assert first["scaling"] == second["scaling"] == "extra 1d8 thunder damage on hit (L5)"
+    assert len(calls) == 1
 
 
 def test_invocation_is_served_from_the_vendored_srd(api):
@@ -604,7 +686,7 @@ def test_invocation_is_served_from_the_vendored_srd(api):
     body = response.json()
     assert body["name"] == "Agonizing Blast"
     assert body["source"] == "vendored-srd-5.2.1"
-    assert body["url"] == "context/srd/classes.md"
+    assert body["url"] == "context/srd/classes.md#agonizing-blast"
     assert "Charisma modifier" in body["text"]
 
 
@@ -761,3 +843,214 @@ def test_a_reopened_run_carries_the_preamble_and_pairings(api):
     run = api.get("/api/history").json()[0]["id"]
     body = api.get(f"/api/runs/{run}").json()
     assert "preamble" in body and "pairings" in body
+
+
+# --- index search ---
+
+
+def test_search_returns_distinct_spells_with_their_metadata(api):
+    """The diagnostic surface: what is in the index, not what is legal for a character."""
+    body = api.get("/api/search", params={"query": "fire", "mode": "vector"}).json()
+    assert body["mode"] == "vector"
+    assert body["hits"], "the fake catalogue has spells to find"
+    hit = body["hits"][0]
+    assert hit["name"] and hit["level_label"]
+    assert isinstance(hit["classes"], list)
+
+
+def test_search_text_mode_browses_with_no_query(api):
+    """An empty query lists what the filters admit, which is how a filter gets checked."""
+    body = api.get("/api/search", params={"query": "", "mode": "text"}).json()
+    assert body["total_matching"] >= 1
+    assert body["hits"]
+
+
+def test_search_echoes_the_filter_clause_it_sent(api):
+    """A filter that silently matches nothing is the commonest failure here.
+
+    The clause is the fastest way to see why, so it is part of the response rather than
+    something a caller has to reconstruct.
+    """
+    body = api.get("/api/search", params={"query": "", "mode": "text",
+                                          "class": ["Wizard"]}).json()
+    assert body["where"] == {"$and": [{"doc_type": "spell"}, {"classes": "Wizard"}]}
+    assert body["filters"]["classes"] == ["Wizard"]
+
+
+def test_search_reports_a_class_the_index_never_uses(api):
+    """A filter must never widen the search, and the caller is told why it matched nothing."""
+    body = api.get("/api/search", params={"query": "fire", "mode": "vector",
+                                          "class": ["Artificer"]}).json()
+    assert body["hits"] == []
+    assert "lists that class" in body["note"]
+
+
+def test_search_rejects_a_mode_it_does_not_have(api):
+    """400, not 500: the request cannot work and retrying it will not help."""
+    response = api.get("/api/search", params={"query": "fire", "mode": "fuzzy"})
+    assert response.status_code == 400
+    assert "Unknown search mode" in response.json()["detail"]
+
+
+def test_search_rejects_a_vector_query_with_nothing_to_embed(api):
+    response = api.get("/api/search", params={"query": "", "mode": "vector"})
+    assert response.status_code == 400
+    assert "needs some text" in response.json()["detail"]
+
+
+def test_search_rejects_an_inverted_level_range(api):
+    response = api.get("/api/search", params={"query": "fire", "mode": "text",
+                                              "level_min": 5, "level_max": 2})
+    assert response.status_code == 400
+
+
+def test_search_facets_describe_the_index(api):
+    """Filter values come from the index, so a class that exists nowhere is never offered."""
+    body = api.get("/api/search/facets").json()
+    assert body["index_version"] >= 4
+    assert body["facets"]["spells"] >= 1
+    assert body["facets"]["chunks"] >= body["facets"]["spells"]
+    assert any(level["label"] == "Cantrip" for level in body["facets"]["levels"])
+    assert any(facet["value"] == "srd" for facet in body["facets"]["doc_types"])
+
+
+# --- browsing the vendored SRD ---
+
+
+def test_srd_lists_every_vendored_file_with_its_headings(api):
+    """The table of contents, so the Rules screen can draw a tree without the text.
+
+    ``PROVENANCE.md`` must not appear: it is the CC-BY-4.0 attribution, not SRD text, and
+    offering it as a rule would let licence boilerplate answer a question about "rights".
+    """
+    response = api.get("/api/srd")
+    assert response.status_code == 200
+    documents = response.json()
+    names = [document["name"] for document in documents]
+    assert "classes" in names and "equipment" in names and "spells" in names
+    assert "PROVENANCE" not in names
+
+    classes = next(document for document in documents if document["name"] == "classes")
+    assert classes["title"] == "Classes"
+    assert classes["path"] == "context/srd/classes.md"
+    # Nested, not flat: the whole point of the tree is that a subclass sits under its class.
+    assert classes["headings"][0]["text"] == "Classes"
+    assert any(child["text"] == "Barbarian" for child in classes["headings"][0]["children"])
+
+
+def test_srd_slugs_are_unique_within_a_document(api):
+    """The SRD repeats headings, so a slug from the text alone would collide.
+
+    ``classes.md`` has six ``Level 1: Spellcasting`` sections, one per class. Without
+    de-duplication every link after the first would open the wrong class's feature.
+    """
+    documents = api.get("/api/srd").json()
+
+    def slugs(headings):
+        for heading in headings:
+            yield heading["slug"]
+            yield from slugs(heading["children"])
+
+    for document in documents:
+        found = list(slugs(document["headings"]))
+        assert len(found) == len(set(found)), document["name"]
+
+
+def test_srd_section_returns_the_rule_verbatim(api):
+    """Deterministic, like a spell: no model sits between the file and the caller."""
+    response = api.get("/api/srd/equipment", params={"slug": "coins"})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["heading"] == "Coins"
+    assert body["title"] == "Equipment"
+    assert body["path"] == "context/srd/equipment.md"
+    assert body["source"] == "vendored-srd-5.2.1"
+    assert "Copper Piece (CP)" in body["text"]
+
+
+def test_srd_section_converts_tables_to_markdown(api):
+    """The numbers in a table *are* the rule, so a table must survive the conversion.
+
+    ``### Cover``'s prose only says "as detailed in the Cover table" - a renderer that
+    dropped the table would show a confident rule with its bonuses missing.
+    """
+    body = api.get("/api/srd/playing-the-game", params={"slug": "cover"}).json()
+    assert "| Degree | Benefit to Target |" in body["text"]
+    assert "+2 bonus to AC" in body["text"]
+    assert "<table>" not in body["text"]
+
+
+def test_srd_section_stops_at_the_next_heading_of_the_same_level(api):
+    """A section is its own text, not the rest of the file."""
+    body = api.get("/api/srd/equipment", params={"slug": "coins"}).json()
+    assert "Weapons" not in body["text"]
+
+
+def test_srd_whole_document_needs_no_slug(api):
+    """A click on the file name asks for the file, not for a section of it."""
+    body = api.get("/api/srd/equipment").json()
+    assert body["heading"] == "Equipment"
+    assert body["slug"] == ""
+    assert "## Coins" in body["text"]
+    assert "## Weapons" in body["text"]
+
+
+def test_an_unknown_srd_document_is_a_404_that_lists_the_real_ones(api):
+    response = api.get("/api/srd/nope")
+    assert response.status_code == 404
+    detail = response.json()["detail"]
+    assert "nope" in detail
+    assert "equipment" in detail
+
+
+def test_an_unknown_srd_section_is_a_404(api):
+    response = api.get("/api/srd/equipment", params={"slug": "nope"})
+    assert response.status_code == 404
+    assert "nope" in response.json()["detail"]
+
+
+def test_srd_section_carries_its_ancestry_for_a_breadcrumb(api):
+    """The trail is sent rather than left for the client to derive.
+
+    The client holds the table of contents, so it *could* walk it - but the server already
+    knows the path, and a second lookup for something already computed is a way for the two
+    to disagree.
+    """
+    body = api.get("/api/srd/rules-glossary", params={"slug": "prone-condition"}).json()
+    assert [c["text"] for c in body["ancestors"]] == ["Rules Glossary", "Rules Definitions"]
+    assert [c["slug"] for c in body["ancestors"]] == [
+        "rules-glossary", "rules-definitions",
+    ]
+
+
+def test_srd_ancestry_excludes_the_section_itself(api):
+    """The card titles the section, so repeating it as the last crumb would say it twice."""
+    body = api.get("/api/srd/equipment", params={"slug": "coins"}).json()
+    assert body["heading"] == "Coins"
+    assert "Coins" not in [c["text"] for c in body["ancestors"]]
+
+
+def test_a_whole_document_has_no_ancestry(api):
+    """A file is the top of the tree, so there is nothing above it to link to."""
+    assert api.get("/api/srd/equipment").json()["ancestors"] == []
+
+
+def test_search_can_be_narrowed_to_the_rulebook(api):
+    """The SRD shares the collection with the spells, so it needs its own filter.
+
+    Without one, a rule is indistinguishable from a spell that has no school and a level of
+    0 - and the recommender's pool would be able to admit it.
+    """
+    body = api.get("/api/search", params={"query": "", "mode": "text",
+                                          "doc_type": "srd"}).json()
+    assert [hit["name"] for hit in body["hits"]] == ["Cover"]
+    assert body["where"] == {"doc_type": "srd"}
+    assert body["hits"][0]["doc_type"] == "srd"
+    assert body["hits"][0]["document"] == "playing-the-game"
+
+
+def test_search_rejects_a_doc_type_it_does_not_have(api):
+    response = api.get("/api/search", params={"query": "fire", "mode": "vector",
+                                              "doc_type": "monster"})
+    assert response.status_code == 400
+    assert "Unknown doc_type" in response.json()["detail"]

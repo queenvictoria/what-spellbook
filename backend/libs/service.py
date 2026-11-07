@@ -19,7 +19,19 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from . import cache, characters, config, llm, lookup, prompts, retrieval, rules, spells
+from . import (
+    cache,
+    characters,
+    config,
+    conversations,
+    llm,
+    lookup,
+    prompts,
+    retrieval,
+    rules,
+    spellstats,
+    spells,
+)
 
 
 @dataclass
@@ -66,6 +78,9 @@ class Generation:
     # scenario text is not a reliable handle, because a run is keyed on the scenario
     # *and* the character, level and book count, so two runs can share a scenario.
     run_id: str | None = None
+    # The conversation this answer belongs to, so a follow-up can be asked in context and
+    # the exchange can be read back later. Null when there is no character to key it on.
+    thread_id: str | None = None
     # Reasoning that applies to all the books, and the "which prepared spells pair with
     # each book" summary. Both are sections of the answer rather than of any one book, so
     # they are carried here instead of being left inside the last book's prose - which is
@@ -147,6 +162,46 @@ class Answer:
     # not cover a spell reads very differently once it is clear the spell was never
     # attached, and that difference is invisible otherwise.
     attachments: list[str] = field(default_factory=list)
+    # The conversation this answer belongs to, so a follow-up can be asked in context and
+    # the exchange can be read back later. Null when there is no character to key it on.
+    thread_id: str | None = None
+
+
+# What the fast model may answer when the spell has no level-based change. Matched
+# case-insensitively and only as a whole answer, so a note that merely contains the word
+# is not thrown away.
+_NO_SCALING = re.compile(r"^(?:none|n/?a|no change|nothing)\.?$", re.IGNORECASE)
+
+# A note is rendered as a badge beside the spell's name, so a sentence would break the
+# card. Anything longer than this is a model that ignored the instruction, and dropping it
+# is better than printing a paragraph where a phrase belongs.
+#
+# The number is measured, not guessed. The two prose cantrips this path exists for answer
+# in 45-106 characters ("extra 1d8 thunder damage on hit; movement damage 2d8"), because
+# both have a two-part upgrade, while the sentence the cap is there to reject runs to 149
+# ("At 5th level, the melee attack deals an extra 1d8 Thunder damage to the target on a
+# hit, and the damage the target takes for moving increases to 2d8."). A cap of 60 - sized
+# to the short example rather than to the answers - silently discarded every real reply and
+# made Green-Flame Blade look like a spell that does not scale.
+_MAX_NOTE = 120
+
+
+def _clean_scaling(answer: str, level: int) -> str | None:
+    """Normalise the fast model's reply into a note, or ``None`` if it is not one.
+
+    The model is asked for a bare phrase, and this is what makes that instruction
+    enforceable: a refusal, a sentence, or an answer that already carries its own level
+    label is rejected rather than rendered. The level label is added here so every note
+    reads the same way, whether it came from the file or from the model.
+    """
+    note = " ".join(str(answer).split()).strip().strip("*_`\"'")
+    if not note or _NO_SCALING.match(note) or len(note) > _MAX_NOTE:
+        return None
+    # A trailing full stop is a sentence's punctuation, not part of a value.
+    note = note.rstrip(".")
+    if re.search(r"\(\s*L\d+\s*\)$", note, re.IGNORECASE):
+        return note
+    return f"{note} (L{level})"
 
 
 def _document_names(documents) -> str:
@@ -170,8 +225,8 @@ class SpellbookService:
     """
 
     def __init__(self, vector_db, character: dict, *, db_version=None,
-                 refresh=False, backend=None, context_dir=None, cache_dir=None,
-                 books=None):
+                 refresh=False, backend=None, fast_backend=None, context_dir=None,
+                 cache_dir=None, books=None):
         self.db = vector_db
         self.character = character or {}
         self.character_text = characters.format_character(self.character)
@@ -181,9 +236,141 @@ class SpellbookService:
         self.context_dir = context_dir or config.CONTEXT_DIR_PATH
         self.cache_dir = cache_dir or config.CACHE_DIR_PATH
         self.llm = backend if backend is not None else llm.build_llm()
+        # A second client for the one-line questions, so a small model can answer them
+        # without the reasoning model's latency. Built lazily: a session that never opens
+        # a spell should not pay for a second client, and `LLM_MODEL_FAST` unset means
+        # this is the main model anyway.
+        #
+        # An *injected* backend is reused rather than built around, because injection means
+        # "use this instead of constructing clients" - a test that passes a fake and then
+        # gets a real network call from the fast path would be testing nothing.
+        self._fast_llm = fast_backend if fast_backend is not None else backend
         self.rule_context = (
             prompts.load_rule_context(self.character, self.context_dir) if self.character else ""
         )
+
+    @property
+    def fast_llm(self):
+        """The small model used for one-line questions, built on first use.
+
+        Falls back to the reasoning model when ``LLM_MODEL_FAST`` is unset, which is what
+        makes the setting optional rather than required.
+        """
+        if self._fast_llm is None:
+            self._fast_llm = llm.build_fast_llm()
+        return self._fast_llm
+
+    # --- conversations ---
+
+    def _thread(self, kind: str, opening: str, thread_id: str | None = None):
+        """The stored thread for a question, or ``None``.
+
+        ``thread_id`` is what a client passes to continue a conversation. It is resolved
+        against the store rather than trusted as a path, so a client cannot name a file
+        outside the cache, and a thread that has since been deleted simply starts fresh.
+        """
+        if not self.character:
+            return None
+        name = characters.character_name(self.character)
+        if thread_id:
+            return conversations.load_by_id(name, thread_id, self.cache_dir)
+        return conversations.load(name, kind, opening, self.cache_dir)
+
+    def _record(self, kind: str, opening: str, answer: Answer, *,
+                thread_id: str | None = None, run_id: str | None = None,
+                context_fingerprint: str | None = None) -> str | None:
+        """Append an answer to its thread and return the thread's id.
+
+        The thread is keyed on the *opening* question, so a follow-up joins the
+        conversation it followed rather than starting a new one. ``opening`` is therefore
+        the thread's first question when there is one, and the current question otherwise.
+
+        The turn carries the sheet fingerprint, so a replay can tell whether the answer
+        still applies. ``context_fingerprint`` does the same for a refinement, which is
+        only valid against the previous answer it refined.
+        """
+        if not self.character:
+            return None
+        name = characters.character_name(self.character)
+        existing = self._thread(kind, opening, thread_id)
+        opening_question = existing.opening if existing else opening
+        turn = conversations.Turn(
+            question=answer.question,
+            answer=answer.answer,
+            source=answer.source,
+            field_name=answer.field_name,
+            citations=list(answer.citations or []),
+            attachments=list(answer.attachments or []),
+            from_cache=answer.from_cache,
+            model=llm.model_name(self.llm),
+            sheet_fingerprint=cache.character_fingerprint(self.character),
+            context_fingerprint=context_fingerprint,
+        )
+        conversation = conversations.append(
+            name, kind, opening_question, turn, run_id=run_id, cache_dir=self.cache_dir,
+        )
+        return conversation.id
+
+    def _replay(self, kind: str, question: str, *, opening: str | None = None,
+                thread_id: str | None = None,
+                context_fingerprint: str | None = None):
+        """The stored turn that already answers this question, when one still applies.
+
+        The rules and selection paths already replay from their own caches; this is the
+        same bargain for the surfaces that have no cache of their own. A character answer
+        is only replayed while the sheet is unchanged, and a refinement only against the
+        same previous answer, so a stale hit cannot outlive the state it described.
+
+        ``opening`` is the thread's key when it differs from the question - a refinement
+        is keyed on the scenario it refines, not on the question asked about it.
+
+        Returns the :class:`conversations.Turn` rather than an ``Answer`` because a
+        refinement needs the stored ``model`` as well as the prose, and rebuilding an
+        ``Answer`` would drop it.
+        """
+        if not self.character:
+            return None
+        thread = self._thread(kind, opening or question, thread_id)
+        return conversations.replay(
+            thread, question,
+            sheet_fingerprint=cache.character_fingerprint(self.character),
+            context_fingerprint=context_fingerprint,
+        )
+
+    @staticmethod
+    def _answer_from_turn(turn, thread_id: str | None = None) -> Answer:
+        """An ``Answer`` rebuilt from a stored turn, marked as a replay."""
+        return Answer(
+            question=turn.question, answer=turn.answer, source=turn.source,
+            field_name=turn.field_name, citations=list(turn.citations or []),
+            from_cache=True, attachments=list(turn.attachments or []),
+            thread_id=thread_id,
+        )
+
+    def conversations(self, *, kind: str | None = None) -> list[conversations.Conversation]:
+        """Every stored conversation for the loaded character, newest first."""
+        if not self.character:
+            return []
+        try:
+            return conversations.list_threads(
+                self.cache_dir, character=characters.character_name(self.character), kind=kind,
+            )
+        except OSError as e:
+            logging.warning(f"Could not read the conversations ({e}).")
+            return []
+
+    def conversation(self, reference: str, *, kind: str | None = None):
+        """One stored conversation by id, path or a fragment of its opening question."""
+        if not self.character:
+            return None
+        try:
+            return conversations.find(
+                reference, self.cache_dir,
+                character=characters.character_name(self.character), kind=kind,
+            )
+        except OSError as e:
+            logging.warning(f"Could not read the conversations ({e}).")
+            return None
 
     # --- keying ---
 
@@ -283,6 +470,13 @@ class SpellbookService:
 
             pool_text = retrieval.format_pool(bucket, slot_level, character=self.character)
             spell_text = retrieval.format_full_text(bucket)
+            # The rules the *situation* turns on, as opposed to the class rules above. A
+            # scenario about being grappled is answered from the Grappled condition, and
+            # without this the model supplies that from memory - which is where a 2014
+            # reading of it comes from.
+            srd_context = retrieval.format_srd_context(
+                retrieval.gather_srd_context(self.db, scenario)
+            )
 
         if not self.rule_context:
             logging.warning(
@@ -300,6 +494,7 @@ class SpellbookService:
                 pool_text=pool_text,
                 spell_text=spell_text,
                 books=self.books,
+                srd_context=srd_context,
             )
             if warning := prompts.prompt_budget_warning(full_prompt):
                 logging.warning(warning)
@@ -324,14 +519,48 @@ class SpellbookService:
         self._persist(generation, bucket, pool_text)
         return generation
 
-    def refine(self, question: str, previous: Generation | None, progress=None) -> Generation:
-        """Answer a follow-up question about a previous answer."""
+    def refine(self, question: str, previous: Generation | None, progress=None, *,
+               thread_id: str | None = None) -> Generation:
+        """Answer a follow-up question about a previous answer.
+
+        The exchange is recorded in a conversation keyed on the scenario, so a follow-up
+        can be asked in context and the whole refinement can be read back later. The
+        thread is keyed on the scenario rather than the question because a refinement is
+        only meaningful beside the books it refines.
+        """
         if previous is None or not previous.answer:
             raise ValueError(
                 "No books have been generated yet. Set a scenario first with /scenario."
             )
         if not question.strip():
             raise ValueError("Please provide a question.")
+
+        opening = previous.scenario or question
+        thread = self._thread("refine", opening, thread_id)
+        history = conversations.history_block(thread.turns) if thread else ""
+
+        # A repeat refinement is only valid against the same previous answer: refining
+        # different books with the same words is a different request. The fingerprint is
+        # the previous answer's text, which is what the model actually read.
+        context = cache.scenario_fingerprint(previous.answer)
+        if (stored := self._replay("refine", question, opening=opening,
+                                   thread_id=thread_id,
+                                   context_fingerprint=context)) is not None:
+            books, preamble, pairings = self._split_books(stored.answer)
+            generation = Generation(
+                scenario=previous.scenario, answer=stored.answer, books=books,
+                preamble=preamble, pairings=pairings, from_cache=True,
+                model=stored.model, pool=previous.pool, run_id=previous.run_id,
+            )
+            # Recorded as a replay, not as the original turn: the thread must show that
+            # this exchange was revisited rather than pretending it was asked afresh.
+            replay = Answer(question=stored.question, answer=stored.answer,
+                            source=stored.source, from_cache=True)
+            generation.thread_id = self._record(
+                "refine", opening, replay, thread_id=thread_id,
+                run_id=previous.run_id, context_fingerprint=context,
+            )
+            return generation
 
         emit = progress or (lambda _message: None)
         emit("Refining the current choices")
@@ -340,6 +569,7 @@ class SpellbookService:
             previous_response=previous.answer,
             scenario=previous.scenario,
             rule_context=self.rule_context,
+            history=history,
             pool_text=retrieval.format_pool(
                 previous.pool,
                 characters.max_spell_level(self.character) if self.character else None,
@@ -348,7 +578,7 @@ class SpellbookService:
         )
         answer = llm.invoke(self.llm, prompt)
         books, preamble, pairings = self._split_books(answer)
-        return Generation(
+        generation = Generation(
             scenario=previous.scenario,
             answer=answer,
             prompt=prompt,
@@ -358,8 +588,25 @@ class SpellbookService:
             model=llm.model_name(self.llm),
             pool=previous.pool,
         )
+        # Recorded as a turn so the refinement can be read back and continued. The answer
+        # is the model's prose, which is what a reader wants to see again; the books are
+        # re-split from it on read, exactly as a fresh generation's are.
+        if self.character:
+            turn = conversations.Turn(
+                question=question, answer=answer, source="model",
+                model=llm.model_name(self.llm),
+                sheet_fingerprint=cache.character_fingerprint(self.character),
+                context_fingerprint=context,
+            )
+            conversation = conversations.append(
+                characters.character_name(self.character), "refine", opening, turn,
+                run_id=previous.run_id, cache_dir=self.cache_dir,
+            )
+            generation.thread_id = conversation.id
+        return generation
 
-    def ask_character(self, question: str, progress=None) -> Answer:
+    def ask_character(self, question: str, progress=None, *,
+                      thread_id: str | None = None) -> Answer:
         """Answer a question about the character sheet: ``/c <question>``.
 
         Two-stage on purpose. A question whose answer is already a field on the sheet
@@ -370,11 +617,28 @@ class SpellbookService:
 
         A duplicate-spell question is resolved by lookup too, since the sheet records
         which field granted each spell and that is the whole answer.
+
+        Every answer is recorded in a conversation, so a follow-up can be asked in context
+        and the exchange can be read back later. ``thread_id`` continues an existing
+        conversation; without it the question opens one, or joins the thread it already
+        opened.
         """
         if not question.strip():
             raise ValueError("Please provide a question about your character.")
         if not self.character:
             raise CharacterNotLoaded("No character is loaded, so there is nothing to ask about.")
+
+        thread = self._thread("character", question, thread_id)
+        history = conversations.history_block(thread.turns) if thread else ""
+
+        # A repeat is served from the thread rather than asked again. The sheet lookup
+        # below is already instant, so this only saves the model call - but that is the
+        # expensive half, and the stored answer is the one the user already read.
+        if (turn := self._replay("character", question, thread_id=thread_id)) is not None:
+            answer = self._answer_from_turn(turn)
+            answer.thread_id = self._record("character", question, answer,
+                                            thread_id=thread_id)
+            return answer
 
         # Duplicate spell: the sheet already names the granting fields.
         duplicate = re.match(
@@ -386,7 +650,7 @@ class SpellbookService:
             name = duplicate.group("spell").strip()
             origins = lookup.spell_origins(self.character, name)
             if len(origins) > 1:
-                return Answer(
+                answer = Answer(
                     question=question,
                     answer=(
                         f"You have {name} from {len(origins)} separate sources: "
@@ -395,11 +659,17 @@ class SpellbookService:
                     source="sheet",
                     field_name=", ".join(origins),
                 )
+                answer.thread_id = self._record("character", question, answer,
+                                                thread_id=thread_id)
+                return answer
 
         found = lookup.answer(question, self.character)
         if found is not None:
-            return Answer(question=question, answer=found["answer"], source="sheet",
-                          field_name=found.get("field"))
+            answer = Answer(question=question, answer=found["answer"], source="sheet",
+                            field_name=found.get("field"))
+            answer.thread_id = self._record("character", question, answer,
+                                            thread_id=thread_id)
+            return answer
 
         emit = progress or (lambda _message: None)
         emit("Reading the character sheet")
@@ -407,11 +677,15 @@ class SpellbookService:
             question=question,
             character_text=self.character_text,
             rule_context=self.rule_context,
+            history=history,
         )
-        return Answer(question=question, answer=llm.invoke(self.llm, prompt),
-                      source="model")
+        answer = Answer(question=question, answer=llm.invoke(self.llm, prompt),
+                        source="model")
+        answer.thread_id = self._record("character", question, answer, thread_id=thread_id)
+        return answer
 
-    def ask_rules(self, question: str, progress=None) -> Answer:
+    def ask_rules(self, question: str, progress=None, *,
+                  thread_id: str | None = None) -> Answer:
         """Answer a rules question from the 2024 SRD: ``/? <question>``.
 
         Grounded in fetched text rather than model recall, because a rules answer is
@@ -423,9 +697,25 @@ class SpellbookService:
         related text and labelled ``rules-inferred``. That label is the point: an answer
         assembled from surrounding prose is not a quotation, and letting it wear the
         ``rules`` badge would present an interpretation as a sourced rule.
+
+        Three retrieval paths, tried in order, and the last one is the only one that is not
+        heading-anchored: ``rules.gather`` (a heading names the question), then
+        ``rules.gather_inferred`` (a heading names it generically), then
+        ``rules.gather_from_index`` (a similarity search over the indexed rulebook). The
+        first two are the precise paths and are deliberately left strict; the third exists
+        because a question phrased in words the SRD does not use in a heading is otherwise
+        refused even when the SRD discusses it at length.
+
+        Every answer is recorded in a conversation, so a follow-up can be asked in context
+        and the exchange can be read back later. ``thread_id`` continues an existing
+        conversation; without it the question opens one, or joins the thread it already
+        opened.
         """
         if not question.strip():
             raise ValueError("Please provide a rules question.")
+
+        thread = self._thread("rules", question, thread_id)
+        history = conversations.history_block(thread.turns) if thread else ""
 
         emit = progress or (lambda _message: None)
         emit("Consulting the 2024 SRD")
@@ -435,29 +725,109 @@ class SpellbookService:
         except rules.RulesUnavailable:
             # No heading names the question. Fall back to the best related text, which
             # raises in turn when the SRD does not discuss the subject at all.
-            retrieved = rules.gather_inferred(question, cache_dir=self.cache_dir)
-            source = "rules-inferred"
+            try:
+                retrieved = rules.gather_inferred(question, cache_dir=self.cache_dir)
+                source = "rules-inferred"
+            except rules.RulesUnavailable:
+                # Neither anchored path found a heading. The indexed rulebook is the last
+                # resort: an embedding can find the section a question is *about* when the
+                # question shares no distinctive word with its heading, which is exactly the
+                # case the anchor refuses. Still labelled ``rules-inferred``, because a
+                # similarity hit is not a quotation.
+                retrieved = rules.gather_from_index(self.db, question)
+                source = "rules-inferred"
 
         if retrieved["from_cache"] and (cached := rules.load_cached(question, self.cache_dir)):
-            return Answer(question=question, answer=cached["answer"],
-                          source=cached.get("answer_source") or source,
-                          citations=[cached["url"]], from_cache=True)
+            answer = Answer(question=question, answer=cached["answer"],
+                            source=cached.get("answer_source") or source,
+                            # The re-anchored url from `gather`, not the stored one: an entry
+                            # written before citations carried anchors holds the bare file,
+                            # and the UI turns that path into a link - so a cached answer
+                            # would open the rulebook at the top while a fresh one opened the
+                            # rule.
+                            citations=[retrieved["url"]], from_cache=True)
+            answer.thread_id = self._record("rules", question, answer, thread_id=thread_id)
+            return answer
 
         emit("Reading the rules")
         build = (prompts.rules_prompt if source == "rules"
                  else prompts.rules_inferred_prompt)
         prompt = build(
             question=question, rule_text=retrieved["text"], rule_context=self.rule_context,
+            history=history,
         )
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(question, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
                           cache_dir=self.cache_dir)
-        return Answer(question=question, answer=answer, source=source,
-                      citations=[retrieved["url"]])
+        result = Answer(question=question, answer=answer, source=source,
+                        citations=[retrieved["url"]])
+        result.thread_id = self._record("rules", question, result, thread_id=thread_id)
+        return result
+
+    def spell_scaling(self, spell: dict, progress=None) -> str | None:
+        """What ``spell`` does at this character's level, or ``None`` if nothing applies.
+
+        The note is the spell's own rule applied to the loaded sheet: "2 beams (L5)" for a
+        level 5 Warlock's Eldritch Blast. It is read out of the spell's text
+        deterministically, because the value is already written there and a model asked to
+        restate it could restate it wrongly.
+
+        The fast model is the fallback, and only for a spell whose text *does* state a
+        level-based change but whose scaling sentence the reader could not parse - a cantrip
+        that scales in prose rather than in a table. It is a small model on purpose: the
+        question is one line and the answer is a phrase, so waiting for the reasoning model
+        would cost more than the note is worth. A failure here is not an error - the note is
+        an addition to the card, and a card without it is still correct.
+
+        Only the model's answer is cached, keyed on the character's name and level. The
+        deterministic read is deliberately left uncached: it costs nothing, and a stored
+        copy of it would go on being served after the corpus changed underneath it.
+        """
+        level = characters.character_level(self.character)
+        if level is None:
+            return None
+
+        text = spell.get("text", "")
+        note = spellstats.scaling(text, level)
+        if note is not None:
+            return note
+        if not spellstats.scaling_needs_reading(text, level):
+            return None
+
+        name = spell.get("name", "")
+        character = characters.character_name(self.character)
+        cached = cache.load_scaling(character=character, level=level, spell=name,
+                                    cache_dir=self.cache_dir)
+        if cached is not None:
+            # A stored ``None`` is a real answer - "this spell does not scale" - and it cost
+            # a model call to obtain, so it is returned rather than asked for again.
+            return cached["note"]
+
+        emit = progress or (lambda _message: None)
+        emit(f"Reading {name or 'the spell'} at level {level}")
+        try:
+            answer = llm.invoke(
+                self.fast_llm,
+                prompts.scaling_prompt(
+                    name=name, text=text, level=level,
+                    character_text=self.character_text,
+                ),
+            )
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            # Not cached: a failure is not an answer, and storing it would make one bad
+            # call permanent for this character and level.
+            logging.warning(f"Could not contextualise {name!r} ({e}).")
+            return None
+        note = _clean_scaling(answer, level)
+        cache.save_scaling(character=character, level=level, spell=name, note=note,
+                           model=config.select_fast_model()[1], source="model",
+                           cache_dir=self.cache_dir)
+        return note
 
     def ask_rules_contextual(self, selected_text: str, context: str = "",
-                             attachments=None, progress=None) -> Answer:
+                             attachments=None, progress=None, *,
+                             thread_id: str | None = None) -> Answer:
         """Explain a phrase selected out of a book's prose, grounded in the 2024 SRD.
 
         A selection is a fragment, not a question, so the answer is assembled rather than
@@ -501,16 +871,22 @@ class SpellbookService:
         documents = rules.resolve_attachments(attachments) if attachments \
             else rules.mentioned_documents(selected_text)
 
+        thread = self._thread("selection", selected_text, thread_id)
+        history = conversations.history_block(thread.turns) if thread else ""
+
         emit = progress or (lambda _message: None)
 
         # Read before retrieving: the answer is a pure function of the selection, and every
         # retrieval path below costs a pass over the whole SRD.
         cached = rules.load_cached(selected_text, self.cache_dir)
         if cached is not None:
-            return Answer(question=selected_text, answer=cached["answer"],
-                          source=cached.get("answer_source", "rules"),
-                          citations=[cached["url"]], from_cache=True,
-                          attachments=list(cached.get("attachments") or []))
+            answer = Answer(question=selected_text, answer=cached["answer"],
+                            source=cached.get("answer_source", "rules"),
+                            citations=[cached["url"]], from_cache=True,
+                            attachments=list(cached.get("attachments") or []))
+            answer.thread_id = self._record("selection", selected_text, answer,
+                                            thread_id=thread_id)
+            return answer
 
         if documents:
             emit(f"Attached {_document_names(documents)}")
@@ -552,16 +928,19 @@ class SpellbookService:
         prompt = build(
             question=selected_text, rule_text=retrieved["text"],
             rule_context=self.rule_context, selection_context=context,
-            attachments=documents,
+            attachments=documents, history=history,
         )
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(selected_text, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
                           cache_dir=self.cache_dir,
                           attachments=[document["name"] for document in documents])
-        return Answer(question=selected_text, answer=answer, source=source,
-                      citations=[retrieved["url"]],
-                      attachments=[document["name"] for document in documents])
+        result = Answer(question=selected_text, answer=answer, source=source,
+                        citations=[retrieved["url"]],
+                        attachments=[document["name"] for document in documents])
+        result.thread_id = self._record("selection", selected_text, result,
+                                        thread_id=thread_id)
+        return result
 
     def history(self) -> list[dict]:
         try:

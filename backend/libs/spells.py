@@ -47,6 +47,18 @@ BOOK_RITUAL_MAX_LEVEL = 1
 # A magic item page in the corpus is not a spell. The corpus mixes them in.
 _MAGIC_ITEM_MARKER = "/magic-items/"
 
+# The index's document-type vocabulary. One Chroma collection holds three kinds of text and
+# every filter has to be able to name which it wants, because they are not interchangeable:
+# a spell is a legal pick, a magic item is not a spell at all, and an SRD section is the
+# rulebook. Before this existed the only marker was ``is_spell``, which cannot distinguish
+# "not a spell" from "not a spell *and* not a pick" - so rulebook text would have been
+# admitted by every filter that asked for "not a spell".
+DOC_TYPE_SPELL = "spell"
+DOC_TYPE_ITEM = "item"
+DOC_TYPE_SRD = "srd"
+
+DOC_TYPES = (DOC_TYPE_SPELL, DOC_TYPE_ITEM, DOC_TYPE_SRD)
+
 _CASTING_TIME = re.compile(r"\*\*Casting Time:\*\*")
 _CASTING_TIME_VALUE = re.compile(r"\*\*Casting Time:\*\*\s*([^\n]*)", re.IGNORECASE)
 _LEVEL = re.compile(r"#?(?:Level\s*(\d+)|(Cantrip))\b")
@@ -295,6 +307,12 @@ def build_metadata(spell: Spell, source_path: str) -> dict:
     comparisons (``$lte``) on numeric metadata. The index is shared by every
     character, so nothing character-specific is baked in here - whether a spell is
     *castable* depends on the character's slot level and is filtered at query time.
+
+    ``doc_type`` is the coarse kind of text this row is, and it is what every eligibility
+    filter keys on. ``is_spell`` is kept because it is the older, narrower marker and the
+    two disagree in a useful way: a magic item is ``doc_type='item'`` and ``is_spell=False``,
+    while an SRD section is ``doc_type='srd'`` and also ``is_spell=False``. A filter that
+    asked only for ``is_spell=False`` would therefore hand the recommender the rulebook.
     """
     return {
         "source": source_path,
@@ -305,8 +323,53 @@ def build_metadata(spell: Spell, source_path: str) -> dict:
         "classes": ", ".join(sorted(spell.classes)),
         "ritual": spell.is_ritual,
         "is_spell": spell.is_spell,
+        "doc_type": DOC_TYPE_SPELL if spell.is_spell else DOC_TYPE_ITEM,
         "tags": ", ".join(sorted(spell.classes)) or "None",
     }
+
+
+def build_srd_metadata(*, document: str, title: str, heading: str, slug: str,
+                       path: str, level: int = 0) -> dict:
+    """Build the Chroma metadata payload for one SRD section.
+
+    The SRD rows share the collection with the spells, so they carry the same keys the
+    filters already read - ``spell_name``, ``filename``, ``level``, ``school``, ``classes``,
+    ``ritual`` - filled with values that mean "not applicable" rather than omitted. Chroma
+    cannot filter on a missing key, so a row without ``level`` would be invisible to a
+    ``$lte`` clause and would silently vanish from a search that should have excluded it.
+
+    ``spell_name`` holds the *heading*, because that is the name a reader would search for
+    and the name the UI shows. ``filename`` holds the document stem, so a hit can be turned
+    back into a ``/rules?doc=...&section=...`` link - which is what makes an SRD search hit
+    openable rather than a dead end.
+
+    ``level`` is 0 rather than -1: -1 is the index's marker for a magic item, and a rule is
+    not an item. 0 is the same value a cantrip carries, which is harmless because
+    ``doc_type`` is what separates them and no spell filter omits it. The heading's own
+    depth is kept separately as ``heading_level``, because "level" in this index means spell
+    level everywhere else and overloading it would make a level filter mean two things.
+    """
+    return {
+        "source": path,
+        "filename": document,
+        "spell_name": heading,
+        "level": 0,
+        "heading_level": level,
+        "school": "",
+        "classes": "",
+        "ritual": False,
+        "is_spell": False,
+        "doc_type": DOC_TYPE_SRD,
+        "document": document,
+        "document_title": title,
+        "slug": slug,
+        "tags": "None",
+    }
+
+
+def doc_type_filter(doc_type: str) -> dict:
+    """A clause selecting one kind of indexed text."""
+    return {"doc_type": doc_type}
 
 
 def build_where(*clauses):
@@ -335,7 +398,7 @@ def _not_known(clause_key: str, exclude_names) -> dict | None:
 def book_cantrip_filter(*, exclude_names=()) -> dict | None:
     """Cantrips eligible for the Book of Shadows."""
     return build_where(
-        {"is_spell": True},
+        doc_type_filter(DOC_TYPE_SPELL),
         {"level": 0},
         _not_known("spell_name", exclude_names),
     )
@@ -344,7 +407,7 @@ def book_cantrip_filter(*, exclude_names=()) -> dict | None:
 def book_ritual_filter(*, exclude_names=()) -> dict | None:
     """Level 1 ritual spells eligible for the Book of Shadows."""
     return build_where(
-        {"is_spell": True},
+        doc_type_filter(DOC_TYPE_SPELL),
         {"level": BOOK_RITUAL_MAX_LEVEL},
         {"ritual": True},
         _not_known("spell_name", exclude_names),

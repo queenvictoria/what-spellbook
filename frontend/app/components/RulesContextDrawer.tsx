@@ -13,6 +13,7 @@ import { Input } from "@/components/ui/input"
 import { AttachmentChips } from "@/components/AttachmentChips"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
+import { SrdPathLink } from "@/components/SrdPathLink"
 import { StageProgress } from "@/components/StageProgress"
 import { api } from "@/api/client"
 import type { Answer } from "@/api/types"
@@ -45,6 +46,9 @@ export function RulesContextDrawerProvider({
   const [elapsed, setElapsed] = useState(0)
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // The selection conversation. Held so a follow-up is read in context, and so the
+  // exchange can be found again on the Chats screen.
+  const [threadId, setThreadId] = useState<string | null>(null)
   const started = useRef(0)
   // The text the current attachments were derived from. Without it, editing the question and
   // asking again reuses the previous answer's documents - which no longer match the words on
@@ -96,7 +100,14 @@ export function RulesContextDrawerProvider({
       setError(null)
       setAnswer(null)
       try {
-        setAnswer(await api.rulesContextual(question, context, derived))
+        const result = await api.rulesContextual(
+          question,
+          context,
+          derived,
+          threadId ?? undefined,
+        )
+        setAnswer(result)
+        setThreadId(result.thread_id)
       } catch (err) {
         setError(
           err instanceof Error
@@ -108,7 +119,7 @@ export function RulesContextDrawerProvider({
         setStage(CONTEXT_STAGES.length)
       }
     },
-    [attachments, mentionsIn],
+    [attachments, mentionsIn, threadId],
   )
 
   const remove = useCallback((name: string) => {
@@ -250,12 +261,16 @@ function RulesContextDrawer({
                 </div>
               )}
               {answer.citations.length > 0 && (
-                <p className="text-xs text-parchment/60">
-                  {answer.from_cache ? "Cached · " : ""}
+                <div className="space-y-1 border-t border-void-800 pt-2">
+                  {answer.from_cache && (
+                    <p className="text-xs text-parchment/60">Cached</p>
+                  )}
                   {answer.citations.map((citation) => (
-                    <span key={citation}>{citation}</span>
+                    <p key={citation} className="truncate">
+                      <SrdPathLink path={citation} />
+                    </p>
                   ))}
-                </p>
+                </div>
               )}
             </div>
           )}

@@ -2,6 +2,11 @@
   "python.terminal.useEnvFile": true,
   "chat.tools.terminal.autoApprove": {
     "uniq": true,
-    ".venv/bin/python": true
+    ".venv/bin/python": true,
+    "timeout": true,
+    "/^python - <<'PY'\nimport re, pathlib\np = pathlib\\.Path\\(\"backend/libs/cache\\.py\"\\)\ns = p\\.read_text\\(\\)\ns = s\\.replace\\(\"def _slug\\(text: str, \\*, max_length: int = 60\\) -> str:\", \"def slug\\(text: str, \\*, max_length: int = 60\\) -> str:\"\\)\ns = s\\.replace\\(\"_slug\\(\", \"slug\\(\"\\)\np\\.write_text\\(s\\)\nprint\\(s\\.count\\(\"slug\\(\"\\)\\)\nPY\ngrep -n \"slug\" backend/libs/cache\\.py \\| head -20$/": {
+      "approve": true,
+      "matchCommandLine": true
+    }
   }
 }

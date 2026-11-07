@@ -29,7 +29,11 @@ DB_DIR = "./data/chroma_db"
 
 # Bump when the shape or meaning of the stored metadata changes, so a stale index is
 # rebuilt instead of silently answering filters with old fields.
-INDEX_VERSION = 3
+#
+# 4 added ``doc_type`` and the vendored SRD rows. Both are required: the eligibility
+# filters now key on ``doc_type``, so an index written at 3 has no such field and every
+# filter would silently match nothing - the exact failure the version guard exists for.
+INDEX_VERSION = 4
 
 # How many candidate spells to hand the model, and how many get full text. k is per
 # filtered query lane; dedupe collapses the many chunks each spell is split into.
@@ -199,6 +203,41 @@ def select_model(env=None) -> tuple[str, str]:
             return "ollama", requested
 
     return ("openrouter", OPENROUTER_MODEL) if api_key else ("ollama", fallback_model)
+
+
+def select_fast_model(env=None) -> tuple[str, str]:
+    """Return ``(backend, model)`` for the small, fast model.
+
+    ``LLM_MODEL_FAST`` is a second, independent setting rather than a modifier on
+    ``LLM_MODEL``, because the two do different jobs: the main model writes a whole
+    recommendation and is worth waiting for, while the fast one answers a one-line
+    question about a spell and is not. Pointing it at a smaller model is the point.
+
+    Unset means "no separate fast model", and the main model is used instead - so the
+    setting is optional and a project without it behaves exactly as before. Routing is
+    the same name-based inference ``select_model`` uses, and for the same reason.
+    """
+    import os
+
+    env = os.environ if env is None else env
+
+    requested = _clean(env.get("LLM_MODEL_FAST"))
+    if not requested:
+        return select_model(env)
+
+    api_key = _clean(env.get("OPENROUTER_API_KEY"))
+    fallback_model = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
+
+    if "/" in requested:
+        if api_key:
+            return "openrouter", requested
+        logging.warning(
+            f"LLM_MODEL_FAST='{requested}' looks like an OpenRouter model but "
+            f"OPENROUTER_API_KEY is not set; using Ollama '{fallback_model}'."
+        )
+        return "ollama", fallback_model
+
+    return "ollama", requested
 
 
 def resolve(path) -> Path:

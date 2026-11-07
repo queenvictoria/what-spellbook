@@ -486,3 +486,40 @@ def test_all_three_blocks_can_coexist_in_order():
     assert text.index("ATTACHED DOCUMENTS") < text.index("SHEET")
     assert text.index("SHEET") < text.index("PARAGRAPH")
     assert text.index("PARAGRAPH") < text.index("=== QUESTION ===")
+
+
+# --- the scenario's own SRD text ---
+
+
+def test_full_prompt_includes_the_scenario_srd_text():
+    prompt = _full(srd_context="[rules-glossary > Cover]\nHalf Cover gives +2 AC.")
+    assert "=== 2024 SRD TEXT FOR THIS SCENARIO ===" in prompt
+    assert "Half Cover gives +2 AC." in prompt
+
+
+def test_full_prompt_omits_the_srd_block_when_there_is_none():
+    """A heading with nothing under it reads as "the rules are missing".
+
+    That invites the model to fill the gap from memory, which is the opposite of what the
+    block is for - so an empty block is left out entirely rather than rendered empty. The
+    system prompt still *names* the section, which is why the assertion is on the heading
+    line rather than on the phrase.
+    """
+    assert "=== 2024 SRD TEXT FOR THIS SCENARIO ===" not in _full(srd_context="")
+
+
+def test_the_srd_block_sits_beside_the_class_context_not_inside_it():
+    """The two are different kinds of document and must not read as one.
+
+    The class context describes the character; the SRD block describes the situation. A
+    model told they are the same thing cites the wrong one.
+    """
+    prompt = _full(srd_context="[rules-glossary > Cover]\nHalf Cover gives +2 AC.")
+    block = prompt.index("=== 2024 SRD TEXT FOR THIS SCENARIO ===")
+    assert prompt.index("RULES HERE") < block
+    assert block < prompt.index("Name: Lois")
+
+
+def test_the_system_prompt_says_the_srd_block_is_the_authority():
+    """Without this the block is just more context, and the model may contradict it."""
+    assert "authority" in prompts.system_prompt()

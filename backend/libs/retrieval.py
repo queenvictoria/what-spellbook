@@ -261,3 +261,75 @@ def format_full_text(bucket: dict, limit: int = config.FULL_TEXT_SPELLS) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
+# How many SRD sections the recommender is given. Small, because this is *grounding* rather
+# than retrieval: the pool already decides what is legal, and the rules block exists so the
+# model does not invent a rule it half-remembers. Four sections is enough for the rules a
+# scenario turns on (a condition, an action, a rest) without crowding out the spell text.
+SRD_CONTEXT_SECTIONS = 4
+
+
+def gather_srd_context(db, query: str, *, limit: int = SRD_CONTEXT_SECTIONS) -> list[dict]:
+    """SRD sections bearing on the scenario, for the recommender's prompt.
+
+    The recommender's rules grounding used to be the character's class context files alone,
+    which describe the class but not the situation. A scenario that turns on being grappled,
+    or on a short rest, or on cover, was answered from the model's memory of those rules -
+    and a 2014 memory of them is exactly the failure this project is built to avoid.
+
+    Deliberately *not* the heading-anchored matcher. That matcher answers a question, and a
+    scenario is not a question: it is a paragraph of prose with no single subject, so
+    requiring a heading to name it would return nothing. A similarity search over the
+    indexed rulebook is the right shape here - it ranks sections by how much they read like
+    the scenario - and the result is labelled as retrieved context rather than as a quoted
+    rule, so the model is told what it is.
+
+    Returns ``[]`` rather than raising when the index holds no SRD rows, because a
+    recommendation must still be produced without rules grounding - it is a degradation, not
+    a failure.
+    """
+    from . import search as search_module
+
+    if not query.strip():
+        return []
+    try:
+        result = search_module.search(
+            db, query, mode="vector", limit=limit, doc_type=spells.DOC_TYPE_SRD,
+        )
+    except Exception as e:
+        logging.warning(f"Could not retrieve SRD context for the scenario ({e}).")
+        return []
+
+    sections: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for hit in result.hits:
+        key = (hit.document or "", hit.slug or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        sections.append({
+            "name": hit.name,
+            "document": hit.document,
+            "slug": hit.slug,
+            "text": hit.text,
+        })
+    return sections
+
+
+def format_srd_context(sections) -> str:
+    """Render retrieved SRD sections as a prompt block.
+
+    Each section is labelled with the file and heading it came from, because the model is
+    told to cite the rule it used and a bare paragraph gives it nothing to cite. The
+    heading is also what makes the block checkable by a reader: "Cover" is a rule someone
+    can look up, and a paragraph about cover is not.
+    """
+    sections = list(sections or ())
+    if not sections:
+        return ""
+    blocks = []
+    for section in sections:
+        where = section.get("document") or "srd"
+        blocks.append(f"[{where} > {section['name']}]\n{section['text'].strip()}")
+    return "\n\n---\n\n".join(blocks)
+
+

@@ -246,3 +246,168 @@ def test_retrieve_falls_back_to_retriever(fake_db):
     docs = retrieval.retrieve(fake_db, "query", {"level": 3}, k=5)
     assert docs == fake_db.docs
     assert fake_db.as_retriever_calls[-1]["filter"] == {"level": 3}
+
+
+# --- the SRD as indexed text ---
+
+
+def test_srd_documents_are_one_row_per_section():
+    """The rulebook is indexed by heading, because a rule's identity is its heading."""
+    docs = indexing._srd_documents()
+    assert docs
+    assert all(doc.metadata["doc_type"] == "srd" for doc in docs)
+    assert all(doc.metadata["is_spell"] is False for doc in docs)
+
+
+def test_srd_rows_carry_the_keys_the_spell_filters_read():
+    """Chroma cannot filter on a missing key, so an SRD row must carry every field.
+
+    A row without ``level`` would be invisible to a ``$lte`` clause and would silently
+    vanish from a search that should have excluded it.
+    """
+    doc = indexing._srd_documents()[0]
+    for key in ("source", "filename", "spell_name", "level", "school", "classes",
+                "ritual", "is_spell", "doc_type", "document", "slug"):
+        assert key in doc.metadata, key
+
+
+def test_srd_rows_are_not_reported_as_cantrips():
+    """``level`` is 0 as a placeholder, and the heading's own depth is kept separately.
+
+    Overloading ``level`` would make a spell-level filter mean two different things.
+    """
+    doc = indexing._srd_documents()[0]
+    assert doc.metadata["level"] == 0
+    assert doc.metadata["heading_level"] > 1
+
+
+def test_a_long_chapter_is_split_into_several_chunks():
+    """A 1,750-line class chapter as one embedding would match everything weakly."""
+    docs = indexing._srd_documents()
+    wizard = [doc for doc in docs if doc.metadata["spell_name"] == "Wizard"]
+    assert len(wizard) > 1
+    assert all(len(doc.page_content) <= indexing.SRD_CHUNK_SIZE + 200 for doc in wizard)
+
+
+def test_a_chunk_repeats_its_heading_so_it_can_be_read_alone():
+    """A chunk split away from its heading still has to say what it is about."""
+    doc = indexing._srd_documents()[0]
+    assert doc.metadata["spell_name"] in doc.page_content
+    assert doc.metadata["document_title"] in doc.page_content
+
+
+def test_a_missing_srd_directory_is_not_an_error(tmp_path):
+    """The spell corpus is the index's reason to exist; a checkout without the vendored
+    rules should still build a usable index rather than refuse."""
+    assert indexing._srd_documents(tmp_path / "absent") == []
+
+
+def test_the_srd_is_not_in_the_book_pool(fake_db):
+    """The invariant the doc-type marker exists for.
+
+    An SRD row is ``is_spell=False``, exactly like a magic item, so a filter that asked only
+    for "not a spell" would hand the recommender the rulebook.
+    """
+    cantrips = retrieval.exhaustive_lane(fake_db, spells.book_cantrip_filter())
+    rituals = retrieval.exhaustive_lane(fake_db, spells.book_ritual_filter())
+    names = {spell.name for spell in cantrips + rituals}
+    assert "Cover" not in names
+    assert "Armblade" not in names
+
+
+# --- the SRD context lane for the recommender ---
+
+
+class _SrdIndex:
+    """A store whose similarity search returns SRD rows, for the context lane."""
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.filters = []
+
+    def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
+        self.filters.append(filter)
+        return [(FakeDoc(**row), 0.1 * index) for index, row in enumerate(self.rows[:k])]
+
+    def get(self, where=None, include=None, **kwargs):
+        return {"metadatas": self.rows, "ids": [r["filename"] for r in self.rows]}
+
+
+def _rule_row(name, document, slug, text):
+    return {"spell_name": name, "filename": document, "doc_type": "srd",
+            "document": document, "slug": slug, "level": 0, "is_spell": False,
+            "_text": text}
+
+
+def test_the_srd_context_lane_asks_only_for_rules():
+    """The recommender's pool is filtered separately; this lane is grounding, not picks."""
+    db = _SrdIndex([_rule_row("Grappled", "rules-glossary", "grappled-condition", "text")])
+    retrieval.gather_srd_context(db, "we are grappled")
+    assert db.filters == [{"doc_type": "srd"}]
+
+
+def test_the_srd_context_lane_dedupes_sections():
+    db = _SrdIndex([
+        _rule_row("Grappled", "rules-glossary", "grappled-condition", "a"),
+        _rule_row("Grappled", "rules-glossary", "grappled-condition", "b"),
+    ])
+    assert len(retrieval.gather_srd_context(db, "grappled")) == 1
+
+
+def test_the_srd_context_lane_returns_nothing_for_an_empty_scenario():
+    """No scenario means nothing to ground, and an embedding call would be wasted."""
+    db = _SrdIndex([_rule_row("Cover", "rules-glossary", "cover", "text")])
+    assert retrieval.gather_srd_context(db, "   ") == []
+    assert db.filters == []
+
+
+def test_the_srd_context_lane_degrades_rather_than_raising():
+    """A recommendation must still be produced without rules grounding.
+
+    It is a degradation, not a failure - so a store that cannot answer must not take the
+    whole run down with it.
+    """
+    class Broken:
+        def similarity_search_with_score(self, *args, **kwargs):
+            raise RuntimeError("index unavailable")
+
+    assert retrieval.gather_srd_context(Broken(), "we are grappled") == []
+
+
+def test_the_srd_context_block_labels_each_section_with_its_source():
+    """The model is told to cite the rule it used, so a bare paragraph gives it nothing."""
+    rendered = retrieval.format_srd_context([
+        {"name": "Cover", "document": "rules-glossary", "slug": "cover", "text": "Half Cover"},
+    ])
+    assert "rules-glossary > Cover" in rendered
+    assert "Half Cover" in rendered
+
+
+def test_an_empty_srd_context_renders_as_nothing():
+    """A heading with nothing under it reads as "the rules are missing"."""
+    assert retrieval.format_srd_context([]) == ""
+    assert retrieval.format_srd_context(None) == ""
+
+
+def test_building_over_a_live_index_does_not_double_it(tmp_path, monkeypatch):
+    """``Chroma.from_documents`` *adds* to an existing collection rather than replacing it.
+
+    ``ensure_db`` resets first, but a direct ``build_index`` call does not - and a doubled
+    index is invisible until a count looks wrong. This was found live: calling
+    ``build_index`` twice reported 7302 chunks for a 3651-chunk corpus.
+    """
+    reset = []
+    monkeypatch.setattr(indexing, "reset_db", lambda db_dir: reset.append(db_dir))
+    monkeypatch.setattr(indexing, "get_embeddings", lambda: None)
+    monkeypatch.setattr(indexing.Chroma, "from_documents",
+                        classmethod(lambda cls, *a, **k: "db"))
+
+    docs = tmp_path / "spells"
+    docs.mkdir()
+    for index in range(11):
+        (docs / f"Spell {index}.md").write_text(
+            f"# Spell {index}\n\n**Casting Time:** Action\n", encoding="utf-8"
+        )
+
+    indexing.build_index(docs, str(tmp_path / "db"), srd_path=tmp_path / "no-srd")
+    assert reset == [str(tmp_path / "db")]

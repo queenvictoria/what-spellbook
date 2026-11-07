@@ -462,7 +462,7 @@ def test_a_rule_the_srd_does_not_contain_is_refused(question):
 def test_a_class_rule_is_answered_from_the_class_chapter(question, heading):
     """Vendoring classes.md must widen what can be answered, not just add invocations."""
     result = rules.gather(question)
-    assert result["url"] == "context/srd/classes.md"
+    assert result["url"].split("#")[0] == "context/srd/classes.md"
     assert heading.lower() in result["passages"][0].splitlines()[0].lower()
 
 
@@ -567,7 +567,30 @@ def test_the_citation_is_a_repo_relative_file():
     """A URL would look clickable and lead nowhere: the source is a local file now."""
     citation = rules.gather("what is a short rest")["url"]
     assert citation.startswith("context/srd/")
-    assert citation.endswith(".md")
+    assert citation.split("#")[0].endswith(".md")
+
+
+def test_the_citation_is_anchored_to_the_section_that_answered():
+    """The path is what the UI prints and what the drawer opens.
+
+    A bare file is a poor link: `playing-the-game.md` is 65KB and `classes.md` 296KB, so
+    opening one at the top leaves the reader to find the rule themselves. The anchor is
+    derived from the vendored text rather than stored, so it cannot go stale against a
+    heading that was renamed.
+    """
+    citation = rules.gather("what is a short rest")["url"]
+    assert citation == "context/srd/rules-glossary.md#short-rest"
+
+
+def test_a_citation_falls_back_to_the_file_when_the_heading_has_no_anchor():
+    """A promoted run-in label ("Ending a Grapple") is not a heading in the file.
+
+    It has no anchor, and the file is the honest answer for it - better than a link to a
+    section that does not exist.
+    """
+    citation = rules.gather("how does grappling work")["url"]
+    assert citation.startswith("context/srd/")
+    assert "#" not in citation or citation.split("#")[1]
 
 
 def test_the_best_match_wins_over_the_longest_passage():
@@ -817,7 +840,9 @@ def test_a_spell_returns_its_own_text_verbatim():
     assert spell is not None
     assert spell["name"] == "Fireball"
     assert "8d6 Fire damage" in spell["text"]
-    assert spell["url"] == "context/srd/spells.md"
+    # Anchored to the spell's own heading: `spells.md` is 325KB of 352 descriptions, so a
+    # link to the file alone would open the book at the top.
+    assert spell["url"] == "context/srd/spells.md#fireball"
     assert spell["source"] == rules.RULES_SOURCE
 
 
@@ -897,7 +922,8 @@ def test_an_invocation_is_quoted_from_the_srd():
     invocation = rules.find_invocation("Agonizing Blast")
     assert invocation is not None
     assert invocation["source"] == rules.RULES_SOURCE
-    assert invocation["url"] == "context/srd/classes.md"
+    # Anchored, because `classes.md` is 11,000 lines of class features.
+    assert invocation["url"] == "context/srd/classes.md#agonizing-blast"
     assert invocation["name"] == "Agonizing Blast"
 
 
@@ -1337,3 +1363,103 @@ def test_attachments_are_capped():
     arrive with six behind it."""
     selection = "Eldritch Blast, Ray of Frost, Thorn Whip, Mending, Light, Detect Magic"
     assert len(rules.mentioned_documents(selection)) <= rules._ATTACHMENT_LIMIT
+
+
+# --- the vector lane over the indexed rulebook ---------------------------------
+
+
+class _IndexDB:
+    """A store whose similarity search returns canned SRD hits.
+
+    The lane's job is to turn *chunks* back into *sections*, so the fake returns several
+    chunks of the same section - which is what the real index does, and what a fake with one
+    row per section would not exercise.
+    """
+
+    def __init__(self, rows):
+        self.rows = rows
+        self.filters = []
+
+    def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
+        self.filters.append(filter)
+        return [(FakeDoc(**row), 0.1 * index) for index, row in enumerate(self.rows[:k])]
+
+    def get(self, where=None, include=None, **kwargs):
+        rows = [row for row in self.rows if _matches(row, where)]
+        return {"metadatas": rows, "ids": [row["filename"] for row in rows]}
+
+
+def _matches(row, where):
+    if not where:
+        return True
+    for key, expected in where.items():
+        if key == "$and":
+            if not all(_matches(row, c) for c in expected):
+                return False
+        elif isinstance(expected, dict):
+            continue
+        elif row.get(key) != expected:
+            return False
+    return True
+
+
+class FakeDoc:
+    def __init__(self, **metadata):
+        self.metadata = metadata
+        self.page_content = metadata.pop("_text", "chunk text")
+
+
+def _srd_row(name, document, slug, text="chunk text"):
+    return {"spell_name": name, "filename": document, "doc_type": "srd",
+            "document": document, "slug": slug, "level": 0, "is_spell": False,
+            "_text": text}
+
+
+def test_the_vector_lane_asks_only_for_srd_rows():
+    """A rule is not a spell, so the lane must not be handed the spell corpus."""
+    db = _IndexDB([_srd_row("Cover", "rules-glossary", "cover")])
+    rules.gather_from_index(db, "how much cover do I get")
+    assert db.filters == [{"doc_type": "srd"}]
+
+
+def test_the_vector_lane_returns_the_whole_section_not_the_chunk():
+    """A chunk is a 1200-character window that can begin mid-table; the section is the rule."""
+    db = _IndexDB([_srd_row("Cover", "rules-glossary", "cover")])
+    found = rules.gather_from_index(db, "how much cover do I get")
+    assert "+2" in found["text"]
+    assert "Half Cover" in found["text"]
+
+
+def test_the_vector_lane_collapses_chunks_of_one_section():
+    """Several chunks of one section are one passage, not three."""
+    db = _IndexDB([
+        _srd_row("Cover", "rules-glossary", "cover"),
+        _srd_row("Cover", "rules-glossary", "cover"),
+        _srd_row("Cover", "rules-glossary", "cover"),
+    ])
+    found = rules.gather_from_index(db, "cover")
+    assert len(found["passages"]) == 1
+
+
+def test_the_vector_lane_links_to_the_section_it_found():
+    """The citation has to open the rule, not the top of the rulebook."""
+    db = _IndexDB([_srd_row("Cover", "rules-glossary", "cover")])
+    found = rules.gather_from_index(db, "cover")
+    assert found["url"].endswith("#cover")
+
+
+def test_the_vector_lane_refuses_when_the_index_has_no_rules():
+    """An empty result is a gap to report, not an answer to invent."""
+    with pytest.raises(rules.RulesUnavailable, match="no section matching"):
+        rules.gather_from_index(_IndexDB([]), "how does flanking work")
+
+
+def test_the_vector_lane_falls_back_to_the_chunk_when_the_section_is_gone():
+    """The index can be older than the corpus - a heading renamed since the last rebuild.
+
+    The chunk text is still real SRD text, so it is used rather than dropping the hit.
+    """
+    db = _IndexDB([_srd_row("Renamed", "rules-glossary", "no-such-slug",
+                            text="the rule as it was indexed")])
+    found = rules.gather_from_index(db, "something")
+    assert "the rule as it was indexed" in found["text"]

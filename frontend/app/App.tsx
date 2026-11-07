@@ -1,16 +1,20 @@
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
 import { CharacterScreen } from '@/screens/CharacterScreen'
+import { ChatsScreen } from '@/screens/ChatsScreen'
 import { HistoryScreen } from '@/screens/HistoryScreen'
 import { RulesScreen } from '@/screens/RulesScreen'
 import { ScenarioScreen } from '@/screens/ScenarioScreen'
+import { SearchScreen } from '@/screens/SearchScreen'
 import { cn } from '@/lib/utils'
 
 const NAV = [
   { to: '/scenario', label: 'Scenario' },
   { to: '/history', label: 'History' },
+  { to: '/chats', label: 'Chats' },
   { to: '/character', label: 'Character' },
   { to: '/rules', label: 'Rules' },
+  { to: '/search', label: 'Search' },
 ]
 
 export function App() {
@@ -47,8 +51,10 @@ export function App() {
           <Route path="/" element={<Navigate to="/scenario" replace />} />
           <Route path="/scenario" element={<ScenarioScreen />} />
           <Route path="/history" element={<HistoryScreen />} />
+          <Route path="/chats" element={<ChatsScreen />} />
           <Route path="/character" element={<CharacterScreen />} />
           <Route path="/rules" element={<RulesScreen />} />
+          <Route path="/search" element={<SearchScreen />} />
           <Route path="*" element={<Navigate to="/scenario" replace />} />
         </Routes>
       </main>

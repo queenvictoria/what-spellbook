@@ -85,7 +85,7 @@ def test_slash_s_completes_to_scenario(shell):
         ("/e", ["/exit "]),
         ("/r", ["/read ", "/rate "]),
         ("/h", ["/history "]),
-        ("/c", ["/c "]),
+        ("/c", ["/c ", "/chats ", "/chat "]),
         ("/?", ["/? "]),
     ],
 )

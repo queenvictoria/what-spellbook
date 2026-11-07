@@ -28,6 +28,9 @@ export function CharacterScreen() {
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
   const [askError, setAskError] = useState<string | null>(null)
+  // The conversation this screen is in. Held so a follow-up is read in context, and so
+  // the exchange can be found again on the Chats screen.
+  const [threadId, setThreadId] = useState<string | null>(null)
 
   useEffect(() => {
     Promise.all([api.character(), api.health(), api.sheetKeys()])
@@ -46,7 +49,9 @@ export function CharacterScreen() {
     setAsking(true)
     setAskError(null)
     try {
-      setAnswer(await api.askCharacter(text))
+      const result = await api.askCharacter(text, undefined, threadId ?? undefined)
+      setAnswer(result)
+      setThreadId(result.thread_id)
     } catch (e) {
       setAskError(e instanceof ApiError ? e.message : String(e))
     } finally {

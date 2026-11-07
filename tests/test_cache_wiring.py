@@ -213,10 +213,14 @@ def test_a_repeat_scenario_makes_no_model_call(loaded_shell, cache_dir):
 
 def test_a_cache_hit_skips_retrieval_entirely(loaded_shell, fake_db):
     """Not just the model: no embedding call for the ranking lane either."""
-    before = len(fake_db.as_retriever_calls)
+    before_retrievals = len(fake_db.as_retriever_calls)
+    before_gets = len(fake_db.get_calls)
     loaded_shell.onecmd("/scenario We are ambushed on a narrow stone bridge.")
-    assert len(fake_db.as_retriever_calls) == before
-    assert len(fake_db.get_calls) == 2, "the pool lanes were only built once"
+    assert len(fake_db.as_retriever_calls) == before_retrievals
+    # The pool lanes and the SRD context lane are all metadata queries, so a cache hit must
+    # add none of them. Asserting on the delta rather than an absolute count keeps this
+    # honest when a lane is added: the fixture's own generation is not the thing under test.
+    assert len(fake_db.get_calls) == before_gets, "the pool lanes were only built once"
 
 
 def test_a_cache_hit_replays_the_original_answer(loaded_shell, capsys):

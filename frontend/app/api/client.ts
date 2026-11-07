@@ -2,11 +2,19 @@ import type {
   Answer,
   Book,
   Character,
+  Conversation,
+  ConversationKind,
+  ConversationSummary,
   Generation,
   Health,
   RunBooks,
   RunSummary,
+  SearchFacetsResponse,
+  SearchParams,
+  SearchResult,
   Spell,
+  SrdDocument,
+  SrdSection,
 } from './types'
 
 /**
@@ -91,8 +99,10 @@ export const api = {
   character: (name?: string) =>
     request<Character>(`/api/character${query({ name })}`),
 
-  askCharacter: (question: string, character?: string) =>
-    request<Answer>(`/api/character/ask${query({ question, character })}`),
+  askCharacter: (question: string, character?: string, threadId?: string) =>
+    request<Answer>(
+      `/api/character/ask${query({ question, character, thread_id: threadId })}`,
+    ),
 
   sheetKeys: () => request<string[]>('/api/sheet-keys'),
 
@@ -107,13 +117,14 @@ export const api = {
   cached: (scenario: string, character?: string) =>
     request<Generation | null>(`/api/cached${query({ scenario, character })}`),
 
-  ask: (scenario: string, question: string, character?: string) =>
+  ask: (scenario: string, question: string, character?: string, threadId?: string) =>
     request<Answer>(`/api/ask${query({ scenario, character })}`, {
       method: 'POST',
-      body: JSON.stringify({ question, character }),
+      body: JSON.stringify({ question, character, thread_id: threadId }),
     }),
 
-  rules: (question: string) => request<Answer>(`/api/rules${query({ question })}`),
+  rules: (question: string, threadId?: string) =>
+    request<Answer>(`/api/rules${query({ question, thread_id: threadId })}`),
 
   /**
    * Explain a phrase selected from a book's prose.
@@ -125,17 +136,30 @@ export const api = {
    * prompt so the model can read "2 beams" as the *Eldritch Blast* beams. A 404 means the
    * SRD does not discuss the selection at all, which is a normal outcome to show.
    */
-  rulesContextual: (selectedText: string, context?: string, documents: string[] = []) => {
+  rulesContextual: (
+    selectedText: string,
+    context?: string,
+    documents: string[] = [],
+    threadId?: string,
+  ) => {
     const params = new URLSearchParams({ selected_text: selectedText })
     if (context) params.set('context', context)
+    if (threadId) params.set('thread_id', threadId)
     // Repeated, not comma-joined: the backend declares it as a list query parameter, and a
     // joined value would resolve as one document named "Thorn Whip, Repelling Blast".
     for (const document of documents) params.append('document', document)
     return request<Answer>(`/api/rules/contextual?${params.toString()}`)
   },
 
-  /** One spell's own text. A 404 means neither the SRD nor the corpus has that name. */
-  spell: (name: string) => request<Spell>(`/api/spell${query({ name })}`),
+  /**
+   * One spell's own text. A 404 means neither the SRD nor the corpus has that name.
+   *
+   * `character` decides the `scaling` note — "2 beams (L5)" is only true of a level 5
+   * Warlock — so it is passed through rather than left to the server's default. Omit it
+   * and the server's configured character is used.
+   */
+  spell: (name: string, character?: string) =>
+    request<Spell>(`/api/spell${query({ name, character })}`),
 
   /**
    * One Eldritch Invocation's rules.
@@ -143,7 +167,8 @@ export const api = {
    * Separate from `spell` because an invocation is a class feature, not a spell, and the
    * 2024 SRD does not publish them - the text comes from our own class context.
    */
-  invocation: (name: string) => request<Spell>(`/api/invocation${query({ name })}`),
+  invocation: (name: string, character?: string) =>
+    request<Spell>(`/api/invocation${query({ name, character })}`),
 
   /**
    * Every name the prose may mention, used to decide which mentions to link.
@@ -153,9 +178,80 @@ export const api = {
    */
   spells: () => request<string[]>('/api/spells'),
 
+  /**
+   * Every vendored SRD file, with its headings nested — the Rules screen's table of
+   * contents.
+   *
+   * Sent whole rather than per file because it is small (seven files, ~1280 headings, no
+   * text) and a screen that had to ask seven times to draw one list would show it filling
+   * in. The text is a separate request, so drawing the tree costs nothing.
+   */
+  srd: () => request<SrdDocument[]>('/api/srd'),
+
+  /**
+   * One section of one SRD file, as renderable Markdown.
+   *
+   * Omit `slug` for the whole document, which is what a click on the file name asks for.
+   * Deterministic, like `spell`: the text is read from the file, so it cannot paraphrase a
+   * rule.
+   */
+  srdSection: (name: string, slug?: string) =>
+    request<SrdSection>(
+      `/api/srd/${encodeURIComponent(name)}${query({ slug })}`,
+    ),
+
   history: (character?: string) =>
     request<RunSummary[]>(`/api/history${query({ character })}`),
 
+  /**
+   * Every stored ask/chat conversation, newest first.
+   *
+   * A conversation is a thread: the questions asked and the answers given, in order.
+   * Listed rather than the individual answers because a follow-up is only meaningful
+   * beside the question it followed.
+   */
+  conversations: (kind?: ConversationKind, character?: string) =>
+    request<ConversationSummary[]>(
+      `/api/conversations${query({ kind, character })}`,
+    ),
+
+  /** One stored conversation, every turn in order. */
+  conversation: (reference: string, character?: string) =>
+    request<Conversation>(
+      `/api/conversations/${encodeURIComponent(reference)}${query({ character })}`,
+    ),
+
+  /**
+   * Search the vector index directly.
+   *
+   * The diagnostic surface, not the recommender: it can return a spell the character could
+   * never pick, on purpose. `class` is repeated rather than comma-joined because the
+   * backend declares it as a list query parameter, and a joined value would resolve as one
+   * class named "Wizard, Bard".
+   */
+  search: (params: SearchParams) => {
+    const search = new URLSearchParams()
+    if (params.query) search.set('query', params.query)
+    if (params.mode) search.set('mode', params.mode)
+    if (params.limit !== undefined) search.set('limit', String(params.limit))
+    if (params.offset !== undefined) search.set('offset', String(params.offset))
+    for (const name of params.classes ?? []) search.append('class', name)
+    if (params.school) search.set('school', params.school)
+    if (params.level_min !== undefined)
+      search.set('level_min', String(params.level_min))
+    if (params.level_max !== undefined)
+      search.set('level_max', String(params.level_max))
+    if (params.ritual !== undefined) search.set('ritual', String(params.ritual))
+    if (params.spells_only !== undefined)
+      search.set('spells_only', String(params.spells_only))
+    if (params.all_terms !== undefined)
+      search.set('all_terms', String(params.all_terms))
+    if (params.doc_type) search.set('doc_type', params.doc_type)
+    return request<SearchResult>(`/api/search?${search.toString()}`)
+  },
+
+  /** Every class, school and level the index holds, with counts. */
+  searchFacets: () => request<SearchFacetsResponse>('/api/search/facets'),
   run: (id: string) => request<RunBooks>(`/api/runs/${encodeURIComponent(id)}`),
 
   rate: (

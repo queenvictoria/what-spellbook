@@ -751,3 +751,98 @@ def test_save_run_stores_picks_without_reparsing(tmp_path):
     _save(tmp_path, answer=DELIMITED)
     book = json.loads(next(p for p in tmp_path.rglob("*.json") if p.name.startswith("1-")).read_text())
     assert book["output"]["picks"]["cantrips"] == ["Thorn Whip", "Spare the Dying", "Mending"]
+
+
+# --- the contextualised spell notes ---
+
+def test_a_scaling_note_is_keyed_by_character_and_level(tmp_path):
+    """Both are in the path because both change the answer, and both are browsable."""
+    path = cache.scaling_path(character="Lois", level=5, spell="Eldritch Blast",
+                              cache_dir=tmp_path)
+    assert path.parent.name == "lois"
+    assert path.name.startswith("5-eldritch-blast-")
+    assert path.parent.parent.name == "scaling"
+
+
+def test_a_scaling_note_round_trips(tmp_path):
+    cache.save_scaling(character="Lois", level=5, spell="Eldritch Blast",
+                       note="2 beams (L5)", model="fast", cache_dir=tmp_path)
+    entry = cache.load_scaling(character="Lois", level=5, spell="Eldritch Blast",
+                               cache_dir=tmp_path)
+    assert entry["note"] == "2 beams (L5)"
+    assert entry["source"] == "model"
+    assert entry["model"] == "fast"
+
+
+def test_a_stored_refusal_is_a_hit_not_a_miss(tmp_path):
+    """``None`` is a real answer, so the key's presence is what is tested.
+
+    Conflating "no note" with "no entry" is what makes a cache recompute forever.
+    """
+    cache.save_scaling(character="Lois", level=5, spell="Booming Blade", note=None,
+                       cache_dir=tmp_path)
+    entry = cache.load_scaling(character="Lois", level=5, spell="Booming Blade",
+                               cache_dir=tmp_path)
+    assert entry is not None
+    assert entry["note"] is None
+
+
+def test_a_missing_entry_is_a_miss(tmp_path):
+    assert cache.load_scaling(character="Lois", level=5, spell="Booming Blade",
+                              cache_dir=tmp_path) is None
+
+
+def test_a_note_from_an_older_reader_is_a_miss(tmp_path):
+    """A reader fix must retire the notes it would now read differently."""
+    cache.save_scaling(character="Lois", level=5, spell="Booming Blade", note="x",
+                       cache_dir=tmp_path)
+    path = cache.scaling_path(character="Lois", level=5, spell="Booming Blade",
+                              cache_dir=tmp_path)
+    entry = json.loads(path.read_text())
+    entry["scaling_version"] = cache.SCALING_VERSION - 1
+    path.write_text(json.dumps(entry))
+    assert cache.load_scaling(character="Lois", level=5, spell="Booming Blade",
+                              cache_dir=tmp_path) is None
+
+
+def test_a_note_for_another_character_is_a_miss(tmp_path):
+    """The path already separates them; the entry is checked too, so a copied file is not
+    served as if it were this character's."""
+    cache.save_scaling(character="Lois", level=5, spell="Booming Blade", note="x",
+                       cache_dir=tmp_path)
+    path = cache.scaling_path(character="Lois", level=5, spell="Booming Blade",
+                              cache_dir=tmp_path)
+    entry = json.loads(path.read_text())
+    entry["character"] = "Bram"
+    path.write_text(json.dumps(entry))
+    assert cache.load_scaling(character="Lois", level=5, spell="Booming Blade",
+                              cache_dir=tmp_path) is None
+
+
+def test_no_level_means_nothing_is_stored_or_read(tmp_path):
+    """A sheet with no level has no answer, so there is nothing to key on."""
+    assert cache.save_scaling(character="Lois", level=None, spell="Booming Blade",
+                              note="x", cache_dir=tmp_path) is None
+    assert cache.load_scaling(character="Lois", level=None, spell="Booming Blade",
+                              cache_dir=tmp_path) is None
+
+
+def test_a_spell_name_is_slugged_but_hashed_whole(tmp_path):
+    """The slug is for a human browsing the directory; the hash is what identifies it.
+
+    Two names that slug to the same thing ("Ray of Frost" / "Ray-of-Frost") must not
+    collide, which is why the hash is of the name rather than of the slug.
+    """
+    a = cache.scaling_path(character="Lois", level=5, spell="Ray of Frost",
+                           cache_dir=tmp_path)
+    b = cache.scaling_path(character="Lois", level=5, spell="Ray-of-Frost",
+                           cache_dir=tmp_path)
+    assert a != b
+    assert a.name.startswith("5-ray-of-frost-")
+
+
+def test_an_unwritable_note_is_reported_not_raised(tmp_path):
+    """A cache that cannot be written must not fail the lookup it was meant to speed up."""
+    (tmp_path / "scaling").write_text("not a directory")
+    assert cache.save_scaling(character="Lois", level=5, spell="Booming Blade", note="x",
+                              cache_dir=tmp_path) is None

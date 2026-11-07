@@ -254,7 +254,7 @@ def test_build_where_ands_multiple_clauses():
 
 def test_book_cantrip_filter_restricts_to_cantrips():
     where = spells.book_cantrip_filter()
-    assert {"is_spell": True} in where["$and"]
+    assert {"doc_type": "spell"} in where["$and"]
     assert {"level": 0} in where["$and"]
 
 

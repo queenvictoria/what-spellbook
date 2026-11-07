@@ -52,6 +52,9 @@ class GenerationSchema(BaseModel):
     # The stored run's id, so a client can rate a book without re-deriving it. Null when
     # the run was not persisted, which is the case with no character loaded.
     run_id: str | None = None
+    # The conversation a refinement belongs to, so a client can continue it or read it
+    # back. Null for a fresh generation, which is not a conversation.
+    thread_id: str | None = None
 
     @classmethod
     def from_generation(cls, generation) -> "GenerationSchema":
@@ -59,6 +62,7 @@ class GenerationSchema(BaseModel):
         return cls(
             scenario=generation.scenario,
             run_id=generation.run_id,
+            thread_id=getattr(generation, "thread_id", None),
             answer=generation.answer,
             preamble=generation.preamble,
             pairings=generation.pairings,
@@ -103,6 +107,9 @@ class AnswerSchema(BaseModel):
     # the SRD does not cover a spell reads very differently once the reader can see the
     # spell was never attached - and that difference is invisible from the text alone.
     attachments: list[str] = Field(default_factory=list)
+    # The conversation this answer belongs to. A client passes it back to ask a follow-up
+    # in context, and uses it to read the exchange again later.
+    thread_id: str | None = None
 
     @classmethod
     def from_answer(cls, answer) -> "AnswerSchema":
@@ -110,6 +117,82 @@ class AnswerSchema(BaseModel):
             question=answer.question, answer=answer.answer, source=answer.source,
             field_name=answer.field_name, citations=list(answer.citations or []),
             from_cache=answer.from_cache, attachments=list(answer.attachments or []),
+            thread_id=getattr(answer, "thread_id", None),
+        )
+
+
+class ConversationTurnSchema(BaseModel):
+    """One question and its answer, with the provenance a reader needs to trust it."""
+
+    question: str
+    answer: str
+    source: str
+    asked_at: str | None = None
+    field_name: str | None = None
+    citations: list[str] = Field(default_factory=list)
+    attachments: list[str] = Field(default_factory=list)
+    from_cache: bool = False
+    model: str | None = None
+
+    @classmethod
+    def from_turn(cls, turn) -> "ConversationTurnSchema":
+        return cls(
+            question=turn.question, answer=turn.answer, source=turn.source,
+            asked_at=turn.asked_at, field_name=turn.field_name,
+            citations=list(turn.citations or []),
+            attachments=list(turn.attachments or []),
+            from_cache=turn.from_cache, model=turn.model,
+        )
+
+
+class ConversationSummary(BaseModel):
+    """One row of the conversation listing: a thread, not a single answer.
+
+    A follow-up is only meaningful beside the question it followed, so the listing is
+    keyed on the thread and the opening question is what names it.
+    """
+
+    id: str
+    kind: str
+    opening: str
+    character: str | None = None
+    run_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    turn_count: int = 0
+    # The most recent answer, so a listing can be scanned without opening every thread.
+    last_answer: str = ""
+
+    @classmethod
+    def from_conversation(cls, conversation) -> "ConversationSummary":
+        return cls(
+            id=conversation.id, kind=conversation.kind, opening=conversation.opening,
+            character=conversation.character, run_id=conversation.run_id,
+            created_at=conversation.created_at, updated_at=conversation.updated_at,
+            turn_count=len(conversation.turns),
+            last_answer=conversation.last_answer,
+        )
+
+
+class ConversationSchema(BaseModel):
+    """A whole thread, every turn in order."""
+
+    id: str
+    kind: str
+    opening: str
+    character: str | None = None
+    run_id: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+    turns: list[ConversationTurnSchema] = Field(default_factory=list)
+
+    @classmethod
+    def from_conversation(cls, conversation) -> "ConversationSchema":
+        return cls(
+            id=conversation.id, kind=conversation.kind, opening=conversation.opening,
+            character=conversation.character, run_id=conversation.run_id,
+            created_at=conversation.created_at, updated_at=conversation.updated_at,
+            turns=[ConversationTurnSchema.from_turn(t) for t in conversation.turns],
         )
 
 
@@ -186,6 +269,15 @@ class SpellSchema(BaseModel):
     # Null for anything that is not a spell. An Eldritch Invocation is quoted through this
     # same card and is a class feature, so it gets no stat block rather than an empty one.
     stats: SpellStatsSchema | None = None
+    # What the spell does at the *loaded character's* level, e.g. "2 beams (L5)". Null when
+    # the spell does not scale with level, when no character is loaded, or when the
+    # character is below the first level the spell states.
+    #
+    # The value is read out of the spell's own text, so it is a rule rather than a
+    # recollection - but it is *applied* to a character, which is why it is a separate
+    # field from `text` and not folded into it. A reader must be able to tell the spell's
+    # words from this app's reading of them.
+    scaling: str | None = None
 
 
 class ScenarioRequest(BaseModel):
@@ -194,6 +286,9 @@ class ScenarioRequest(BaseModel):
 
 class AskRequest(BaseModel):
     question: str = Field(min_length=1)
+    # Continue an existing conversation. Omitted, the question opens one - or joins the
+    # thread it already opened, since a thread is keyed on its opening question.
+    thread_id: str | None = None
 
 
 class RateRequest(BaseModel):
@@ -250,3 +345,216 @@ class HealthSchema(BaseModel):
     model: str | None = None
     index_version: int
     cache_dir: str
+
+
+class SearchHitSchema(BaseModel):
+    """One distinct spell a search returned, with the chunk that matched it.
+
+    Distinct spells, not chunks: the index holds ~1280 chunks for 544 spells, so a raw
+    result list would show the same spell two or three times and read as a duplicate bug.
+    """
+
+    name: str
+    level: int | None = None
+    # "Cantrip" / "Level 3" / "Not a spell", computed server-side so every surface writes a
+    # level the same way - and so the index's -1 marker for a magic item never leaks out.
+    level_label: str
+    school: str | None = None
+    classes: list[str] = Field(default_factory=list)
+    ritual: bool = False
+    is_spell: bool = True
+    filename: str
+    text: str
+    # Which kind of indexed text this is: "spell", "item" or "srd". A client needs it to
+    # tell a rule from a spell, because an SRD row has no school and a level of 0.
+    doc_type: str = "spell"
+    # For an SRD row, the document and heading it came from, so the hit can be opened as a
+    # rule rather than shown as an orphaned paragraph.
+    document: str | None = None
+    slug: str | None = None
+    # How many of this spell's chunks matched, not how many it has.
+    chunks: int = 1
+    # Chroma's distance for the best chunk, or null when the store cannot score. Lower is
+    # closer; it is not a percentage and the scale depends on the embedding model.
+    distance: float | None = None
+    # How many of the query's words the matching chunks contain.
+    terms_matched: int = 0
+
+
+class SearchFacetSchema(BaseModel):
+    value: str
+    count: int
+
+
+class SearchLevelFacetSchema(BaseModel):
+    level: int
+    label: str
+    count: int
+
+
+class SearchFacetsSchema(BaseModel):
+    """What the index holds, so a client can offer filter values that actually exist."""
+
+    classes: list[SearchFacetSchema] = Field(default_factory=list)
+    schools: list[SearchFacetSchema] = Field(default_factory=list)
+    levels: list[SearchLevelFacetSchema] = Field(default_factory=list)
+    rituals: int = 0
+    spells: int = 0
+    chunks: int = 0
+    # How many rows of each kind the collection holds, so the doc-type filter can be offered
+    # with real counts.
+    doc_types: list[SearchFacetSchema] = Field(default_factory=list)
+
+
+class SearchResultSchema(BaseModel):
+    """One search over the vector index.
+
+    ``where`` is the Chroma clause actually sent, echoed back because a filter that
+    silently matches nothing is the commonest failure here and the clause is the fastest
+    way to see why. ``total_matching`` counts the distinct spells the *criteria* admit -
+    filters always, plus the words in text mode - so it says whether a filter is too
+    narrow. A vector search has no relevance threshold, so it cannot say how many spells
+    are relevant.
+    """
+
+    query: str
+    mode: str
+    limit: int
+    offset: int = 0
+    hits: list[SearchHitSchema] = Field(default_factory=list)
+    total_matching: int = 0
+    elapsed_ms: float = 0.0
+    where: dict | None = None
+    filters: dict = Field(default_factory=dict)
+    # Set when the result needs explaining: a filter that cannot match, an AND that found
+    # nothing, or a candidate cap that truncated the ranking.
+    note: str | None = None
+
+    @classmethod
+    def from_result(cls, result) -> "SearchResultSchema":
+        return cls(
+            query=result.query, mode=result.mode, limit=result.limit,
+            offset=result.offset, total_matching=result.total_matching,
+            elapsed_ms=result.elapsed_ms, where=result.where, filters=result.filters,
+            note=result.note,
+            hits=[
+                SearchHitSchema(
+                    name=hit.name, level=hit.level, level_label=hit.level_label,
+                    school=hit.school, classes=list(hit.classes), ritual=hit.ritual,
+                    is_spell=hit.is_spell, filename=hit.filename, text=hit.text,
+                    chunks=hit.chunks, distance=hit.distance,
+                    terms_matched=hit.terms_matched, doc_type=hit.doc_type,
+                    document=hit.document, slug=hit.slug,
+                )
+                for hit in result.hits
+            ],
+        )
+
+
+class SearchFacetsResponse(BaseModel):
+    """The filter vocabulary, plus the index version it describes.
+
+    The version is carried because the facets are read from the index, not from config: a
+    client caching them needs to know when a rebuild has changed what exists.
+    """
+
+    index_version: int
+    facets: SearchFacetsSchema
+
+
+class SrdHeadingSchema(BaseModel):
+    """One heading in a vendored SRD file, nested under its parent.
+
+    ``slug`` is the anchor a client asks for, and it is de-duplicated within its document:
+    the SRD repeats headings - ``classes.md`` has six ``Level 1: Spellcasting`` sections,
+    one per class - so a slug derived from the text alone would collide and every link
+    after the first would open the wrong section.
+    """
+
+    text: str
+    level: int
+    slug: str
+    children: list["SrdHeadingSchema"] = Field(default_factory=list)
+
+
+class SrdDocumentSchema(BaseModel):
+    """One vendored SRD file, as a table of contents.
+
+    The tree is sent without the text. The seven files are ~880KB of Markdown between
+    them, and a client that only wants to draw a list of links should not pay for the
+    rulebook - so the text is fetched per section, on the click that needs it.
+    """
+
+    name: str
+    title: str
+    path: str
+    headings: list[SrdHeadingSchema] = Field(default_factory=list)
+
+    @classmethod
+    def from_document(cls, document) -> "SrdDocumentSchema":
+        return cls(
+            name=document.name,
+            title=document.title,
+            path=document.path,
+            headings=[_heading(h) for h in document.headings],
+        )
+
+
+def _heading(heading) -> SrdHeadingSchema:
+    return SrdHeadingSchema(
+        text=heading.text,
+        level=heading.level,
+        slug=heading.slug,
+        children=[_heading(child) for child in heading.children],
+    )
+
+
+class SrdCrumbSchema(BaseModel):
+    """One step in a section's ancestry, for a breadcrumb.
+
+    ``slug`` is what a click asks for, so a crumb is a link to the parent rule rather than
+    just a label. The document's own root heading is included as the first crumb, which is
+    why a section's trail starts at the file rather than at its first real subdivision.
+    """
+
+    text: str
+    slug: str
+    level: int
+
+
+class SrdSectionSchema(BaseModel):
+    """One heading's own text, as renderable Markdown.
+
+    ``text`` includes the heading line, so the fragment reads as a document rather than a
+    body with no title. ``path`` is the repo-relative file, shown so a reader can find the
+    rule in the vendored corpus themselves.
+
+    ``ancestors`` is the chain of headings above this one, outermost first, excluding the
+    heading itself. It is sent rather than left for the client to derive because the client
+    only holds the table of contents, and walking it to find a parent would mean a second
+    lookup for something the server already knows.
+    """
+
+    document: str
+    title: str
+    heading: str
+    slug: str
+    path: str
+    text: str
+    source: str = "vendored-srd-5.2.1"
+    ancestors: list[SrdCrumbSchema] = Field(default_factory=list)
+
+    @classmethod
+    def from_section(cls, section) -> "SrdSectionSchema":
+        return cls(
+            document=section.document.name,
+            title=section.document.title,
+            heading=section.heading.text,
+            slug=section.heading.slug,
+            path=section.document.path,
+            text=section.text,
+            ancestors=[
+                SrdCrumbSchema(text=h.text, slug=h.slug, level=h.level)
+                for h in section.ancestors
+            ],
+        )

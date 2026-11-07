@@ -237,3 +237,24 @@ def test_stop_observer_tolerates_none():
 def test_exit_on_sigterm_raises_keyboard_interrupt():
     with pytest.raises(KeyboardInterrupt):
         cli_app._exit_on_sigterm(15, None)
+
+
+def test_scenario_grounds_the_prompt_in_the_srd(shell, fake_llm, fake_db):
+    """The rules the *situation* turns on, not just the character's class rules.
+
+    Without this the model supplies "how does being grappled work" from memory, which is
+    where a 2014 reading of it comes from.
+    """
+    shell.onecmd("/scenario we are grappled on a bridge")
+    prompt = fake_llm.prompts[0]
+    assert "=== 2024 SRD TEXT FOR THIS SCENARIO ===" in prompt
+    assert "Cover" in prompt
+
+
+def test_the_srd_block_is_absent_when_the_index_has_no_rules(shell, fake_llm, fake_db):
+    """A store with no SRD rows must not produce an empty block that reads as a gap."""
+    fake_db.CATALOGUE = [
+        row for row in fake_db.CATALOGUE if row.get("doc_type") != "srd"
+    ]
+    shell.onecmd("/scenario we are grappled on a bridge")
+    assert "=== 2024 SRD TEXT FOR THIS SCENARIO ===" not in fake_llm.prompts[0]

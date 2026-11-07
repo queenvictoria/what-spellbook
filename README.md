@@ -23,6 +23,7 @@ backend/          the Python package
 frontend/         the npm project
   app/              the React source
 context/          rules text injected into the model prompt
+  srd/              the vendored 2024 SRD, also indexed into the vector store
 data/             character sheets and the Chroma index (untracked)
 tests/            pytest
 ```
@@ -42,7 +43,9 @@ recommendation logic.
 5.5e SRD has 339 spells. DNDBeyond 400+ (includes legacy and trademarked spells).
 
 Rules text (`/?`) is grounded in the vendored SRD 5.2.1 Markdown under `context/srd/`,
-which is CC-BY-4.0. See `context/srd/PROVENANCE.md` for attribution.
+which is CC-BY-4.0. See `context/srd/PROVENANCE.md` for attribution. The same files are
+indexed into the vector store, one row per section, so the rulebook is searchable alongside
+the spells.
 
 - https://github.com/downfallx/dnd-5e-srd-markdown/blob/master/spells.md
 - https://drive.google.com/drive/folders/16T2y1UaSgLQtEBWXmSU3zc0L7L6TKVT8
@@ -56,7 +59,7 @@ which is CC-BY-4.0. See `context/srd/PROVENANCE.md` for attribution.
 ### Front end
 
 Framework: React + Vite + Tailwind v4 + shadcn-style components
-Status: working — scenario, history, character and rules screens
+Status: working — scenario, history, chats, character, rules and search screens
 
 ```bash
 cd frontend
@@ -141,6 +144,10 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/spell?name=`             | One spell's description, for every spell mention in the UI |
 | `GET /api/invocation?name=`        | One Eldritch Invocation, from the SRD's class chapter      |
 | `GET /api/spells`                  | Every name the UI should link — spells and invocations     |
+| `GET /api/srd`                     | The vendored SRD as a table of contents, file by file      |
+| `GET /api/srd/{name}?slug=`        | One section of one SRD file, quoted; omit `slug` for the whole file |
+| `GET /api/search`                  | Search the vector index directly, for inspection           |
+| `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
 retrying could help:
@@ -163,6 +170,215 @@ already knows what it wants can skip the listing.
 the only handle a client should rate with. Rating by scenario text is ambiguous, because a
 run is keyed on the scenario _and_ the character, level and book count — two runs can share
 a scenario, and the wrong one gets rated.
+
+#### Browsing the SRD
+
+`GET /api/srd` returns the vendored rulebook as a table of contents — seven files, ~1280
+headings, no text — so the Rules tab can draw its tree in one request. `GET
+/api/srd/{name}?slug=` returns one section's Markdown, quoted from the file, so a rule read
+here cannot be a paraphrase of a bonus. Omitting `slug` returns the whole file.
+
+A section carries `ancestors`: the chain of headings above it, outermost first, excluding
+the section itself. That is what the breadcrumb on the rule card is drawn from, and it is
+sent rather than left for the client to derive — the client holds the tree and _could_ walk
+it, but the server already knows the path, and a second lookup for something already
+computed is a way for the two to disagree. Each crumb carries the slug a click needs, so the
+trail is also the way to the parent rule.
+
+Every vendored file opens with a single root heading that repeats the document title, so a
+section directly under it would breadcrumb as "Rules Glossary / Rules Glossary". The root is
+dropped when it is the only ancestor _and_ its text matches the title.
+
+#### The Rules tab's ask box: three readings, in parallel
+
+One typed question is answered three ways at once, each column filling in as it resolves
+rather than waiting for the others:
+
+| Lane             | What it reads                                | When it answers       |
+| ---------------- | -------------------------------------------- | --------------------- |
+| Keyword filter   | The 1274 SRD headings, client-side           | Synchronously         |
+| Index search     | `GET /api/search` over the spell corpus      | After a 400 ms pause  |
+| The answer       | `GET /api/rules` — the SRD's own matcher     | After a 400 ms pause  |
+
+None of the three short-circuits the others. A rule can be named under a heading, absent
+from the spell index, and answerable by interpretation all at once, and the reader picks
+which reading answered their question from the badges.
+
+The keyword lane is deliberately **not** debounced. It is synchronous and cheap, and its
+whole value is that it answers while the two requests are still in flight — the tab is
+browsable during a model call because of it. The two requests share one debounce, so typing
+a sentence costs one ask rather than one per word; nothing already on screen is cleared
+while typing, so each column is replaced when its own answer lands.
+
+Filtering matches headings only, because a rule's text is not in the table of contents. Two
+measurements shaped it, and both are recorded in `frontend/app/lib/srdFilter.ts`:
+
+- Requiring **every** word of `how does cover work` to appear in a heading's path matched
+  **nothing**: "how", "does" and "work" are not rulebook vocabulary, so the word that
+  mattered was discarded with them. Hence a stop list, and hence the card saying which words
+  were ignored.
+- Weighting terms by how few headings contain them scores "work" (1 heading) as nine times
+  more informative than "cover" (9 headings) — exactly backwards in a question. The words a
+  question can afford to lose are its _function_ words, and only a stop list knows those.
+
+A word no heading contains ("stabilize", "privilege") is reported as **unknown** and dropped
+from the requirement rather than counted as a miss, because "the SRD never names this" is a
+different finding from "I matched nothing", and only one means the rule is absent. When not
+every term can be matched the card says the rows are the closest headings rather than the
+answer — a filter that quietly softens its own rule is how a reader concludes a rule is
+missing when their phrasing was merely unusual.
+
+The whole path to each match is kept in the tree, and its branches are drawn open, because
+the matches are deep: **Cover** is three levels under _Playing the Game_, and **Grappled
+[Condition]** four under _Rules Glossary_. A mark on the match alone would be no help if it
+were two collapsed levels below the fold.
+
+#### Three columns, and why the best answer was at the bottom
+
+The three readings used to stack, which put the answer — the longest reading, and usually the
+one being asked for — below two panels that could each be a screen tall. The reading a reader
+most wanted was therefore the one furthest from the box that produced it. They are now three
+columns at the same height, side by side.
+
+A column with nothing to show is **dropped**, not rendered empty. That is not only about
+width: the lanes resolve independently, so for the first few hundred milliseconds two of them
+have nothing in them, and an empty bordered box reads as a failure rather than as a request
+still in flight. The three are:
+
+| Column             | Shows                                                                | Hidden when             |
+| ------------------ | -------------------------------------------------------------------- | ----------------------- |
+| Filtered titles    | The matched headings, each with the trail that says where it lives   | Nothing matched         |
+| The spell index    | Up to 12 titles, each a link, plus one line of the matched chunk     | No hits and no error    |
+| The answer         | The RAG response, its source badge and its citations                 | No answer and no error  |
+
+The title column lists **matches only**, without their ancestors, which is the opposite of
+what the tree does. The two answer different questions: the tree says _where_ a rule lives, so
+it keeps the whole path and opens the branches down to the match; the list says _which_
+headings name the words, which is the only thing a scan can answer faster than the tree. Each
+row carries its trail on a second line, because `Cover` is a different rule in _Rules Glossary_
+and in _Playing the Game_ and the trail is what tells them apart without expanding anything.
+
+The index column shows a title rather than the full hit card the Search tab renders. Twelve
+expandable cards beside two other columns is not a glance; the Search tab is the surface for
+reading a hit in full. Each title is a real link to `/rules?spell=<name>`, so a plain click
+opens the drawer and a modified one opens the tab.
+
+One line of context is extracted rather than rendered, because the chunks are markdown and
+their own markup is what a reader would otherwise see. The extraction strips headings, bold
+and links, repairs the corpus's tight citations (`you[Half Cover](…)against` reads as
+`youHalf Coveragainst` otherwise), and **skips stat-block field lines** — every corpus file
+opens with `Spell Name: X` and `Casting Time: X`, so a chunk cut at a boundary can be nothing
+but those, and a dozen hits would all preview as `Spell Name: Nondetection`.
+
+#### The clear button, and abandoning a request
+
+The box has a clear button (and Escape), and it does more than empty the input. The two
+requests are in flight independently, so a reply landing a second after the clear would refill
+the panels with an answer to a question no longer on screen — which is worse than a blank
+panel, because it looks current.
+
+Each lane therefore keeps a **counter** of the request it is waiting for, bumped on every
+request and compared on arrival; a stale reply is discarded rather than rendered. A boolean
+loading flag cannot do this: it says "something is loading", not "this reply is the one being
+waited for". The counters are **per lane**, not shared — the two requests are fired together
+and share no ordering, so one counter between them would make whichever resolved second
+invalidate the other's reply and one panel would silently never fill.
+
+#### Searching the index
+
+`GET /api/search` is the diagnostic surface, not the recommender. `retrieval` answers "what
+is legal for this character"; this answers "what is in the index, and what does a query
+bring back" — which is how a missing recommendation gets explained. It can return a spell
+the character could never pick, on purpose. The Search tab drives it.
+
+| Parameter                 | Meaning                                                                                        |
+| ------------------------- | ---------------------------------------------------------------------------------------------- |
+| `query`                   | Text to search for. May be empty in `text` mode, which then lists everything the filters admit |
+| `mode`                    | `vector` (similarity), `text` (substring), or `hybrid` (vector, word matches first)            |
+| `doc_type`                | `all`, `spell`, `item` or `srd`. Default `all`; takes precedence over `spells_only`            |
+| `class`                   | Repeatable; matches any of the named classes                                                   |
+| `school`                  | Exact school name                                                                              |
+| `level_min` / `level_max` | Inclusive level bounds, 0–9                                                                    |
+| `ritual`                  | `true` to require a ritual                                                                     |
+| `spells_only`             | Default `true`; `false` includes the 22 magic items the collection also holds                  |
+| `all_terms`               | `text` mode: require every word (default) rather than any one                                  |
+| `limit` / `offset`        | Page size (max 100) and page start                                                             |
+
+Three modes, because they fail differently. A vector search that returns nothing means the
+embedding did not surface it; a text search that returns nothing means the words are not in
+the corpus. Telling those apart is most of the work, so the mode is explicit rather than
+inferred.
+
+The response carries the Chroma `where` clause it actually sent, because a filter that
+silently matches nothing is the commonest failure here and the clause is the fastest way to
+see why. `total_matching` counts the distinct documents the _criteria_ admit — filters
+always, plus the words in text mode — so it says whether a filter is too narrow. A vector
+search has no relevance threshold, so it cannot say how many spells are relevant. `note`
+explains a result that needs it: an unsatisfiable filter, an AND that found nothing, or a
+candidate cap that truncated the ranking.
+
+`class` is applied as an `$or` over the exact class-list strings the index stores, because
+the field is one comma-joined value (`"Bard, Cleric, Wizard"`) and Chroma's `$contains` does
+not match inside it — `{"classes": {"$in": ["Wizard"]}}` would miss the 863 chunks whose list
+is `"Sorcerer, Wizard"`. A class the index never uses matches nothing rather than being
+dropped, because a filter must never widen the search.
+
+#### One collection, three kinds of text
+
+The index holds the spell corpus, the 22 magic items that share its directory, and the
+vendored 2024 SRD — 3651 chunks in total, of which 1274 are rulebook sections. They share a
+collection because they are searched together: a reader asking "what does cover do" wants
+the rule _and_ the spells that grant it.
+
+They are not interchangeable, so every row carries a `doc_type` of `spell`, `item` or `srd`,
+and every eligibility filter names the type it wants. Before `doc_type` existed the only
+marker was `is_spell`, which cannot distinguish "not a spell" from "not a spell _and_ not a
+pick" — an SRD row is `is_spell=False` exactly like a magic item, so a filter that asked only
+for "not a spell" would have handed the recommender the rulebook.
+
+`doc_type` takes precedence over `spells_only`, which is the same question at a coarser
+resolution. Honouring both would make `doc_type=srd` with the default `spells_only=true`
+match nothing at all.
+
+An SRD row is keyed by its _section_, not its heading text, because the SRD repeats headings:
+`classes.md` has six `Level 1: Spellcasting` sections, one per class, and keying on the text
+would report five of them as duplicates of the first. Its `level_label` reads `Rule` rather
+than `Cantrip` — `level` is 0 as a placeholder, and calling that a cantrip is a lie a client
+cannot detect, since the row has no school either.
+
+#### The SRD in the vector store
+
+`context/srd/` is indexed one row per section, chunked by heading rather than by the spell
+splitter, because a rule's identity is its heading: `### Cover` is the rule, and a chunk that
+began mid-table would be a fragment with no name. Sections longer than the chunk budget are
+split further, so a 1,750-line class chapter does not become one embedding that matches
+everything weakly. The heading is repeated in the chunk body, so a chunk split away from its
+heading still says what it is about.
+
+Tables are converted to Markdown pipe tables, never stripped. The numbers in a table _are_
+the rule — `### Cover`'s prose only says "as detailed in the Cover table", so a converter
+that dropped the markup would index a confident rule with its bonuses missing.
+
+The SRD is used in three places:
+
+| Where | How | Labelled |
+| ----- | --- | -------- |
+| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections | `srd` |
+| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both heading-anchored paths refuse | `rules-inferred` |
+| `POST /api/scenario` | `retrieval.gather_srd_context` — the rules the _scenario_ turns on | retrieved context |
+
+The rules lane is the only retrieval path that is not heading-anchored, and it is reached
+only after `rules.gather` and `rules.gather_inferred` have both refused. The anchor is what
+stops a passing mention being quoted as the rule, so it is deliberately left strict; the
+index lane buys recall for a question phrased in words the SRD does not use in a heading
+("how do I stop someone running past me" finds _Your Turn_). It is always labelled
+`rules-inferred`, because a similarity hit is not a quotation.
+
+The recommender's lane is separate from its eligibility pool. The pool decides what is
+_legal_ and is filtered by `doc_type=spell`; the SRD block is grounding, so the model does
+not supply "how does being grappled work" from memory — which is where a 2014 reading of it
+comes from. It is omitted entirely when empty, because a heading with nothing under it reads
+as "the rules are missing" and invites the model to fill the gap.
 
 ### CLI
 
@@ -348,6 +564,46 @@ one means reading the scenario it was written for. Each run is numbered so `/rea
 reopens it without typing a path, and `/read` restores the current answer, so `/rate`
 and the legality warnings work exactly as they do after a fresh generation.
 
+### Ask and chat history
+
+The ask surfaces — `/c` (character), `/?` (rules), the contextual menu and `/ask`
+(refine) — store their conversations in `.cache/conversations/`, so an exchange can be
+read back rather than asked again:
+
+```
+.cache/
+└── conversations/
+    └── lois/
+        ├── rules-how-does-cover-work-3f9a1c2b7d4e.json
+        ├── character-why-do-i-have-two-light-spells-8b2e5f0a1c93.json
+        └── refine-a-rust-monster-eats-the-fighter-s-plate-4d7c9e1a6b02.json
+```
+
+A file is a **thread**, not an answer: the opening question, its kind, and every turn
+that followed. A follow-up ("and a grapple?") is only meaningful beside the question it
+followed, so the thread is the unit — the same reason `/history` lists runs rather than
+books. The thread is keyed on the character and a hash of its opening question, so a
+repeat of the same opening question *replays* rather than re-asks.
+
+```bash
+/chats                   # list stored conversations, newest first, numbered
+/chat 1                  # read conversation 1, every turn in order
+/chat cover              # same, by a fragment of its opening question
+```
+
+The same store is served over HTTP: `GET /api/conversations` lists threads,
+`GET /api/conversations/{id}` reads one, and every ask endpoint returns a `thread_id`
+that a client passes back to continue the conversation. The **Chats** screen in the UI is
+that listing: filter by surface, then open a thread to read every turn with its
+provenance. It is the read side of the store, so nothing on it costs a model call.
+
+**A replay is guarded, not blind.** A character answer is only replayed while the sheet
+is unchanged — an edited sheet gives a different answer to the same question, so a
+fingerprint mismatch is a miss. A refinement is only replayed against the same previous
+answer, because refining different books with the same words is a different request. The
+rules and selection surfaces keep their own answer cache and replay from that; the thread
+is what gives the character and refine surfaces the same behaviour.
+
 ### Timings
 
 Each run records how long its three phases took, in `run.json`:
@@ -466,12 +722,14 @@ whatever a one-line fake SRD implies rather than what the real one does.
 - [x] Replace the model's prose book format with explicit `=== BOOK n ===` sections, so splitting a book no longer relies on heuristics. This also removes the spurious extra "books" the trailing summary produced (`**Book 3 pairs with:**` was read as a fourth book and recited inside the last one).
 - [ ] Clean out the runs stored in the old prose format, and delete the legacy parser and the front end's `withoutBookHeader`/`reasoningOnly` once they are gone.
 - [x] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
-- [ ] As we have a local copy of the rules list them out on the rules page and enable a quick UI only search on titles. Then enable a vector search over the documents.
+- [ ] As we have a local copy of the rules list them out on the rules page
+- [ ] Rules list: enable a quick UI only search on titles.
+- [ ] Rules list: Then enable a vector search over the documents.
+- [x] "Ask" box on the Rules tab should: filter rules by title, heading, subheading; search the text using vector search; and ask the question of the LLM. — the three run in parallel, each panel updating as it resolves. The filter matches headings client-side and opens the path to each match; the search is `GET /api/search`; the ask is unchanged.
 - [ ] Provide a history search.
-- [ ] Context documents and attachments should be links to the rules.
-- [ ] The context menu provided for the book should work for the character
+- [ ] Rules list: Context documents and attachments should be links to the rules.
+- [ ] The context menu provided for the book should work for the character and the rules.
 - [ ] The context menu should support "ask" and "search".
-- [ ] "Ask" box on the Rules tab should: filter rules by title, heading, subheading; search the text using vector search; and ask the question of the llm.
 
 ### Choosing the model
 
@@ -497,6 +755,25 @@ LLM_MODEL=openai/gpt-4o-mini python -m backend          # OpenRouter, one-off
 
 `OLLAMA_MODEL` also overrides the local default (`qwen3.5:4b`) when `LLM_MODEL` is unset.
 The embeddings model stays on Ollama regardless — `nomic-embed-text` is local-only.
+
+`LLM_MODEL_FAST` is a second, independent setting for the small model that answers
+one-line questions — currently reading a spell's scaling at the character's level when the
+spell states it in prose rather than in a table. It routes by the same name-based
+inference, and **unset means the main model is used**, so it is optional:
+
+```bash
+LLM_MODEL_FAST=deepseek/deepseek-v4-flash-0731   # OpenRouter
+LLM_MODEL_FAST=qwen2.5-coder:1.5b-base           # local
+```
+
+Its output is capped (`llm.FAST_MAX_TOKENS`), and the cap has to cover the model's *hidden
+reasoning* as well as the answer — a cap sized to the phrase alone truncates a reasoning
+model to an empty reply.
+
+Its answers are cached under `.cache/scaling/<character>/<level>-<spell>-<hash>.json`, keyed
+on the character's name and level, so opening the same spell twice costs one call rather than
+two. Only the model's answers are cached; the ones read straight out of the spell's text are
+free and are recomputed each time.
 
 Note: `qwen3.5:4b` is a _thinking_ model. It can spend its whole token budget on
 internal reasoning and return an empty response, so the CLI reports an empty

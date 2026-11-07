@@ -38,8 +38,13 @@
   .prose-spell strong {
     @apply font-semibold text-parchment;
   }
+  /* h2-h6, because the SRD browser renders a document's own heading levels. A book only
+     ever uses h3, but a rule nests four deep and an unstyled h5 would read as body text. */
+  .prose-spell h2,
   .prose-spell h3,
-  .prose-spell h4 {
+  .prose-spell h4,
+  .prose-spell h5,
+  .prose-spell h6 {
     @apply mt-4 mb-2 font-semibold text-arcane-300;
   }
   .prose-spell ul {

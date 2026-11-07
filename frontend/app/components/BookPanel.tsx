@@ -46,6 +46,9 @@ export function BookPanel({
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
+  // The refinement conversation for this book. Held so a follow-up is read in context,
+  // and so the exchange can be found again on the Chats screen.
+  const [threadId, setThreadId] = useState<string | null>(null)
 
   // The prose the contextual menu watches. Selection is scoped to this element, so a
   // selection in another book - or in the drawer's own input - cannot raise this book's
@@ -82,7 +85,9 @@ export function BookPanel({
     setAsking(true)
     setError(null)
     try {
-      setAnswer(await api.ask(scenario, question))
+      const result = await api.ask(scenario, question, undefined, threadId ?? undefined)
+      setAnswer(result)
+      setThreadId(result.thread_id)
     } catch (e) {
       setError(e instanceof ApiError ? e.message : String(e))
     } finally {

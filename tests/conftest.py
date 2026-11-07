@@ -46,17 +46,29 @@ class FakeDB:
 
     CATALOGUE = [
         {"filename": "Acid Splash.md", "spell_name": "Acid Splash", "level": 0,
-         "ritual": False, "is_spell": True, "school": "Evocation", "classes": "Sorcerer"},
+         "ritual": False, "is_spell": True, "doc_type": "spell",
+         "school": "Evocation", "classes": "Sorcerer"},
         {"filename": "Fire Bolt.md", "spell_name": "Fire Bolt", "level": 0,
-         "ritual": False, "is_spell": True, "school": "Evocation", "classes": "Sorcerer"},
+         "ritual": False, "is_spell": True, "doc_type": "spell",
+         "school": "Evocation", "classes": "Sorcerer"},
         {"filename": "Detect Magic.md", "spell_name": "Detect Magic", "level": 1,
-         "ritual": True, "is_spell": True, "school": "Divination", "classes": "Wizard"},
+         "ritual": True, "is_spell": True, "doc_type": "spell",
+         "school": "Divination", "classes": "Wizard"},
         {"filename": "Fireball.md", "spell_name": "Fireball", "level": 3,
-         "ritual": False, "is_spell": True, "school": "Evocation", "classes": "Wizard"},
+         "ritual": False, "is_spell": True, "doc_type": "spell",
+         "school": "Evocation", "classes": "Wizard"},
         {"filename": "Misty Step.md", "spell_name": "Misty Step", "level": 2,
-         "ritual": False, "is_spell": True, "school": "Conjuration", "classes": "Sorcerer"},
+         "ritual": False, "is_spell": True, "doc_type": "spell",
+         "school": "Conjuration", "classes": "Sorcerer"},
         {"filename": "Armblade.md", "spell_name": "Armblade", "level": -1,
-         "ritual": False, "is_spell": False, "school": "", "classes": ""},
+         "ritual": False, "is_spell": False, "doc_type": "item",
+         "school": "", "classes": ""},
+        # An SRD row, so the doc-type filter is exercised against a real shape rather than
+        # only against spells. It shares the collection with the spells and carries the same
+        # keys, which is what makes a filter that forgot ``doc_type`` return it by mistake.
+        {"filename": "playing-the-game", "spell_name": "Cover", "level": 0,
+         "ritual": False, "is_spell": False, "doc_type": "srd",
+         "school": "", "classes": "", "document": "playing-the-game", "slug": "cover"},
     ]
 
     def __init__(self, docs=None):
@@ -97,6 +109,19 @@ class FakeDB:
         self.get_calls.append(where)
         rows = [r for r in self.CATALOGUE if self._matches(r, where)]
         return {"metadatas": rows, "ids": [r["filename"] for r in rows]}
+
+    def similarity_search_with_score(self, query, k=4, filter=None, **kwargs):
+        """Scored similarity search, mirroring the real store's signature.
+
+        Present so the vector paths are exercised for real rather than silently falling
+        back to the retriever - a fake that omits a method the code calls makes the code
+        look like it works while testing the fallback instead.
+        """
+        rows = [r for r in self.CATALOGUE if self._matches(r, filter)]
+        return [
+            (FakeDoc(f"{row['spell_name']} text.", **row), 0.1 * index)
+            for index, row in enumerate(rows[:k])
+        ]
 
     def as_retriever(self, search_kwargs=None):
         """Mirror langchain's real signature so call sites stay honest."""

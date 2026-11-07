@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from backend.libs import llm, service
+from backend.libs import cache, llm, service
 from backend.cli import shell as shell_mod
 
 
@@ -168,6 +168,250 @@ def test_scenario_reports_each_stage(svc):
 
 def test_work_happens_without_any_progress_callback(svc):
     assert svc.scenario(SCENARIO).answer
+
+
+# --- contextualising a spell to the character ---
+
+def test_a_spell_is_contextualised_from_its_own_text(svc):
+    """The value is already written in the spell, so no model is asked for it."""
+    spell = {"name": "Eldritch Blast", "text": (
+        "_Cantrip Upgrade._ The spell creates two beams at level 5, three beams at "
+        "level 11, and four beams at level 17."
+    )}
+    assert svc.spell_scaling(spell) == "2 beams (L5)"
+
+
+def test_a_spell_that_does_not_scale_costs_no_model_call(svc, fake_llm):
+    """The gate is what keeps a call off every levelled spell in the corpus."""
+    spell = {"name": "Fireball", "text": "**Casting Time:** Action\n\nA bright streak."}
+    assert svc.spell_scaling(spell) is None
+    assert fake_llm.prompts == []
+
+
+def test_the_fast_model_reads_a_scaling_the_parser_cannot(svc, fake_llm):
+    """Booming Blade scales in prose rather than in a table, so it is the model's job."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    spell = {"name": "Booming Blade", "text": (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Thunder damage to the target on a hit."
+    )}
+    assert svc.spell_scaling(spell) == "extra 1d8 thunder damage on hit (L5)"
+    assert len(fake_llm.prompts) == 1
+    assert "Booming Blade" in fake_llm.prompts[0]
+
+
+def test_the_fast_model_is_asked_only_about_the_gap(svc, fake_llm):
+    """A spell the parser read must not also cost a model call."""
+    fake_llm.response = "should not be used"
+    spell = {"name": "Fire Bolt", "text": (
+        "_Cantrip Upgrade._ The damage increases by 1d10 when you reach levels "
+        "5 (2d10), 11 (3d10), and 17 (4d10)."
+    )}
+    assert svc.spell_scaling(spell) == "2d10 damage (L5)"
+    assert fake_llm.prompts == []
+
+
+@pytest.mark.parametrize("answer", ["none", "None.", "N/A", "no change", ""])
+def test_a_refusal_is_not_a_note(svc, fake_llm, answer):
+    """The model is told to say "none", and a note reading "none (L5)" is not a note."""
+    fake_llm.response = answer
+    spell = {"name": "Booming Blade", "text": (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Thunder damage to the target on a hit."
+    )}
+    assert svc.spell_scaling(spell) is None
+
+
+def test_a_sentence_is_not_a_note(svc, fake_llm):
+    """The note is rendered as a badge, so a paragraph would break the card."""
+    fake_llm.response = (
+        "At 5th level, the melee attack deals an extra 1d8 Thunder damage to the target "
+        "on a hit, and the damage the target takes for moving increases to 2d8."
+    )
+    spell = {"name": "Booming Blade", "text": (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Thunder damage to the target on a hit."
+    )}
+    assert svc.spell_scaling(spell) is None
+
+
+def test_a_two_part_upgrade_is_still_a_note(svc, fake_llm):
+    """The cap must clear the real answers, not just the short example.
+
+    Both prose cantrips this path exists for have a two-part upgrade, so their answers run
+    to ~100 characters. A cap sized to "2 beams" discarded every one of them and made
+    Green-Flame Blade look like a spell that does not scale.
+    """
+    fake_llm.response = (
+        "1d8 extra fire damage to the target; second creature takes 1d8 + spellcasting "
+        "ability modifier fire damage"
+    )
+    spell = {"name": "Green-Flame Blade", "text": (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Fire damage to the target on a hit."
+    )}
+    note = svc.spell_scaling(spell)
+    assert note is not None
+    assert note.endswith("(L5)")
+    assert "1d8" in note
+
+
+def test_a_model_failure_does_not_lose_the_card(svc, fake_llm):
+    """The note is an addition to the card, so a failure to produce it is not an error."""
+    def boom(_prompt):
+        raise llm.LLMUnavailable("no network")
+
+    fake_llm.invoke = boom
+    spell = {"name": "Booming Blade", "text": (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Thunder damage to the target on a hit."
+    )}
+    assert svc.spell_scaling(spell) is None
+
+
+def test_no_level_means_no_note_and_no_call(svc, fake_llm):
+    svc.character = {k: v for k, v in SHEET.items() if k != "Current Level"}
+    spell = {"name": "Eldritch Blast", "text": (
+        "_Cantrip Upgrade._ The spell creates two beams at level 5."
+    )}
+    assert svc.spell_scaling(spell) is None
+    assert fake_llm.prompts == []
+
+
+def test_an_injected_backend_is_reused_for_the_fast_path(svc, fake_llm):
+    """Injection means "use this instead of constructing clients".
+
+    A test that passes a fake and then gets a real network call from the fast path would
+    be testing nothing - and would fail on a machine with no key.
+    """
+    assert svc.fast_llm is fake_llm
+
+
+# --- the note is cached against the character and level ---
+
+BOOMING_BLADE = {"name": "Booming Blade", "text": (
+    "This spell's damage increases when you reach certain levels. At 5th level, the "
+    "melee attack deals an extra 1d8 Thunder damage to the target on a hit."
+)}
+
+
+def test_a_second_look_at_the_same_spell_costs_no_model_call(svc, fake_llm):
+    """Opening a drawer twice must not pay for the same phrase twice."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    assert svc.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
+    assert svc.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
+    assert len(fake_llm.prompts) == 1
+
+
+def test_the_cache_survives_a_new_service_over_the_same_directory(fake_db, fake_llm, tmp_path):
+    """The point of a cache is that it outlives the process that filled it."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    cache_dir = str(tmp_path / "cache")
+    first = service.SpellbookService(fake_db, dict(SHEET), backend=fake_llm,
+                                     cache_dir=cache_dir)
+    assert first.spell_scaling(BOOMING_BLADE) is not None
+
+    second = service.SpellbookService(fake_db, dict(SHEET), backend=fake_llm,
+                                      cache_dir=cache_dir)
+    assert second.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
+    assert len(fake_llm.prompts) == 1
+
+
+def test_a_different_level_is_a_different_note(fake_db, fake_llm, tmp_path):
+    """The level is in the key because it is in the answer."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    cache_dir = str(tmp_path / "cache")
+    at_five = service.SpellbookService(fake_db, dict(SHEET), backend=fake_llm,
+                                       cache_dir=cache_dir)
+    assert at_five.spell_scaling(BOOMING_BLADE) is not None
+
+    fake_llm.response = "extra 2d8 thunder damage on hit"
+    at_eleven = service.SpellbookService(
+        fake_db, {**SHEET, "Current Level": 11}, backend=fake_llm, cache_dir=cache_dir
+    )
+    assert at_eleven.spell_scaling(BOOMING_BLADE) == "extra 2d8 thunder damage on hit (L11)"
+    assert len(fake_llm.prompts) == 2
+
+
+def test_a_different_character_is_a_different_note(fake_db, fake_llm, tmp_path):
+    """Two characters at the same level are still two answers, so the name is in the key."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    cache_dir = str(tmp_path / "cache")
+    lois = service.SpellbookService(fake_db, dict(SHEET), backend=fake_llm,
+                                    cache_dir=cache_dir)
+    assert lois.spell_scaling(BOOMING_BLADE) is not None
+
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    other = service.SpellbookService(fake_db, {**SHEET, "Name": "Bram"}, backend=fake_llm,
+                                     cache_dir=cache_dir)
+    assert other.spell_scaling(BOOMING_BLADE) is not None
+    assert len(fake_llm.prompts) == 2
+
+
+def test_a_refusal_is_cached_too(svc, fake_llm):
+    """"This spell does not scale" is an answer, and it cost a call to obtain."""
+    fake_llm.response = "none"
+    assert svc.spell_scaling(BOOMING_BLADE) is None
+    assert svc.spell_scaling(BOOMING_BLADE) is None
+    assert len(fake_llm.prompts) == 1
+
+
+def test_a_failure_is_not_cached(svc, fake_llm):
+    """Storing a failure would make one bad call permanent for this character and level."""
+    calls = []
+
+    def boom(_prompt):
+        calls.append(1)
+        raise llm.LLMUnavailable("no network")
+
+    fake_llm.invoke = boom
+    assert svc.spell_scaling(BOOMING_BLADE) is None
+    assert svc.spell_scaling(BOOMING_BLADE) is None
+    assert len(calls) == 2
+
+
+def test_the_deterministic_read_is_not_cached(svc, fake_llm, tmp_path):
+    """It is free, and a stored copy would outlive a corpus change that fixed it."""
+    spell = {"name": "Eldritch Blast", "text": (
+        "_Cantrip Upgrade._ The spell creates two beams at level 5, three beams at "
+        "level 11, and four beams at level 17."
+    )}
+    assert svc.spell_scaling(spell) == "2 beams (L5)"
+    assert not list((tmp_path / "cache" / "scaling").rglob("*.json"))
+
+
+def test_a_corrupt_entry_falls_back_to_the_model(svc, fake_llm, tmp_path):
+    """A cache that cannot be read is a miss, not an error."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    assert svc.spell_scaling(BOOMING_BLADE) is not None
+    for path in (tmp_path / "cache" / "scaling").rglob("*.json"):
+        path.write_text("{not json", encoding="utf-8")
+    assert svc.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
+    assert len(fake_llm.prompts) == 2
+
+
+def test_an_entry_from_an_older_reader_is_ignored(svc, fake_llm, tmp_path):
+    """A note written before a reader fix must not keep being served.
+
+    This is the bug the version exists for: every cantrip reported its level 5 value at
+    levels 11 and 17, and a stored note would have gone on doing so.
+    """
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    assert svc.spell_scaling(BOOMING_BLADE) is not None
+    for path in (tmp_path / "cache" / "scaling").rglob("*.json"):
+        entry = json.loads(path.read_text(encoding="utf-8"))
+        entry["scaling_version"] = cache.SCALING_VERSION - 1
+        path.write_text(json.dumps(entry), encoding="utf-8")
+    assert svc.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
+    assert len(fake_llm.prompts) == 2
+
+
+def test_an_unwritable_cache_does_not_lose_the_note(svc, fake_llm, tmp_path):
+    """The note is an addition to a card, so a cache failure must not fail the lookup."""
+    fake_llm.response = "extra 1d8 thunder damage on hit"
+    (tmp_path / "cache").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "cache" / "scaling").write_text("not a directory", encoding="utf-8")
+    assert svc.spell_scaling(BOOMING_BLADE) == "extra 1d8 thunder damage on hit (L5)"
 
 
 # --- API readiness ---

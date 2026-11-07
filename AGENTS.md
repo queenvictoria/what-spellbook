@@ -9,8 +9,8 @@ records development learnings for anyone (human or agent) working on the reposit
 
 A **Python core** that recommends D&D 5.5e (2024) spells for a scenario, with three
 front ends over it: a `cmd.Cmd` REPL, a FastAPI HTTP API, and a React UI. Retrieval is a
-local **Chroma** vector store of spell markdown files; the model is reached through
-**LangChain** with OpenRouter or Ollama backends.
+local **Chroma** vector store holding the spell markdown files *and* the vendored 2024 SRD;
+the model is reached through **LangChain** with OpenRouter or Ollama backends.
 
 The TypeScript interfaces later in this file describe the **agent configuration shape**
 from the original design. Where they disagree with the implementation, the
@@ -23,17 +23,20 @@ implementation wins - the wire contract the UI actually depends on is
 backend/
   libs/           rules, retrieval, prompting, caching - no terminal, no printing
     config.py       paths, models, tunables (+ resolve() for repo-relative paths)
-    indexing.py     Chroma build/validate/rebuild
+    indexing.py     Chroma build/validate/rebuild (spells, items and the SRD)
     characters.py   sheet loading and the rules questions we ask of a sheet
-    spells.py       spell parsing, eligibility filters, book-pick validation
+    spells.py       spell parsing, eligibility filters, book-pick validation, doc types
     retrieval.py    candidate collection and prompt-block rendering
     prompts.py      prompt templates + context-file resolution
     cache.py        per-run/per-book result cache
     lookup.py       deterministic sheet answers (/c), duplicate-spell origins
     rules.py        2024 SRD retrieval for /? and the contextual menu (heading match,
-                    selection match, spell and invocation lookup, cache)
+                    selection match, index similarity, spell and invocation lookup, cache)
+    srd.py          the SRD as browsable documents - heading tree, anchors, table
+                    conversion, and the section list the index is built from
     timing.py       per-phase aggregation behind the ETA
     llm.py          backend selection, response normalisation, typed errors
+    search.py       direct index search for inspection (filters, modes, facets)
     service.py      SpellbookService - the application layer
     watching.py     corpus file watcher
   cli/            terminal only - parsing, completion, progress, formatting
@@ -448,7 +451,7 @@ cannot tell which it is reading.
 
 | Source | Edition | Note |
 | --- | --- | --- |
-| `context/srd/*.md` | **2024** | **The only rules source.** Vendored SRD 5.2.1, CC-BY-4.0 |
+| `context/srd/*.md` | **2024** | **The only rules source.** Vendored SRD 5.2.1, CC-BY-4.0. Also indexed into the vector store |
 | `5e24srd.com` | 2024 | Superseded, and incomplete. Refused by `rules.check_source` |
 | `5thsrd.org` | **2014** | **Do not use.** Its own banner points at 5e24srd.com |
 | `dndbeyond.com` | mixed | Subclass text is behind a subscription |
@@ -496,6 +499,33 @@ question can therefore have no answer, and refusing is the honest outcome - that
 `RulesUnavailable` and an HTTP 404 report. **Do not** "improve" the matcher by lowering the
 heading requirement: a plausible-looking wrong paragraph is worse than admitting the SRD
 does not contain the rule, because the user cannot tell the difference.
+
+### Browsing the SRD: a section knows where it sits
+
+`backend/libs/srd.py` reads the vendored files as documents, and `Section.ancestors` is the
+chain of headings above a section, outermost first, excluding the section itself. It is what
+the breadcrumb on `SrdCard` is drawn from, and it is sent on the wire rather than left for
+the client to derive: the client holds the table of contents and *could* walk it, but the
+server already knows the path, and a second lookup for something already computed is a way
+for the two to disagree.
+
+- **Every vendored file has exactly one root heading, and it repeats the document title.**
+  `rules-glossary.md` opens with `# Rules Glossary`, so a section directly under it would
+  otherwise breadcrumb as "Rules Glossary / Rules Glossary". The root is dropped when it is
+  the only ancestor *and* its text matches the title - not unconditionally, because a
+  document whose root is a real subdivision would lose a crumb that means something.
+- **The ancestry excludes the section itself.** The card already titles the section, so
+  repeating it as the last crumb states it twice. The last crumb is the section, marked
+  `aria-current="page"` and not linked, because a link to where you already are is a control
+  that does nothing.
+- **A crumb is a link, not a label.** Each carries the slug a click needs, so the trail is
+  also the way to the parent rule - which is the other thing a reader wants from it, since
+  the section that defines the terms this one uses is usually the parent.
+- **`_trail` is a separate walk from `_find`.** They answer different questions and only one
+  needs the path; folding them together would make a caller that wants the heading alone pay
+  for a tuple it discards.
+- **The trail is verified to resolve.** A test walks every ancestor of a real section and
+  re-opens it by slug, so a crumb cannot point at a heading that is not there.
 
 ### How the matcher decides
 
@@ -557,7 +587,8 @@ before "fixing" the document.
 - `data/` is gitignored, so the character sheet and the Chroma index are untracked.
 - `.cache/` is gitignored too, and is **user data** - never delete it, and never let a
   test write into it.
-- Spell corpus: 544 markdown files, indexed as ~1280 chunks.
+- Spell corpus: 544 markdown files, indexed as ~1280 chunks. The vendored SRD adds 2371
+  more, for 3651 chunks in one collection - see *One collection, three kinds of text*.
 - `markdown-it-py` needs `MarkdownIt("commonmark").enable("table")` to validate GFM
   tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
   not installed`.
@@ -579,6 +610,16 @@ before "fixing" the document.
   `frontend/package-lock.json`, which a front end must commit.
 - Lint with `npx eslint app`, typecheck and build with `npm run build` (`tsc -b && vite
   build`). Both are clean and should stay that way.
+- **A route that exists on disk can still 404 in the browser.** Vite serves `index.html`
+  with a `?t=<mtime>` token pinned onto `main.tsx`, and that token is the key its transform
+  cache is stored under. After an HMR failure the cache can keep a *pre-edit* transform
+  under the token the page is still asking for, so the browser renders the old module while
+  the file on disk is correct - the symptom is a nav tab that silently redirects, with no
+  console error. Diagnose by comparing the two: `curl -s localhost:5173/app/App.tsx?t=<token
+  from index.html>` against the same URL with a made-up token. The stale response is
+  recognisable because its `createHotContext("/app/App.tsx")` has **no query string**.
+  `touch` the file to force a re-transform, or restart the dev server. Do not go looking for
+  a bug in the router - the router is fine.
 
 ### Retrieval: filter first, rank second
 
@@ -610,6 +651,147 @@ Specific traps hit while building this:
   raises `ValueError: truth value of an array ... is ambiguous`, which an `except` will
   swallow — making the validator always report "invalid" and rebuild every launch. Use
   `len(...) == 0`.
+
+### Searching the index is a different question from retrieving for a character
+
+`backend/libs/search.py` and `GET /api/search` exist to answer "what is in the index, and
+what does a query bring back" — not "what is legal for this character". It can return a
+spell the character could never pick, on purpose, which is how a missing recommendation
+gets explained. Nothing in the recommender calls it.
+
+- **A class filter cannot be `$in`, and `$contains` does not work either.** `classes` is
+  stored as one comma-joined string (`"Bard, Cleric, Wizard"`), so
+  `{"classes": {"$in": ["Wizard"]}}` matches only the spells whose list is *exactly*
+  `"Wizard"` — 119 of the 863 chunks that name Wizard. `$contains` looks like the fix and
+  is worse: it returns **nothing at all**, silently, with no error. The only correct filter
+  is an `$or` over the exact combinations that name the class, which is what
+  `search._class_clause` builds. Verified against the live index, not assumed.
+- **A filter that names a class the index never uses must match nothing.** Dropping the
+  unsatisfiable clause would quietly widen the search to the whole collection, which is the
+  one outcome a filter cannot have. The result says why instead.
+- **`where_document` is case-sensitive and its `$and` is unreliable.** `{"$contains":
+  "nonmagical"}` finds 32 chunks and `{"$contains": "Nonmagical"}` finds 5, so a text search
+  must case-fold both sides — which is why text mode scans the returned documents in Python
+  rather than pushing the match into Chroma. `$and` over two `$contains` clauses returned 0
+  where the intersection of the two sets was also 0 but the union was 38, so the operator
+  cannot be trusted to mean what it says.
+- **A vector search has no relevance threshold.** `total_matching` therefore reports how
+  many distinct spells the *filter* admits, not how many are relevant — and the response
+  says so rather than implying a precision it does not have. Chroma's distance is not a
+  percentage and its scale depends on the embedding model, so it is shown as a number only
+  next to another number from the same query.
+- **Echo the `where` clause back.** A filter that silently matches nothing is the commonest
+  failure here, and the clause actually sent is the fastest way to see why. It is part of
+  the response for that reason.
+- **Text mode's AND needs an escape hatch.** A chunk is ~1200 characters, so two words can
+  both be present in a spell yet never in the same chunk — "nonmagical armor" matches 0
+  chunks strictly and 41 spells with `all_terms=false`. Returning an empty page that reads
+  as a broken index is worse than a sentence saying which knob to turn, so the result
+  carries a `note`.
+- **`$in` with a large list is slow on the first call.** Filtering a query by all 544 spell
+  names took 2.6s cold and 0.009s warm; the class filter's 56 `$or` clauses took 1.3s cold
+  and 0.018s warm. Chroma caches the filter, so the first request after a restart is the
+  slow one — do not read that as a regression.
+- **The index holds 22 magic items at `level: -1`.** They share the collection with the
+  spells, so `spells_only` defaults to true and `-1` is reported as "Not a spell" rather
+  than leaking out as a negative level.
+
+### One collection, three kinds of text
+
+The index holds the spell corpus, the 22 magic items that share its directory, and the
+vendored 2024 SRD. They share a collection because they are searched together, and they are
+told apart by a `doc_type` of `spell`, `item` or `srd`. Every eligibility filter names the
+type it wants.
+
+- **`is_spell` cannot express "not a pick".** It was the only marker before `doc_type`, and
+  it is `False` for a magic item *and* for an SRD section. A filter that asked only for
+  "not a spell" would therefore have handed the recommender the rulebook. The two fields are
+  kept because they disagree usefully: `doc_type` is the coarse kind, `is_spell` the narrow
+  one.
+- **A shared collection means a shared namespace.** An SRD section is named after its
+  heading, and a heading can collide with a spell name — the SRD has a `#### Fireball` *and*
+  the corpus has a Fireball spell. Keying a distinct row on the name alone folds the rule
+  into the spell and reports one fewer row than exists, so the key includes `doc_type`.
+- **For an SRD row the key is the section, not the heading text.** The SRD repeats headings:
+  `classes.md` has six `Level 1: Spellcasting` sections, one per class. Keying on the text
+  reported five of them as duplicates of the first — visible only as a count that was 108
+  short of the 1274 headings on disk.
+- **`Chroma.from_documents` adds to a collection; it does not replace it.** `ensure_db`
+  resets first, but a direct `build_index` call did not, so building twice reported 7302
+  chunks for a 3651-chunk corpus. `build_index` now resets unconditionally. A doubled index
+  is invisible until a count looks wrong.
+- **A placeholder value must not be reported as a real one.** An SRD row's `level` is 0
+  because Chroma cannot filter on a missing key, and `level_label` would have called every
+  rule a cantrip. A client cannot detect that — the row has no school either, so both fields
+  that would give it away read as a cantrip's. It reports `Rule` instead, and the heading's
+  own depth is kept separately as `heading_level` so a spell-level filter keeps one meaning.
+- **`doc_type` supersedes `spells_only` rather than combining with it.** They are the same
+  question at different resolutions, and honouring both makes `doc_type=srd` with the default
+  `spells_only=true` match nothing at all.
+
+### Indexing the SRD: chunk by heading, keep the tables
+
+`context/srd/` is indexed one row per section, and the two conversions `rules` does for a
+prompt are deliberately *not* reused:
+
+- **Chunk by heading, not by the spell splitter.** A rule's identity is its heading:
+  `### Cover` is the rule, and a chunk that began mid-table would be a fragment with no
+  name. Sections longer than the chunk budget are split further, so a 1,750-line class
+  chapter does not become one embedding that matches everything weakly. The heading is
+  repeated in the chunk body, so a chunk split away from its heading still says what it is
+  about.
+- **Tables become Markdown pipe tables, never sentences.** `rules.tables_to_text` flattens a
+  table into `header: cell; header: cell.` because a prompt cannot read markup. A reader can,
+  and the numbers in a table *are* the rule — `### Cover`'s prose only says "as detailed in
+  the Cover table", so a converter that dropped the markup would index a confident rule with
+  its bonuses missing.
+- **The file's own H1 is a title wrapper, not a section.** `# Classes` is immediately
+  followed by `## Barbarian` and holds no text of its own, so indexing it added one row
+  containing the entire 298KB chapter. Its children are indexed normally, and the document
+  title is carried on every one of them anyway.
+- **`srd.sections()` exists because `section()` re-reads the file.** Slicing all 1279
+  headings one at a time would re-read and re-scan 880KB of Markdown 1279 times. The
+  one-pass version computes each section's end with a stack, and a test asserts the two
+  agree about where a section ends — if they drifted, a search hit would open a different
+  rule than the one it matched.
+- **A missing SRD directory is not an error.** The spell corpus is the index's reason to
+  exist, so a checkout without the vendored rules still builds a usable index. It is logged,
+  because a silently rule-less index is only noticed when an answer is wrong.
+
+### The SRD is used in three places, and only one of them is a quotation
+
+| Where | How | Labelled |
+| --- | --- | --- |
+| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections | `srd` |
+| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both anchored paths refuse | `rules-inferred` |
+| `POST /api/scenario` | `retrieval.gather_srd_context` — the rules the *scenario* turns on | retrieved context |
+
+- **The index lane is reached last, and the anchor is left strict.** `rules.gather` and
+  `rules.gather_inferred` are heading-anchored because the anchor is what stops a passing
+  mention being quoted as the rule. Loosening either to accommodate a question phrased in
+  other words would re-break every failure they exist to prevent. `gather_from_index` is a
+  third path instead, and it is always labelled `rules-inferred` — a similarity hit is not a
+  quotation, and the label is what makes answering one safe.
+- **It buys recall, not precision.** "How do I stop someone running past me" shares no
+  distinctive word with the heading that answers it (*Your Turn*), so no heading match will
+  find it. Verified live against the rebuilt index.
+- **Collapse chunks back to sections.** A chunk is a 1200-character window that can begin
+  mid-table; the section is the rule, and it is what the prompt should quote. The chunk text
+  is the fallback when the section is gone — the index can be older than the corpus, and a
+  heading renamed since the last rebuild must not drop the hit.
+- **The recommender's lane is grounding, not eligibility.** The pool decides what is legal
+  and is filtered by `doc_type=spell`; the SRD block exists so the model does not supply
+  "how does being grappled work" from memory, which is where a 2014 reading of it comes
+  from. It is omitted entirely when empty, because a heading with nothing under it reads as
+  "the rules are missing" and invites the model to fill the gap.
+- **A scenario is not a question.** The heading-anchored matcher answers a question, and a
+  scenario is a paragraph of prose with no single subject — requiring a heading to name it
+  would return nothing. Similarity is the right shape here, and the result is labelled as
+  retrieved context rather than as a quoted rule.
+- **A fake that omits a method the code calls tests the fallback instead.** `FakeDB` had no
+  `similarity_search_with_score`, so the vector paths silently took the retriever branch and
+  the new lane looked like it worked while never being exercised. The fake now mirrors the
+  real store's signature.
 
 ### Validate the model's output, do not trust it
 
@@ -758,6 +940,45 @@ the answer is printed, because it is the record used for post-play ratings, and 
   number against the store when `/history` has not been run yet, because requiring a
   listing first would make the common case ("read the last one") fail confusingly.
 
+### A conversation is a thread, not an answer
+
+`.cache/conversations/<character>/<kind>-<slug>-<hash>.json` stores the ask surfaces —
+`/c`, `/?`, the contextual menu and `/ask`. The rules cache answers *one question* and is
+keyed on that question alone. That is the right shape for a lookup and the wrong shape for
+a conversation: "and a grapple?" is only meaningful beside the question it followed. So a
+file is a **thread**: the opening question, its kind, and every turn in order. The same
+bargain `/history` makes for runs — a run is the unit of reading, a book the unit of
+rating — applies here: a thread is the unit of reading, a turn the unit of provenance.
+
+- **The opening question identifies the thread, not the latest one.** A follow-up joins
+  the conversation it followed rather than starting a new one, so the id stays stable as
+  the thread grows. The kind is part of the key because the same words asked of the sheet
+  and of the rulebook are different questions with different answers.
+- **A replay must be guarded, or it outlives the state it described.** The rules and
+  selection surfaces already replay from their own answer caches. The character and refine
+  surfaces had no cache at all, so a repeat re-ran the model. Storing the turn is what
+  gives them the same behaviour — but only with a guard: a character answer carries the
+  sheet's fingerprint and is a miss when the sheet changed, and a refinement carries the
+  previous answer's fingerprint because refining different books with the same words is a
+  different request. Without those, an edited sheet would keep serving advice for a
+  character that no longer exists.
+- **Second-precision timestamps cannot order a listing.** A thread's `updated_at` moves as
+  it grows, and several turns are appended within the same second, so the saves tie and the
+  order falls back to the id — a thread continued just now can sort below one that merely
+  started just now. The conversation store uses microsecond precision for that reason; the
+  run cache keeps seconds because a run is written once.
+- **A replay is still a turn.** It is appended to the thread with `from_cache` set, so the
+  history shows the exchange was revisited rather than pretending it never happened. The
+  same reason a cached run is written before it is printed: the record is what a rating is
+  attached to later.
+- **Return the turn, not an `Answer`, when the caller needs more than the prose.** A
+  refinement replay needs the stored `model` as well as the answer text, and rebuilding an
+  `Answer` drops it. `_replay` returns the `conversations.Turn`; `_answer_from_turn`
+  converts it for the surfaces that only want an `Answer`.
+- **A thread is keyed on the scenario for a refinement.** `refine` is only meaningful
+  beside the books it refines, so its opening is the scenario, not the question — and a
+  replay lookup must pass that opening explicitly or it looks in the wrong file.
+
 ### The API is transport, and only transport
 
 `backend/api/main.py` validates input, calls one service method, and maps a typed error to a
@@ -820,6 +1041,104 @@ does not have, and the two front ends would drift within a week.
 - **Never let a smoke test write into real user data.** Exercising `POST
   /api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
   you touched, and prefer a request that only reads.
+
+### Browsing the SRD is not asking it a question
+
+`rules` answers a question: it ranks sections by how well their headings name the subject
+and quotes the winner. `srd` shows the rulebook, and the two needs are different enough to
+be different modules.
+
+- **A browser must be complete and stable; retrieval may be selective.** A question has one
+  best answer, so ranking is fine. A table of contents that omitted a section is simply
+  wrong, so `srd` walks every heading in document order and gives each a stable anchor.
+- **Tables become pipe tables, not sentences.** `rules.tables_to_text` flattens a table to
+  `header: cell; header: cell.` because a prompt cannot read markup. A reader can, and the
+  numbers in a table *are* the rule - `### Cover`'s prose only says "as detailed in the
+  Cover table", so a browser that dropped the table would show a confident rule with its
+  bonuses missing.
+- **Headings keep their level.** `rules.markdown_to_text` flattens every heading to `##` so
+  the matcher sees one flat list. A browser needs the nesting, or `#### Attack [Action]`
+  reads as a sibling of `## Actions`.
+
+Four traps, each of which produced a plausible-looking wrong tree:
+
+- **A BOM defeats the heading regex.** `spells.md` begins `\ufeff# Spells`, so the `#` is
+  not at the start of the line. The symptom is quiet: the title falls back to the filename
+  and looks right by luck, while the file's top-level sections become siblings of nothing.
+  Strip the BOM before *scanning*, not just before rendering.
+- **The SRD repeats headings, so a slug from the text alone collides.** `classes.md` has six
+  `Level 1: Spellcasting` sections, one per class. Without de-duplication every link after
+  the first opens the wrong class's feature. Slugs are numbered per document
+  (`level-1-spellcasting-2`).
+- **A heading inside a blockquote is not a section.** `> ### Breaking Your Oath` is quoted
+  text inside a rule; anchoring it would put a Paladin's oath discussion in the table of
+  contents as a sibling of the Paladin class. The scanner only matches a line that *begins*
+  with `#`, which is exactly right.
+- **The conversion mis-levelled three stat blocks, and the damage was 228 spells.** *Find
+  Steed*, *Giant Insect* and *Summon Dragon* each carry a creature stat block whose name the
+  conversion wrote as `##` while the spell owning it is `####`. `## Otherworldly Steed`
+  therefore *closes* `## Spell Descriptions`, so the 121 spells after *Find Steed* - Fireball
+  among them - became children of a steed's stat block. The tree still looked plausible,
+  which is why this needs a test rather than a glance. `_repair_stat_blocks` fires only on
+  the stat-block signature (a heading followed immediately by a deeper `#### Traits`, which
+  appears nowhere else in the corpus) and moves the heading to the spell's own level. A
+  general "fix the levels" pass would rewrite the class chapters, where a `###` after a
+  `####` is the real structure.
+
+Two smaller facts worth keeping:
+
+- **Markdown has no colspan, and the class progression tables need it.** Their header has two
+  rows, the second holding the spell-slot levels under a `colspan="9"` group label. Merging
+  the rows column-wise keeps both - "Spell Slots per Spell Level 1" - where taking one row
+  loses either the label or the levels. A span becomes its label plus empty neighbours, so
+  every row stays the same width.
+- **A table with no `<thead>` needs an empty header row, not a promoted first row.** The
+  SRD's headerless tables are key/value blocks ("Primary Ability | Strength") and
+  abbreviation grids, where the first row is data. Promoting it labels "Primary Ability" as
+  a column heading.
+
+The renderer widened with it, and the widening is shared: `Markdown.tsx` now handles pipe
+tables, blockquotes (recursively, because an SRD sidebar contains its own heading) and
+heading levels. That also fixed a pre-existing gap - 107 corpus files contain pipe tables
+that were rendering as raw `|`-separated text.
+
+### A printed path is an invitation to read the rule
+
+Every answer in this app ends with the file it came from, and that path used to be dead
+text. It is now a link that opens the rule in a drawer - the same affordance spells already
+had, for the same reason: following a citation used to mean leaving the answer behind and
+finding the heading by hand on the Rules tab.
+
+Four things had to be true for that to work, and each was a separate bug:
+
+- **A citation needs an anchor, not just a file.** `playing-the-game.md` is 65KB and
+  `classes.md` 296KB, so a link to the file opens the book at the top and leaves the reader
+  to find the rule. `rules._section_reference` derives the anchor from the heading that
+  answered, and `srd.anchor` resolves a *name* to a slug because a spell's `url` is built
+  from its own name. Both fall back to the bare file when there is no heading to point at -
+  a promoted run-in label ("Ending a Grapple") is not a heading in the file, and a link to
+  a section that does not exist is worse than a link to the book.
+- **A cached citation is re-anchored on read, not trusted.** Entries written before
+  citations carried anchors store the bare file, so a stored answer would open the rulebook
+  at the top while a fresh one opened the rule. `_anchor_cached` derives the anchor from the
+  passage's own first line, which the stored text already carries - so every existing entry
+  is fixed without a `SCHEMA_VERSION` bump, which would have invalidated every cached answer
+  and every rating for a cosmetic gain.
+- **The service must use the re-anchored url, not the stored one.** `gather` returns the
+  fixed url, but `ask_rules` read `cached["url"]` straight out of the file and threw it
+  away. The symptom was a live server returning the old path while the same call in a
+  Python shell returned the new one - which reads as "the reload did not happen" and is not.
+- **Not every path is a rule.** A spell's footer may be `context/srd/spells.md` (the 2024
+  SRD) or `data/reddit-spence_post/...` (the retrieval corpus). The corpus is not a
+  rulebook page and has no headings to browse, so `srdInPath` returns null for it and the
+  path stays plain text. A link that fails is worse than no link, because it looks like the
+  rule is missing rather than like the path is not a rule.
+
+The drawer is a sibling of the spell drawer rather than a child: a rule and a spell are two
+readings of two different things, and nesting them would make one panel depend on the
+other's state. It carries the tree as well as the rule, because the commonest next move
+after reading one rule is reading the one beside it - sending the reader back to the tab to
+click again would make the drawer a dead end.
 
 ### A selection is not a question
 
@@ -1075,6 +1394,93 @@ Two consequences worth keeping:
   a general parser, because a general parser needs `dangerouslySetInnerHTML` and would put
   raw model output into the page as HTML.
 
+### A spell card is about a character, not just a spell
+
+`SpellSchema.scaling` carries what the spell does at the **loaded character's** level -
+`2 beams (L5)` for a level 5 Warlock's Eldritch Blast. The spell's text states its scaling
+as a table ("two beams at level 5, three beams at level 11"), and a reader at the table
+wants the row that applies to them.
+
+It is a field of its own rather than folded into `text`, because it is the one value on
+the card that is *this app's reading of a rule applied to a sheet* rather than the rule
+itself. The card renders it as a badge beside the name, which is what says it is about the
+character.
+
+- **Read it out of the spell's own words; do not ask a model to restate it.** The value is
+  already written in the file, and a model asked to restate a damage die can restate it
+  wrongly. `spellstats.scaling()` parses it, and the fast model is only the fallback.
+- **The label is the character's level, not the level the value was stated at.** A level 10
+  caster is shown the level 5 row labelled `(L10)`, because that is what they deal.
+  Labelling it `(L5)` would read as a level they are not.
+- **Below the first stated level there is no note.** A cantrip at level 3 has not upgraded,
+  and showing it the level 5 row states a number the character cannot cast yet. This is the
+  case a "nearest level" implementation gets wrong, and it is invisible because the note
+  still looks plausible.
+- **A slot-scaled spell gets no note.** A Warlock's slots are all one level, so "for each
+  slot level above 3rd" has a single answer for them and it is the spell's own text.
+- **The gate is the gap, not "mentions a level".** Every levelled spell's header line names
+  its own level, so gating on that would spend a model call on all 539 of them. Only a
+  spell whose text states a level-based change that the parser could not read is worth a
+  call - measured over the corpus, that is exactly two: Booming Blade and Green-Flame
+  Blade, which scale in prose rather than in a table.
+- **A failure to produce the note is not an error.** It is an addition to a card whose text
+  is read straight from a file, so a model failure, a missing sheet or a sheet with no level
+  all yield `None` rather than a 404 or a broken card. `_scaling_for` in the API makes the
+  same bargain for a sheet that cannot be read.
+- **Size the length cap to the real answers, not to the example.** `_MAX_NOTE` rejects a
+  model that answered with a sentence instead of a phrase, and it was set to 60 characters
+  from the short example ("2 beams"). Both prose cantrips this path exists for have a
+  *two-part* upgrade and answer in 45-106 characters, so the cap silently discarded every
+  real reply - Green-Flame Blade looked like a spell that does not scale, and nothing
+  anywhere said why. The sentence it must reject runs to 149. Measure the answers before
+  choosing the number, and check the badge can render the longest one: `whitespace-nowrap`
+  on the badge pushed a 106-character note out of the card until it was allowed to wrap.
+
+Two parsing traps, both found by testing against the real corpus rather than a sample:
+
+- **A scaling list names its level once.** `levels 5 (2d10), 11 (3d10), and 17 (4d10)` -
+  reading only the labelled form made every cantrip report its level 5 value at level 11
+  and 17 as well. The first entry is read with its label and the rest as bare numbers.
+- **The corpus omits the `Cantrip Upgrade` label on 4 of its cantrips** and writes the
+  levels as ordinals (`5th level (2d6)`). A bare paragraph is accepted, but only when it
+  states a level *and* a value *and* says something increases - otherwise "regains hit
+  points from a spell of 1st level or higher" reads as scaling and puts a note on a spell
+  that does not scale.
+
+#### The note is cached on the character and level, and the run cache is not
+
+`.cache/scaling/<character>/<level>-<spell>-<hash>.json` holds one small entry per spell per
+level. It is a **separate store from the runs**, keyed differently on purpose, and the
+difference is the whole point:
+
+- **A run is keyed on the sheet fingerprint; a note is keyed on the name and the level.**
+  `cache.character_fingerprint` exists because an edited sheet gives different advice at the
+  same level, so a cached run must not be replayed. A scaling note is not like that: "Eldritch
+  Blast has two beams at level 5" depends on the spell and the level and on nothing else.
+  Fingerprinting the sheet here would throw away a perfectly good note every time a spell was
+  prepared - the cache would miss on nearly every run and look like it was not working.
+- **Only the model's answer is cached.** The deterministic read is free and is left uncached,
+  because a stored copy of it would go on being served after the corpus changed underneath it.
+  The cache wraps the `llm.invoke` call and nothing else.
+- **A stored `None` is a hit, not a miss.** "This spell does not scale" is a real answer that
+  cost a model call to obtain, so `load_scaling` tests for the *presence* of the `note` key
+  rather than its truthiness. Conflating the two is what makes a cache recompute forever.
+- **A failure is not cached.** Storing one bad call would make it permanent for that character
+  and level, and the next attempt - which might succeed - would never happen.
+- **`SCALING_VERSION` retires notes a reader fix would now read differently.** This is not
+  hypothetical: the level-list bug above meant every cantrip reported its level 5 value at
+  levels 11 and 17, and a stored note would have gone on doing so with nothing to notice.
+- **The name is hashed whole, not slugged.** The slug is for a human browsing the directory
+  (`scaling/lois/5-eldritch-blast-…`); the hash is what identifies the entry, so two names
+  that slug to the same thing cannot collide.
+- **Saving never raises.** A note is an addition to a card, so a cache that cannot be written
+  is logged and dropped rather than failing the lookup it was meant to speed up - the same
+  bargain the model call already makes.
+
+Measured live: the first `Booming Blade` request took 1.9s and wrote one entry; the next
+three took 0.01s each. A level 11 sheet and a second character each missed and wrote their
+own entry, which is the key working.
+
 ### Choosing the model: one setting, inferred backend
 
 `LLM_MODEL` picks the reasoning model for both backends. Which backend it means is
@@ -1099,6 +1505,33 @@ branch re-read the config.
 
 Embeddings deliberately stay on Ollama: `nomic-embed-text` is local-only, so changing
 the reasoning model must not change how the index was built.
+
+`LLM_MODEL_FAST` is a **second, independent** setting, not a modifier on the first, and
+it routes by the same name-based inference. The two do different jobs: the reasoning
+model writes a whole recommendation and is worth waiting for, while the fast one answers
+a one-line question about a spell. Unset means "no separate fast model" and the main
+model is used, so the setting is optional. `llm._build()` is shared by both builders so
+the two cannot disagree about how a backend is reached - which is exactly the bug the
+single-setting version had.
+
+### A token cap sized to the answer truncates a reasoning model to nothing
+
+`FAST_MAX_TOKENS` cannot be as small as the answer it is meant to bound. The configured
+fast model is a *reasoning* model: it spends hidden reasoning tokens before writing
+anything, and `max_tokens` caps those too. Measured over 8 calls on one prompt:
+
+| cap | empty completions | reasoning tokens observed |
+| --- | --- | --- |
+| 200 | **3 / 8** | 141-200 (the cap) |
+| 512 | 0 / 8 | 177-657 |
+| 1024 | 0 / 8 | 178-483 |
+
+At 200 the reasoning alone consumed the whole budget and the response was truncated
+before a single word of the answer, with `finish_reason: "length"` and HTTP 200. This is
+the same failure as the Ollama thinking model below, reached from the other direction:
+there the budget was too small for the reasoning, here the cap was. **Size a cap to the
+reasoning plus the answer, and check `finish_reason` when a completion comes back
+empty** - `length` means the cap, `stop` means the model genuinely said nothing.
 
 ### Ollama thinking models return empty responses
 

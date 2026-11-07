@@ -33,7 +33,8 @@ from . import render
 
 class SpellbookShell(cmd.Cmd):
     # Bare command names; the '/' prefix is added by the REPL and TAB completion.
-    COMMANDS = ("scenario", "ask", "read", "rate", "history", "character", "rules", "exit")
+    COMMANDS = ("scenario", "ask", "read", "rate", "history", "character", "rules",
+                "chats", "chat", "exit")
 
     intro = (
         "\n🔮 Tome Warlock Spellbook Generator Initialised.\n"
@@ -45,6 +46,8 @@ class SpellbookShell(cmd.Cmd):
         "  /? <question>    - Look up a 2024 rule (e.g. /? how does cover work).\n"
         "  /rate <n> [n]    - Rate generated books 1-5, optionally naming a book.\n"
         "  /history         - List previous runs, newest first.\n"
+        "  /chats           - List stored ask/chat conversations, newest first.\n"
+        "  /chat <n>        - Read a stored conversation (see /chats).\n"
         "  /exit            - Close the session.\n"
         "Type '/' and press TAB to complete a command.\n"
     )
@@ -68,6 +71,8 @@ class SpellbookShell(cmd.Cmd):
         self.book_files: dict[str, str] = {}
         # The listing /history last printed, so '/read 2' means the second row shown.
         self.history_runs: list[dict] = []
+        # The listing /chats last printed, so '/chat 2' means the second row shown.
+        self.chat_threads: list = []
         # readline must treat '/' as word text, not a separator, or TAB on '/s'
         # would report text 's' at begidx 1 and skip completenames entirely.
         if readline is not None:
@@ -347,6 +352,84 @@ class SpellbookShell(cmd.Cmd):
             return
 
         self._show(generation)
+
+    def do_chats(self, arg):
+        """List stored ask/chat conversations, newest first: /chats
+
+        Lists *threads*, not answers: a follow-up is only meaningful beside the question
+        it followed, so the opening question is what names a conversation. Each entry is
+        numbered so ``/chat <n>`` can reopen it without typing an id.
+        """
+        threads = self.spellbook.conversations()
+        if not threads:
+            print(f"No conversations stored yet under {self.cache_dir}/.")
+            print("Ask something with '/? <question>' or '/c <question>'.")
+            return
+
+        self.chat_threads = threads
+        shown = threads[:20]
+        print(f"{len(threads)} conversation(s) under {self.cache_dir}/ (newest first):\n")
+        for position, thread in enumerate(shown, start=1):
+            opening = " ".join((thread.opening or "").split())
+            if len(opening) > 68:
+                opening = opening[:65].rstrip() + "..."
+            updated = (thread.updated_at or "")[:16].replace("T", " ")
+            print(f"  [{position:>2}] {updated}  {thread.kind:<9}  "
+                  f"{len(thread.turns)} turn(s)")
+            print(f"       {opening}")
+        if len(threads) > len(shown):
+            print(f"\n  ... and {len(threads) - len(shown)} more.")
+
+        print("\nRead one with '/chat <number>', e.g. '/chat 1'.")
+
+    def do_chat(self, arg):
+        """Read a stored conversation: /chat <number|id|question fragment>
+
+        Prints every turn in order, with the provenance of each answer, so a past
+        exchange can be re-read rather than asked again.
+        """
+        reference = arg.strip()
+        if not reference:
+            logging.error("Usage: /chat <number|id|question fragment>. "
+                          "Run '/chats' to list what is available.")
+            return
+
+        reference = self._resolve_chat_reference(reference)
+        conversation = self.spellbook.conversation(reference)
+        if conversation is None:
+            logging.error(
+                f"No stored conversation matched '{reference}'. Run '/chats' to list them."
+            )
+            return
+
+        render.banner(
+            f"💬 {conversation.kind} conversation - {len(conversation.turns)} turn(s)",
+            self.console,
+        )
+        for position, turn in enumerate(conversation.turns, start=1):
+            print(f"\n[{position}] You: {turn.question}")
+            self._show_answer(service.Answer(
+                question=turn.question, answer=turn.answer, source=turn.source,
+                field_name=turn.field_name, citations=list(turn.citations or []),
+                from_cache=turn.from_cache, attachments=list(turn.attachments or []),
+            ))
+
+    def _resolve_chat_reference(self, reference: str) -> str:
+        """Turn a number from the last /chats listing into a thread id.
+
+        Numbering is what makes /chats usable: an id is long, and a hash is meaningless
+        to read.
+        """
+        if not reference.isdigit():
+            return reference
+        index = int(reference)
+        if 1 <= index <= len(self.chat_threads):
+            return self.chat_threads[index - 1].id
+        # Nothing listed yet this session, so fall back to whichever thread sorts there.
+        threads = self.spellbook.conversations()
+        if 1 <= index <= len(threads):
+            return threads[index - 1].id
+        return reference
 
     def _resolve_history_reference(self, reference: str) -> str:
         """Turn a number from the last /history listing into a run directory.

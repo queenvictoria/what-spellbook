@@ -36,7 +36,7 @@ import re
 from functools import lru_cache
 from pathlib import Path
 
-from . import config
+from . import config, spells
 
 # The vendored 2024 SRD. Kept as a directory of Markdown files rather than a URL because
 # the rules must keep working offline, must be diffable when the SRD is reissued, and are
@@ -1054,10 +1054,16 @@ def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
     keep working.
     """
     if (cached := load_cached(question, cache_dir)) is not None:
+        passages = cached.get("passages") or []
         return {
-            "passages": cached.get("passages") or [],
-            "url": cached.get("url", RULES_INDEX),
-            "text": "\n\n".join(cached.get("passages") or []),
+            "passages": passages,
+            # Re-anchored rather than trusted. An entry written before citations carried
+            # anchors stores the bare file, and the UI turns that path into a link - so a
+            # stored answer would open the rulebook at the top while a fresh one opened the
+            # rule. Deriving the anchor on read fixes every existing entry without a schema
+            # bump, which would have invalidated every cached answer and every rating.
+            "url": _anchor_cached(cached.get("url", RULES_INDEX), passages),
+            "text": "\n\n".join(passages),
             "from_cache": True,
         }
 
@@ -1094,8 +1100,8 @@ def gather(question: str, *, files=None, cache_dir=None, timeout: float = 20.0,
 
     _score, used, scored, sections = best
     found = _format(scored, sections=sections)
-    return {"passages": found, "url": used, "text": "\n\n".join(found),
-            "from_cache": False}
+    return {"passages": found, "url": _section_reference(used, scored),
+            "text": "\n\n".join(found), "from_cache": False}
 
 
 # The floor for the inferred path. Lower than ``_MIN_SUBJECT_WEIGHT`` because the inferred
@@ -1156,8 +1162,8 @@ def gather_inferred(question: str, *, files=None, cache_dir=None) -> dict:
 
     qualifying, path, sections = best
     found = _format(qualifying, sections=sections)
-    return {"passages": found, "url": _reference(path), "text": "\n\n".join(found),
-            "from_cache": False}
+    return {"passages": found, "url": _section_reference(_reference(path), qualifying),
+            "text": "\n\n".join(found), "from_cache": False}
 
 
 # The floor for the selection path: at least this much of the selection, weighted by how
@@ -1246,7 +1252,80 @@ def gather_from_selection(selection: str, *, files=None) -> dict:
 
     scored, path, sections = best
     found = _format(scored[:_PASSAGE_LIMIT], sections=sections)
-    return {"passages": found, "url": _reference(path), "text": "\n\n".join(found),
+    return {"passages": found, "url": _section_reference(_reference(path), scored),
+            "text": "\n\n".join(found), "from_cache": False}
+
+
+# How many SRD chunks the vector lane asks for. Small on purpose: this lane runs only when
+# both heading-anchored paths have refused, and its job is to find the *section* the
+# question is about, not to fill a page. The chunks are collapsed back to sections, so a
+# wide k mostly returns more chunks of the same few sections.
+SRD_VECTOR_K = 12
+
+
+def gather_from_index(db, question: str, *, k: int = SRD_VECTOR_K) -> dict:
+    """SRD passages found by similarity over the indexed rulebook, for an interpreted answer.
+
+    The third retrieval path, and the only one that does not read the files. The other two
+    are heading-anchored by design - a rule is defined under a heading that names it, and
+    that anchor is what stops a passing mention being quoted as the rule. The cost is that a
+    question phrased in words the SRD does not use in a *heading* is refused even when the
+    SRD discusses it at length, and the two anchored paths relax different things without
+    ever leaving the anchor behind.
+
+    This one leaves it behind, and pays for that by being labelled ``rules-inferred``: the
+    caller must not present its output as a quotation. What it buys is recall - an embedding
+    finds "how do I stop someone running past me" in the Opportunity Attack section, which
+    no heading match will, because the question shares no distinctive word with the heading.
+
+    Chunks are collapsed back to their sections and the section's own text is returned, not
+    the chunk. A chunk is a 1200-character window that can begin mid-table; the section is
+    the rule, and it is what the prompt should quote.
+
+    Raises ``RulesUnavailable`` when the index holds no SRD rows, so a caller can fall
+    through to reporting the gap rather than answering from nothing.
+    """
+    from . import search as search_module, srd
+
+    result = search_module.search(
+        db, question, mode="vector", limit=k, doc_type=spells.DOC_TYPE_SRD,
+    )
+    if not result.hits:
+        raise RulesUnavailable(
+            f"The 2024 SRD has no section matching '{_elide(question)}'. The SRD covers the "
+            "core rules, not every option in the Player's Handbook."
+        )
+
+    passages: list[str] = []
+    seen: set[tuple[str, str]] = set()
+    for hit in result.hits:
+        if not hit.document or not hit.slug:
+            continue
+        key = (hit.document, hit.slug)
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            found = srd.section(hit.document, hit.slug)
+        except RulesUnavailable:
+            # The index can be older than the corpus - a heading renamed on disk since the
+            # last rebuild. The chunk text is still real SRD text, so it is used rather than
+            # dropping the hit, but the section is preferred because it is the whole rule.
+            passages.append(hit.text)
+            continue
+        passages.append(found.text.strip())
+        if len(passages) >= _PASSAGE_LIMIT:
+            break
+
+    if not passages:
+        raise RulesUnavailable(
+            f"The 2024 SRD has no section matching '{_elide(question)}'. The SRD covers the "
+            "core rules, not every option in the Player's Handbook."
+        )
+
+    first = result.hits[0]
+    url = _anchored_reference(f"{first.document}.md", first.name) if first.document else RULES_INDEX
+    return {"passages": passages, "url": url, "text": "\n\n".join(passages),
             "from_cache": False}
 
 
@@ -1619,11 +1698,73 @@ def find_spell(name: str) -> dict | None:
         return {
             "name": name,
             "text": body,
-            "url": _reference(srd_dir() / "spells.md"),
+            # Anchored to the spell's own heading, not just the file. The path is what the
+            # card prints and what the drawer opens, and `spells.md` is 325KB of 352 spell
+            # descriptions - a link to the file alone would open the book at the top and
+            # leave the reader to find the spell themselves.
+            "url": _spell_reference(name),
             "source": RULES_SOURCE,
         }
 
     return _corpus_spell(wanted)
+
+
+def _anchor_cached(reference: str, passages: list[str]) -> str:
+    """Add a section anchor to a stored citation that does not have one.
+
+    A cached entry's ``url`` was written by whatever version produced it, and older ones
+    hold the bare file. The anchor is derived from the passage's own heading, which the
+    stored text already carries as its first line, so nothing has to be re-retrieved.
+    """
+    if "#" in reference or not passages:
+        return reference
+    first = passages[0].split("\n", 1)[0].strip()
+    if not first.startswith("## "):
+        return reference
+    return _section_reference(reference, [(0.0, 0, first[3:].strip(), "", -1)])
+
+
+def _section_reference(reference: str, scored) -> str:
+    """A file reference plus the anchor of the section that answered.
+
+    The citation is what the UI prints and what the drawer opens, and a bare file is a poor
+    link: `playing-the-game.md` is 65KB and `classes.md` 296KB, so opening one at the top
+    leaves the reader to find the rule themselves. The anchor is derived from the vendored
+    text rather than stored, so it cannot go stale against a heading that was renamed.
+
+    Falls back to the bare file when the heading has no anchor - a promoted run-in label
+    ("Ending a Grapple") is not a heading in the file, so it has none, and the file is the
+    honest answer for it.
+    """
+    from . import srd
+
+    if not scored:
+        return reference
+    heading = scored[0][2]
+    if not heading:
+        return reference
+    document = Path(reference).stem
+    slug = srd.anchor(document, heading)
+    return f"{reference}#{slug}" if slug else reference
+
+
+def _anchored_reference(filename: str, heading: str) -> str:
+    """``context/srd/spells.md#fireball`` - the file, plus the heading's own anchor.
+
+    Falls back to the bare file when the heading cannot be found, which is the honest
+    outcome: a link to the book is still better than a link to a section that does not
+    exist, and the anchor is derived from the vendored text rather than stored.
+    """
+    from . import srd
+
+    path = _reference(srd_dir() / filename)
+    slug = srd.anchor(Path(filename).stem, heading)
+    return f"{path}#{slug}" if slug else path
+
+
+def _spell_reference(name: str) -> str:
+    """``context/srd/spells.md#fireball`` - the file, plus the spell's own heading."""
+    return _anchored_reference("spells.md", name)
 
 
 def _corpus_spell(wanted: str) -> dict | None:
@@ -1800,7 +1941,10 @@ def find_invocation(name: str) -> dict | None:
         return {
             "name": name,
             "text": body,
-            "url": _reference(srd_dir() / CLASSES_FILE),
+            # Anchored to the invocation's own heading, for the same reason a spell is:
+            # `classes.md` is 11,000 lines and a link to the file alone would open the
+            # chapter at the top.
+            "url": _anchored_reference(CLASSES_FILE, name),
             "source": RULES_SOURCE,
         }
 

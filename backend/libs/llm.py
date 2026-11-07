@@ -7,6 +7,17 @@ import logging
 from . import config
 
 
+# The fast model answers a one-line question, so its budget is a phrase rather than a
+# document - but the cap cannot be as small as the answer, and that is a trap worth
+# recording. The configured fast model is a *reasoning* model: it spends hidden reasoning
+# tokens before writing anything, and `max_tokens` caps those too. Measured over 8 calls
+# on one prompt, a cap of 200 returned an empty completion 3 times out of 8, because the
+# reasoning alone consumed the whole budget and the response was truncated before a single
+# word of the answer. 512 was clean over the same run; 1024 leaves room for the spikes
+# (reasoning reached 1635 tokens on one call at a higher cap).
+FAST_MAX_TOKENS = 1024
+
+
 def build_llm():
     """Build the reasoning client chosen by ``config.select_model()``.
 
@@ -14,11 +25,36 @@ def build_llm():
     name decides which one. A failure to construct the OpenRouter client (bad key,
     missing dependency) drops back to Ollama rather than aborting the session.
     """
+    return _build(config.select_model(), label="LLM")
+
+
+def build_fast_llm():
+    """Build the small, fast client chosen by ``config.select_fast_model()``.
+
+    A second client rather than a second setting on the first, because the two do
+    different jobs: the reasoning model writes a whole recommendation and is worth
+    waiting for, while this one answers a one-line question about a spell - "how many
+    beams does this cantrip have at level 5?" - where the answer is a phrase and the
+    wait would cost more than the answer is worth.
+
+    ``LLM_MODEL_FAST`` unset means the main model is used, so the setting is optional.
+    """
+    return _build(config.select_fast_model(), label="fast LLM",
+                  max_tokens=FAST_MAX_TOKENS)
+
+
+def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = None):
+    """Construct one client from a resolved ``(backend, model)`` pair.
+
+    Shared by both builders so the two cannot disagree about how a backend is reached -
+    the bug this replaced was a branch that read the requested model in one path and a
+    hard-coded default in the other.
+    """
     import os
 
     from langchain_ollama import OllamaLLM
 
-    backend, model = config.select_model()
+    backend, model = selection
     api_key = os.getenv("OPENROUTER_API_KEY")
 
     if backend == "openrouter":
@@ -32,8 +68,9 @@ def build_llm():
                 temperature=0.3,
                 max_retries=2,
                 timeout=180,
+                **({"max_tokens": max_tokens} if max_tokens else {}),
             )
-            logging.info(f"LLM backend: OpenRouter ({model})")
+            logging.info(f"{label} backend: OpenRouter ({model})")
             return llm
         except Exception as e:
             logging.warning(
@@ -42,12 +79,12 @@ def build_llm():
             # A failed construction still falls back to the *Ollama* default, not to the
             # requested OpenRouter id, which no local server would recognise.
             fallback = config.OLLAMA_MODEL
-            logging.info(f"LLM backend: Ollama ({fallback})")
+            logging.info(f"{label} backend: Ollama ({fallback})")
             return OllamaLLM(model=fallback)
 
     # `model` is already the resolved Ollama name, including any LLM_MODEL override.
-    logging.info(f"LLM backend: Ollama ({model})")
-    return OllamaLLM(model=model)
+    logging.info(f"{label} backend: Ollama ({model})")
+    return OllamaLLM(model=model, **({"num_predict": max_tokens} if max_tokens else {}))
 
 
 def extract_text(response) -> str:

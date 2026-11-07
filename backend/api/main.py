@@ -42,9 +42,11 @@ from backend.libs import (
     indexing,
     llm,
     rules,
+    search,
     service,
     spellstats,
     spells,
+    srd,
 )
 
 from . import schemas
@@ -62,6 +64,21 @@ def _run_id(directory) -> str:
     caller cannot compute from the scenario it just sent.
     """
     return Path(directory).name
+
+
+def _scaling_for(service_for, character: str | None, spell: dict) -> str | None:
+    """The spell's note for ``character``, or ``None`` if it cannot be worked out.
+
+    Best-effort on purpose. The note is an addition to a card whose text is read straight
+    from a file, so a missing or unreadable sheet must not turn a working spell lookup into
+    a 404 - the spell is still quotable, it just cannot be contextualised. That is the same
+    bargain ``spell_scaling`` makes with a model failure.
+    """
+    try:
+        return service_for(character).spell_scaling(spell)
+    except HTTPException as e:
+        logging.warning(f"No character for the spell note ({e.detail}); omitting it.")
+        return None
 
 
 def _resolve_run(svc, reference: str) -> str:
@@ -213,7 +230,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             raise _error(404, "No books are cached for that scenario; generate it first.")
         try:
             return schemas.GenerationSchema.from_generation(
-                svc.refine(request.question, previous)
+                svc.refine(request.question, previous, thread_id=request.thread_id)
             )
         except llm.EmptyCompletion as e:
             raise _error(502, f"The model returned an empty response: {e}")
@@ -330,20 +347,61 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             ))
         return rated
 
+    # --- conversations ---
+
+    @app.get("/api/conversations", response_model=list[schemas.ConversationSummary],
+             tags=["conversations"])
+    def get_conversations(kind: str | None = Query(default=None),
+                          character: str | None = Query(default=None)):
+        """Every stored ask/chat conversation, newest first.
+
+        A conversation is a *thread*: the questions asked and the answers given, in order.
+        Listed rather than the individual answers because a follow-up is only meaningful
+        beside the question it followed - "and a grapple?" is not a question on its own.
+
+        ``kind`` filters to one surface: ``rules`` (``/?``), ``character`` (``/c``),
+        ``selection`` (the contextual menu) or ``refine`` (``/ask``).
+        """
+        svc = service_for(character)
+        return [
+            schemas.ConversationSummary.from_conversation(conversation)
+            for conversation in svc.conversations(kind=kind)
+        ]
+
+    @app.get("/api/conversations/{reference:path}", response_model=schemas.ConversationSchema,
+             tags=["conversations"])
+    def get_conversation(reference: str, kind: str | None = Query(default=None),
+                         character: str | None = Query(default=None)):
+        """One stored conversation, every turn in order.
+
+        ``reference`` is the thread's id, or a fragment of its opening question - so a
+        caller that already knows what it wants can skip the listing.
+        """
+        svc = service_for(character)
+        conversation = svc.conversation(reference, kind=kind)
+        if conversation is None:
+            raise _error(404, f"No stored conversation matched '{reference}'.")
+        return schemas.ConversationSchema.from_conversation(conversation)
+
     # --- questions ---
 
     @app.get("/api/character/ask", response_model=schemas.AnswerSchema,
              tags=["character"])
     def get_character_answer(question: str = Query(min_length=1),
+                             thread_id: str | None = Query(default=None),
                              character: str | None = Query(default=None)):
         """Ask about the character: the ``/c`` command.
 
         A sheet fact (``/c perception``) is answered exactly from the YAML with no model
         call, so it is instant and cannot be wrong. ``source`` says which happened.
+
+        ``thread_id`` continues a stored conversation, so a follow-up is read in context.
+        The answer carries the thread's id back, which is what a client passes next.
         """
         svc = service_for(character)
         try:
-            return schemas.AnswerSchema.from_answer(svc.ask_character(question))
+            return schemas.AnswerSchema.from_answer(
+                svc.ask_character(question, thread_id=thread_id))
         except service.CharacterNotLoaded as e:
             raise _error(409, str(e))
         except llm.EmptyCompletion as e:
@@ -355,6 +413,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
 
     @app.get("/api/rules", response_model=schemas.AnswerSchema, tags=["rules"])
     def get_rules_answer(question: str = Query(min_length=1),
+                         thread_id: str | None = Query(default=None),
                          character: str | None = Query(default=None)):
         """Ask a rules question: the ``/?`` command, grounded in the 2024 SRD.
 
@@ -362,10 +421,13 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         Rules Glossary and most conditions are not in it. That is reported rather than
         answered from the model's memory, which is how 2014 numbers leak into 2024
         answers.
+
+        ``thread_id`` continues a stored conversation, so a follow-up is read in context.
         """
         svc = service_for(character)
         try:
-            return schemas.AnswerSchema.from_answer(svc.ask_rules(question))
+            return schemas.AnswerSchema.from_answer(
+                svc.ask_rules(question, thread_id=thread_id))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
         except llm.EmptyCompletion as e:
@@ -382,6 +444,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                                                           description="The sentence the selection came from"),
                               document: list[str] | None = Query(default=None,
                                                                  description="A document attached to the selection, repeatable"),
+                              thread_id: str | None = Query(default=None),
                               character: str | None = Query(default=None)):
         """Explain a phrase selected from a book's prose, grounded in the 2024 SRD.
 
@@ -413,7 +476,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         try:
             return schemas.AnswerSchema.from_answer(
                 svc.ask_rules_contextual(selected_text, context=context or "",
-                                         attachments=document))
+                                         attachments=document, thread_id=thread_id))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
         except llm.EmptyCompletion as e:
@@ -425,7 +488,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
 
     @app.get("/api/spell", response_model=schemas.SpellSchema, tags=["rules"])
     def get_spell(name: str = Query(min_length=1,
-                                    description="Spell name, e.g. Fireball")):
+                                    description="Spell name, e.g. Fireball"),
+                  character: str | None = Query(default=None)):
         """One spell's own text, quoted from a vendored file.
 
         Deterministic - no model is involved, so this cannot hallucinate a damage die. The
@@ -433,6 +497,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         339 of the corpus's 544 spells and the missing ones include cantrips the app
         recommends. A 404 therefore means neither source has it, which is a real miss
         rather than a branding difference.
+
+        ``scaling`` is the one field that is *about* the loaded character rather than about
+        the spell: "2 beams (L5)" for a level 5 Warlock's Eldritch Blast. It is read out of
+        the spell's own text, so it is still a rule and not a guess - but it is this app's
+        reading of the rule applied to a sheet, which is why it is a field of its own.
         """
         spell = rules.find_spell(name)
         if spell is None:
@@ -442,11 +511,15 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 "Check the spelling - the corpus uses the name as published, so "
                 "\"Tenser's Floating Disk\" rather than \"Floating Disk\".",
             )
-        return schemas.SpellSchema(**spellstats.attach(spell))
+        return schemas.SpellSchema(
+            **spellstats.attach(spell),
+            scaling=_scaling_for(service_for, character, spell),
+        )
 
     @app.get("/api/invocation", response_model=schemas.SpellSchema, tags=["rules"])
     def get_invocation(name: str = Query(min_length=1,
-                                         description="Invocation name, e.g. Agonizing Blast")):
+                                         description="Invocation name, e.g. Agonizing Blast"),
+                       character: str | None = Query(default=None)):
         """One Eldritch Invocation's rules, read from our own class context.
 
         A separate endpoint from ``/api/spell`` because an invocation is not a spell: the
@@ -458,6 +531,10 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         the same card - and that includes ``stats``, which comes back null here. An
         invocation has no Casting Time, Range or Duration, and the shared card must not
         offer it a strip of empty tiles implying it does.
+
+        ``scaling`` is null for the same reason: an invocation's effect is not a value that
+        changes with level, and the one that does - Eldritch Spear's range - states it as a
+        formula over the Warlock's level rather than as a table.
         """
         invocation = rules.find_invocation(name)
         if invocation is None:
@@ -467,7 +544,10 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 "Check the spelling - the context uses the name as published, so "
                 "\"Agonizing Blast\" rather than \"Agonizing\".",
             )
-        return schemas.SpellSchema(**spellstats.attach(invocation))
+        return schemas.SpellSchema(
+            **spellstats.attach(invocation),
+            scaling=_scaling_for(service_for, character, invocation),
+        )
 
     @app.get("/api/spells", response_model=list[str], tags=["rules"])
     def spell_names():
@@ -496,6 +576,139 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         from backend.libs import lookup
 
         return lookup.sheet_keys()
+
+    # --- index search ---
+
+    @app.get("/api/search", response_model=schemas.SearchResultSchema, tags=["search"])
+    def get_search(query: str = Query(default="",
+                                      description="Text to search for. May be empty in text mode."),
+                   mode: str = Query(default="vector",
+                                     description="vector (similarity), text (substring), or hybrid"),
+                   limit: int = Query(default=search.DEFAULT_LIMIT, ge=1,
+                                      le=search.MAX_LIMIT),
+                   offset: int = Query(default=0, ge=0),
+                   class_name: list[str] | None = Query(default=None, alias="class",
+                                                        description="Class list to require, repeatable"),
+                   school: str | None = Query(default=None),
+                   level_min: int | None = Query(default=None, ge=0, le=9),
+                   level_max: int | None = Query(default=None, ge=0, le=9),
+                   ritual: bool | None = Query(default=None),
+                   spells_only: bool = Query(default=True),
+                   doc_type: str = Query(default="all",
+                                         description="all, spell, item or srd"),
+                   all_terms: bool = Query(default=True,
+                                           description="Text mode: require every word, not just one")):
+        """Search the vector index directly, for inspection and testing.
+
+        This is the diagnostic surface, not the recommender: it can return a spell the
+        character could never pick, on purpose. ``retrieval`` answers "what is legal for
+        this character"; this answers "what is in the index, and what does a query bring
+        back", which is how a missing recommendation gets explained.
+
+        Three modes, because they fail differently:
+
+        * ``vector`` - a similarity search, i.e. what the recommender itself does. Needs
+          text to embed; ``distance`` is Chroma's, lower being closer.
+        * ``text`` - a substring scan over the chunk bodies, which is the only mode that
+          can answer "which chunks mention X". Accepts an empty query to list everything
+          the filters admit.
+        * ``hybrid`` - the vector candidates re-ordered so hits containing the query's
+          words come first. A ranking aid, not a retrieval algorithm: it cannot find a
+          spell the embedding did not return.
+
+        ``class`` is repeatable and matches any of the named classes. It is applied as an
+        ``$or`` over the exact class-list strings the index stores, because the field is
+        one comma-joined value and Chroma's ``$contains`` does not match inside it - see
+        ``search._class_clause``.
+
+        ``doc_type`` narrows to one kind of indexed text and defaults to ``all``: the
+        collection holds the spell corpus, the magic items that share its directory, and the
+        vendored 2024 SRD. It takes precedence over ``spells_only``, which is the same
+        question at a coarser resolution - ``doc_type=srd`` with the default
+        ``spells_only=true`` would otherwise match nothing.
+
+        A 400 means the request cannot work (an unknown mode, an inverted level range, a
+        vector search with nothing to embed); an empty result is a normal answer.
+        """
+        try:
+            result = search.search(
+                get_db(), query, mode=mode, limit=limit, offset=offset,
+                classes=class_name or (), school=school, level_min=level_min,
+                level_max=level_max, ritual=ritual, spells_only=spells_only,
+                all_terms=all_terms, doc_type=doc_type,
+            )
+        except ValueError as e:
+            raise _error(400, str(e))
+        return schemas.SearchResultSchema.from_result(result)
+
+    @app.get("/api/search/facets", response_model=schemas.SearchFacetsResponse,
+             tags=["search"])
+    def get_search_facets():
+        """Every class, school and level the index actually holds, with counts.
+
+        Sent from the server rather than hard-coded in the front end so the filter values
+        cannot drift from the corpus: a class added to the index becomes filterable with no
+        UI edit, and a value that exists nowhere is never offered.
+        """
+        found = search.facets(get_db())
+        return schemas.SearchFacetsResponse(
+            index_version=config.INDEX_VERSION,
+            facets=schemas.SearchFacetsSchema(
+                classes=[schemas.SearchFacetSchema(value=f.value, count=f.count)
+                         for f in found.classes],
+                schools=[schemas.SearchFacetSchema(value=f.value, count=f.count)
+                         for f in found.schools],
+                levels=[schemas.SearchLevelFacetSchema(level=f.level, label=f.label,
+                                                       count=f.count)
+                        for f in found.levels],
+                rituals=found.rituals, spells=found.spells, chunks=found.chunks,
+                doc_types=[schemas.SearchFacetSchema(value=f.value, count=f.count)
+                           for f in found.doc_types],
+            ),
+        )
+
+    # --- browsing the vendored SRD ---
+
+    @app.get("/api/srd", response_model=list[schemas.SrdDocumentSchema], tags=["rules"])
+    def srd_documents():
+        """Every vendored SRD file, with its headings nested.
+
+        The table of contents for the Rules screen. Sent whole rather than per file because
+        it is small - seven files, ~1280 headings, no text - and a client that had to ask
+        seven times to draw one list would show it filling in.
+
+        ``PROVENANCE.md`` is excluded by ``rules.source_files``: it is the CC-BY-4.0
+        attribution, not SRD text, and listing it would offer licence boilerplate as a
+        rule.
+        """
+        return [schemas.SrdDocumentSchema.from_document(d) for d in srd.documents()]
+
+    @app.get("/api/srd/{name}", response_model=schemas.SrdSectionSchema, tags=["rules"])
+    def srd_section(name: str,
+                    slug: str | None = Query(default=None,
+                                             description="Heading anchor; omit for the whole file")):
+        """One section of one vendored SRD file, as renderable Markdown.
+
+        Deterministic, like ``/api/spell``: the text is read from the file, so this cannot
+        paraphrase a rule. HTML tables are converted to Markdown pipe tables on the way out
+        - the numbers in a table *are* the rule, and ``### Cover``'s prose only says "as
+        detailed in the Cover table".
+
+        Omitting ``slug`` returns the whole document under its own title, which is what a
+        click on the file name asks for. A 404 means the file or the heading does not
+        exist, which is a real miss: the anchors are derived from the vendored text, so a
+        stale link means the corpus changed.
+        """
+        try:
+            if slug:
+                return schemas.SrdSectionSchema.from_section(srd.section(name, slug))
+            found = srd.document(name)
+            return schemas.SrdSectionSchema(
+                document=found.name, title=found.title, heading=found.title,
+                slug="", path=found.path, text=srd.text(name),
+            )
+        except rules.RulesUnavailable as e:
+            raise _error(404, str(e))
 
     return app
 

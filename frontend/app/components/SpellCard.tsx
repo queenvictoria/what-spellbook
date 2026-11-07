@@ -1,6 +1,9 @@
+import { TrendingUp } from "lucide-react"
+
 import type { Spell } from "@/api/types"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
+import { SrdPathLink } from "@/components/SrdPathLink"
 import { SpellStatsStrip } from "@/components/SpellStats"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -22,6 +25,33 @@ function SpellSource({ source }: { source: string }) {
 }
 
 /**
+ * What the spell does at *this* character's level.
+ *
+ * The spell's text states its scaling as a table - "two beams at level 5, three beams at
+ * level 11" - and a reader at the table wants the row that applies to them. The backend
+ * reads that row out of the spell's own words, so this is a rule rather than a summary;
+ * the badge is what says it is about the loaded character rather than about the spell.
+ *
+ * Rendered beside the name rather than in the stat strip, because it is the one value on
+ * the card that changes when the character levels up.
+ */
+function SpellScaling({ scaling }: { scaling: string }) {
+  return (
+    <Badge
+      tone="arcane"
+      title="At your character's level"
+      // A two-part upgrade ("extra 1d8 thunder damage on hit; movement damage 2d8") is
+      // longer than the badge's default single line, and `whitespace-nowrap` would push it
+      // out of the card rather than onto a second line.
+      className="whitespace-normal text-left"
+    >
+      <TrendingUp className="h-3 w-3 shrink-0" />
+      {scaling}
+    </Badge>
+  )
+}
+
+/**
  * One spell, quoted from a vendored file.
  *
  * Shared by the Rules screen and the drawer so the two cannot drift - the drawer is the
@@ -38,8 +68,11 @@ export function SpellCard({
 }) {
   return (
     <Card className={className}>
-      <CardHeader className="flex-row items-center justify-between">
-        <CardTitle className="text-sm">{spell.name}</CardTitle>
+      <CardHeader className="flex-row items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
+          <CardTitle className="text-sm">{spell.name}</CardTitle>
+          {spell.scaling && <SpellScaling scaling={spell.scaling} />}
+        </div>
         <SpellSource source={spell.source} />
       </CardHeader>
       <CardContent className="space-y-3">
@@ -54,8 +87,12 @@ export function SpellCard({
           className="prose-spell"
           linkSpells={false}
         />
-        <p className="border-t border-void-800 pt-2 font-mono text-xs text-parchment/60">
-          {spell.url}
+        {/* A link when the text came from the vendored SRD, plain text when it came from
+            the retrieval corpus - which is not a rulebook page and has no headings to
+            browse. `SrdPathLink` makes that distinction, so a corpus spell does not offer
+            a link that cannot open. */}
+        <p className="border-t border-void-800 pt-2">
+          <SrdPathLink path={spell.url} />
         </p>
       </CardContent>
     </Card>

@@ -19,10 +19,10 @@ one place.
 | CLI | `cmd.Cmd` REPL + `rich` | `/slash` + TAB commands, formatted output, progress |
 | API | FastAPI + uvicorn | Typed schemas, dependency injection, OpenAPI for free |
 | Front end | React + Vite + Tailwind v4 + shadcn-style components | Fast dev loop, typed API client |
-| Vector store | ChromaDB (embedded, single collection) | Local, no server, 544 spells as chunks |
+| Vector store | ChromaDB (embedded, single collection) | Local, no server; 544 spells, 22 items and the vendored SRD as chunks |
 | Embeddings | Ollama (`nomic-embed-text`) | Local, free, no network dependency |
 | LLM | OpenRouter or Ollama via `LLM_MODEL` | Swappable; the model is configuration, not architecture |
-| Rules source | Vendored SRD 5.2.1 in `context/srd/` | Works offline, is diffable, and is CC-BY-4.0 so it can be redistributed |
+| Rules source | Vendored SRD 5.2.1 in `context/srd/` | Works offline, is diffable, is CC-BY-4.0 so it can be redistributed, and is indexed into the vector store |
 
 Superseded choices, recorded so they are not reintroduced:
 
@@ -71,7 +71,11 @@ Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGE
 - `/c <question>` answers sheet facts exactly, with no model call, and defers anything
   explanatory to the model with the sheet in context.
 - `/? <question>` retrieves from the 2024 SRD with heading-based matching, and reports an
-  absent rule as absent rather than answering from memory.
+  absent rule as absent rather than answering from memory. When no heading names the
+  question, a similarity search over the indexed rulebook is the last resort, labelled
+  `rules-inferred`.
+- The vendored SRD is indexed alongside the spells, so the rulebook is searchable and the
+  recommender is grounded in the rules a *scenario* turns on.
 
 ### Front ends
 - CLI REPL with `/slash` + TAB completion, formatted markdown, and a live progress line.

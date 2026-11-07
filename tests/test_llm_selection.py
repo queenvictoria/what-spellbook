@@ -60,6 +60,44 @@ def test_a_remote_model_without_a_key_is_reported(caplog):
     assert "OPENROUTER_API_KEY" in caplog.text
 
 
+# --- the fast model ---
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        # Unset means "no separate fast model", so the main model answers instead. That is
+        # what makes the setting optional rather than required.
+        ({"OPENROUTER_API_KEY": "k"}, ("openrouter", config.OPENROUTER_MODEL)),
+        ({}, ("ollama", config.OLLAMA_MODEL)),
+        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "anthropic/claude-sonnet-4.5"},
+         ("openrouter", "anthropic/claude-sonnet-4.5")),
+        # Set: the fast model is used, and it is independent of the main one.
+        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "anthropic/claude-sonnet-4.5",
+          "LLM_MODEL_FAST": "deepseek/deepseek-v4-flash-0731"},
+         ("openrouter", "deepseek/deepseek-v4-flash-0731")),
+        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL_FAST": "qwen3:4b"},
+         ("ollama", "qwen3:4b")),
+        # A remote fast model with no key cannot work, so it falls back and says so.
+        ({"LLM_MODEL_FAST": "openai/gpt-4o-mini"}, ("ollama", config.OLLAMA_MODEL)),
+    ],
+)
+def test_select_fast_model_routes_by_name(env, expected):
+    assert config.select_fast_model(env) == expected
+
+
+def test_a_blank_fast_model_falls_through_to_the_main_one():
+    """A key present with no value must not be treated as a model named ''."""
+    env = {"OPENROUTER_API_KEY": "k", "LLM_MODEL_FAST": "   "}
+    assert config.select_fast_model(env) == config.select_model(env)
+
+
+def test_a_remote_fast_model_without_a_key_is_reported(caplog):
+    with caplog.at_level("WARNING"):
+        backend, _model = config.select_fast_model({"LLM_MODEL_FAST": "openai/gpt-4o-mini"})
+    assert backend == "ollama"
+    assert "LLM_MODEL_FAST" in caplog.text
+
+
 # --- construction ---
 
 @pytest.mark.parametrize(
@@ -108,6 +146,43 @@ def test_a_broken_openrouter_client_falls_back_to_ollama(monkeypatch, caplog):
         client = llm.build_llm()
     assert type(client).__name__ == "OllamaLLM"
     assert client.model == config.OLLAMA_MODEL, "must not reuse the OpenRouter id"
+
+
+def test_build_fast_llm_honours_the_fast_override(monkeypatch):
+    """The fast model is a second client, not a second setting on the first."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.setenv("LLM_MODEL_FAST", "deepseek/deepseek-v4-flash-0731")
+    client = llm.build_fast_llm()
+    assert type(client).__name__ == "ChatOpenAI"
+    assert client.model_name == "deepseek/deepseek-v4-flash-0731"
+
+
+def test_build_fast_llm_falls_back_to_the_main_model(monkeypatch):
+    """Unset means the main model, so a project without the setting is unchanged."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
+    monkeypatch.delenv("LLM_MODEL_FAST", raising=False)
+    client = llm.build_fast_llm()
+    assert client.model_name == "openai/gpt-4o-mini"
+
+
+def test_the_fast_client_caps_its_output(monkeypatch):
+    """The answer is a phrase, so the call is bounded rather than left open-ended."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL_FAST", "deepseek/deepseek-v4-flash-0731")
+    client = llm.build_fast_llm()
+    assert client.max_tokens == llm.FAST_MAX_TOKENS
+
+
+def test_the_fast_budget_leaves_room_for_hidden_reasoning():
+    """A cap sized to the *answer* truncates a reasoning model to an empty reply.
+
+    Measured against the configured fast model: a 200-token cap returned nothing on 3 of
+    8 calls, because the hidden reasoning consumed the whole budget before the answer
+    began. The cap has to cover the reasoning, not the phrase.
+    """
+    assert llm.FAST_MAX_TOKENS >= 512
 
 
 def test_the_repo_env_and_the_default_agree():

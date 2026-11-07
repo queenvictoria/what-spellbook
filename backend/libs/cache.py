@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,7 +76,7 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _slug(text: str, *, max_length: int = 60) -> str:
+def slug(text: str, *, max_length: int = 60) -> str:
     """Filesystem-safe slug; empty input becomes 'untitled'."""
     words = _WORD.findall(str(text).lower())
     slug = "-".join(words)[:max_length].strip("-")
@@ -117,9 +118,9 @@ def key_parts(*, character: str, level, party, db_version, scenario: str,
     wrong number of books.
     """
     return {
-        "character": _slug(character),
+        "character": slug(character),
         "level": level,
-        "party": _slug(", ".join(party) if isinstance(party, (list, tuple, set)) else party),
+        "party": slug(", ".join(party) if isinstance(party, (list, tuple, set)) else party),
         "db_version": db_version,
         "scenario": scenario_fingerprint(scenario),
         "books": books,
@@ -143,7 +144,7 @@ def entry_dir(cache_dir, key: dict) -> Path:
 
 def book_slug(index: int, name: str) -> str:
     """Filename stem for one book, e.g. ``1-ambush-and-control``."""
-    return f"{index}-{_slug(name, max_length=40)}"
+    return f"{index}-{slug(name, max_length=40)}"
 
 
 # The delimited format. `=== BOOK 3 ===` on its own line is the only thing that separates
@@ -540,9 +541,9 @@ def save_run(
 
     current_names = set()
     for book in books:
-        slug = f"{book['index']}-{_slug(book['name'], max_length=40)}"
-        current_names.add(f"{slug}.json")
-        path = directory / f"{slug}.json"
+        stem = f"{book['index']}-{slug(book['name'], max_length=40)}"
+        current_names.add(f"{stem}.json")
+        path = directory / f"{stem}.json"
         carried = _read(path).get("rating") or previous.get(book["index"])
         entry = {
             "schema_version": SCHEMA_VERSION,
@@ -674,7 +675,7 @@ def load_entries(cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -
     root = Path(cache_dir)
     if not root.is_dir():
         return []
-    pattern = f"{_slug(character)}/*/*.json" if character else "*/*/*.json"
+    pattern = f"{slug(character)}/*/*.json" if character else "*/*/*.json"
     paths = [p for p in root.glob(pattern) if p.name != RUN_FILENAME]
     return sorted(paths, key=lambda p: p.stat().st_mtime, reverse=True)
 
@@ -693,7 +694,7 @@ def load_runs(cache_dir=DEFAULT_CACHE_DIR, *, character: str | None = None) -> l
     root = Path(cache_dir)
     if not root.is_dir():
         return []
-    pattern = f"{_slug(character)}/*/{RUN_FILENAME}" if character else f"*/*/{RUN_FILENAME}"
+    pattern = f"{slug(character)}/*/{RUN_FILENAME}" if character else f"*/*/{RUN_FILENAME}"
 
     runs = []
     for path in root.glob(pattern):
@@ -828,3 +829,113 @@ def rate(path, *, score: int, notes: str | None = None, outcome: str | None = No
     }
     path.write_text(json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8")
     return entry
+
+
+# --- spell notes contextualised to a character's level ---
+#
+# A separate store from the runs above, and keyed differently, because it answers a
+# different question. A run is keyed on the whole sheet *fingerprint* - an edited sheet
+# gives different advice at the same level, so a cached run must not be replayed. A
+# scaling note depends on **nothing but the character's level**: "Eldritch Blast has two
+# beams at level 5" is a fact about the spell and the level, so a change to anything else
+# on the sheet must not invalidate it. Hashing the sheet here would throw away a good
+# note every time a spell is prepared.
+#
+# Layout::
+#
+#     .cache/scaling/<character>/<level>-<spell>-<hash>.json
+#
+# Deliberately flat and readable: one small file per spell per level, so the directory can
+# be browsed the way the rules cache can.
+
+SCALING_SUBDIR = "scaling"
+
+# Bump when a stored note can no longer be trusted: a changed note format, or a fix to how
+# a scaling sentence is read. Without it a note written by the older reader keeps being
+# served - which is how "2d10 damage" went on being reported at level 11 for every cantrip.
+SCALING_VERSION = 1
+
+
+def spell_fingerprint(name: str) -> str:
+    """Short stable hash of a spell name, so the entry is identified by the name itself.
+
+    Only the *name* is hashed, not the text: a spell re-vendored with new wording still
+    scales the same way, and re-reading a phrase is cheaper than a model call. The hash is
+    of the whole name rather than of the slug, so two names that slug to the same thing
+    ("Ray of Frost" and "Ray-of-Frost") cannot collide.
+    """
+    normalised = " ".join(str(name).split()).lower()
+    return hashlib.sha256(normalised.encode("utf-8")).hexdigest()[:10]
+
+
+def scaling_path(*, character, level, spell, cache_dir=DEFAULT_CACHE_DIR) -> Path:
+    """``<cache_dir>/scaling/<character>/<level>-<spell>-<hash>.json``.
+
+    The character and the level are both in the path because both change the answer, and
+    both are what a reader would look for when browsing: ``scaling/lois/5-eldritch-blast…``
+    says whose note it is and what it is about without opening the file.
+    """
+    return (
+        Path(cache_dir) / SCALING_SUBDIR / slug(character)
+        / f"{level}-{slug(spell, max_length=48)}-{spell_fingerprint(spell)}.json"
+    )
+
+
+def load_scaling(*, character, level, spell, cache_dir=DEFAULT_CACHE_DIR) -> dict | None:
+    """A stored note for this spell at this character's level, or ``None``.
+
+    ``None`` means "no usable entry", not "no note" - the two are different answers and
+    conflating them is what makes a cache recompute forever. A stored note *is* allowed to
+    be null ("this spell does not scale"), so the presence of the key is what is tested
+    rather than the truthiness of the value.
+    """
+    if level is None:
+        return None
+    entry = _read(scaling_path(character=character, level=level, spell=spell,
+                               cache_dir=cache_dir))
+    if "note" not in entry:
+        return None
+    if entry.get("scaling_version") != SCALING_VERSION:
+        # Written by a reader that has since changed. Serving it would keep an answer the
+        # current code would not produce, and nothing would ever notice.
+        return None
+    if entry.get("character") is not None and entry["character"] != character:
+        return None
+    return entry
+
+
+def save_scaling(*, character, level, spell, note, model=None, source="model",
+                 cache_dir=DEFAULT_CACHE_DIR) -> Path | None:
+    """Store one contextualised note. Never raises.
+
+    ``note`` may be ``None``: "this spell has no level-based change" is a real answer that
+    cost a model call to obtain, so it is worth storing rather than asking again.
+
+    ``source`` records whether the note was read out of the spell's own text
+    (``deterministic``) or inferred by the model (``model``). Only the model's answers are
+    stored today, but the field is written because a note that merely *looks* like a
+    quotation is exactly the thing a reader cannot check, and the two are not equally
+    authoritative.
+    """
+    if level is None:
+        return None
+    path = scaling_path(character=character, level=level, spell=spell, cache_dir=cache_dir)
+    entry = {
+        "character": character,
+        "level": level,
+        "spell": spell,
+        "note": note,
+        "source": source,
+        "model": model,
+        "scaling_version": SCALING_VERSION,
+        "computed_at": now(),
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(entry, indent=2, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        # A note is an addition to a card, so a cache that cannot be written is not worth
+        # failing the lookup over - the same bargain the model call already makes.
+        logging.warning(f"Could not cache the spell note for {spell!r} ({e}).")
+        return None
+    return path

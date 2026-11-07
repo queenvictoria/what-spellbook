@@ -99,6 +99,88 @@ _FIXED_DAMAGE = re.compile(
 # The parenthetical that says what the M component is: `M (a ball of bat guano and sulfur)`.
 _MATERIAL = re.compile(r"\(([^)]*)\)")
 
+# --- scaling to the character's level ---
+
+# The run-in label that states how a cantrip changes as its caster levels up. It is
+# italicised, and the corpus bolds its italics, so the emphasis is optional on both sides.
+_UPGRADE_LABEL = re.compile(r"Cantrip Upgrade\.?[\*_]*\s*(.+?)(?:\n\s*\n|\Z)", re.S)
+
+# The corpus writes the same sentence as a bare paragraph with no label, so the label
+# cannot be the only way in. A paragraph qualifies when it states a level and a value *and*
+# says something increases - which is what separates a scaling sentence from any other
+# sentence that happens to mention a level.
+_SCALING_VERB = re.compile(
+    r"\b(increases?|changes?|doubles?|deals?[ \t]+extra|additional)\b", re.IGNORECASE
+)
+
+# A slot-scaled paragraph is not a level-scaled one, and the corpus writes it without a
+# label too. Excluded by name rather than by shape, because the two are otherwise alike.
+_SLOT_PHRASE = re.compile(r"spell[ \t]+slot", re.IGNORECASE)
+
+# The first entry of a scaling list, which is the only one that names the level:
+# `levels 5 (2d10)` in the SRD, `5th level (2d6)` in the corpus. The rest of the list is
+# bare numbers - `, 11 (3d10), and 17 (4d10)` - so it is read separately, from the text
+# after this match. Reading only this pattern is the bug that made every cantrip report
+# its level 5 value at every level.
+_LEVEL_HEAD = re.compile(r"levels?\s+(\d+)\s*\(([^)]+)\)", re.IGNORECASE)
+
+# The remaining entries of the list: `11 (3d10)`, `and 17 (4d10)`. The value is whatever
+# the file put in the parentheses, so a die, a die count, a distance and a duration all
+# read the same way - and the inner `or` of "2d8 or 2d12" is kept, because a spell that
+# deals one of two amounts deals one of two amounts.
+_LEVEL_TAIL = re.compile(r"(\d+)\s*\(([^)]+)\)")
+
+# `5th level` -> `level 5`, so the corpus's ordinal phrasing reads as the SRD's.
+_ORDINAL_LEVEL = re.compile(r"\b(\d+)(?:st|nd|rd|th)\s+levels?\b", re.IGNORECASE)
+
+# A level named together with the value it grants: `levels 5 (2d10)`, `5th level (2d6)`.
+# The parenthetical is what makes this a scaling sentence rather than any other sentence
+# that mentions a level - "regains hit points from a spell of 1st level or higher" names a
+# level and grants nothing at it, and reading that as scaling would put a note on a spell
+# that does not scale.
+_LEVEL_VALUE = re.compile(
+    r"(?:levels?\s+\d+|\d+(?:st|nd|rd|th)\s+levels?)\s*\([^)]+\)",
+    re.IGNORECASE,
+)
+
+# `at 5th level` - the corpus's prose form, which states a level and no value in
+# parentheses. It is a scaling sentence when something also increases, and the two
+# together are what the gate below requires.
+_AT_ORDINAL_LEVEL = re.compile(r"\bat\s+(\d+)(?:st|nd|rd|th)\s+levels?\b", re.IGNORECASE)
+
+# `two beams at level 5, three beams at level 11` - Eldritch Blast's shape, and the only
+# spell that uses it. The value is the phrase before "at level", kept whole rather than
+# reduced to a number: "two beams" is what the reader wants to see. At most two words, so
+# the sentence's verb ("The spell creates two beams") is not swept into the value.
+_AT_LEVEL = re.compile(
+    r"([A-Za-z][A-Za-z'\u2019-]*(?:[ \t]+[A-Za-z][A-Za-z'\u2019-]*)?)"
+    r"[ \t]+at[ \t]+level[ \t]+(\d+)",
+    re.IGNORECASE,
+)
+
+# What the scaling is *of*, longest first so "damage die" is not read as "damage". The
+# subject is taken from the sentence rather than assumed, because the same shape states a
+# die, a range and a duration - and "30 feet damage" would be nonsense.
+_SCALING_SUBJECTS = (
+    "damage die",
+    "damage",
+    "range",
+    "duration",
+    "hit points",
+    "beams",
+    "targets",
+    "creatures",
+)
+
+# The number words the SRD spells out. Only the ones a scaling sentence uses.
+_NUMBER_WORDS = {
+    "one": "1", "two": "2", "three": "3", "four": "4", "five": "5",
+    "six": "6", "seven": "7", "eight": "8", "nine": "9", "ten": "10",
+}
+
+# A leading conjunction or article left over from the sentence's list: "and four beams".
+_LEADING_FILLER = re.compile(r"^(?:and|or|the|an|a)\s+", re.IGNORECASE)
+
 # The letters before the parenthetical, so a material that happens to contain a capital V,
 # S or M cannot be read as a component. "a Mix of vinegar" would otherwise yield an extra M.
 _COMPONENT_LETTER = re.compile(r"\b([VSM])\b")
@@ -216,6 +298,162 @@ def attach(spell: dict | None) -> dict | None:
     if spell is None:
         return None
     return {**spell, "stats": parse(spell.get("text", ""))}
+
+
+def scaling(text: str, level: int | None) -> str | None:
+    """What ``text`` says the spell does at ``level``, or ``None`` if it says nothing.
+
+    A spell's text states its scaling at fixed levels - "two beams at level 5", "the
+    damage increases by 1d8 when you reach levels 5 (2d8), 11 (3d8), and 17 (4d8)" - and
+    a reader at the table wants the row that applies to *them*, not the table. So this
+    reads the value for the character's own level back out of the sentence.
+
+    Deterministic, and deliberately so: every value returned is one the file already
+    wrote, and a level the file does not mention returns ``None`` rather than the nearest
+    one. A cantrip at level 3 has no upgrade, and showing it the level 5 row would state
+    a number the character cannot cast yet.
+
+    The label is the *character's* level, not the level the value was stated at, because
+    the note answers "what does this do for me". A level 10 caster is shown the level 5
+    row labelled ``(L10)``, which is what they deal - labelling it ``(L5)`` would read as
+    a level they are not.
+
+    ``None`` also for a spell that scales by *slot* rather than by level. A Warlock's
+    slots are all one level, so "for each slot level above 3rd" has a single answer for
+    them and it is the spell's own text - there is nothing to contextualise.
+    """
+    if level is None:
+        return None
+
+    sentence = _scaling_sentence(text)
+    if sentence is None:
+        return None
+
+    pairs = _level_pairs(sentence)
+    if pairs:
+        value = _value_at(pairs, level)
+        if value:
+            subject = _scaling_subject(sentence)
+            # "range 30 feet" reads as a range; "2d8 damage" reads as damage. The subject
+            # is the file's own word, so neither is invented.
+            if subject == "range":
+                return f"range {_digits(value)} (L{level})"
+            return f"{_digits(value)} {subject} (L{level})"
+
+    # Eldritch Blast's shape: the value is the phrase before "at level", kept whole
+    # because "two beams" is the answer and "2" is not.
+    at_level = [(int(n), value.strip()) for value, n in _AT_LEVEL.findall(sentence)]
+    if at_level:
+        value = _value_at(at_level, level)
+        if value:
+            return f"{_digits(_LEADING_FILLER.sub('', value))} (L{level})"
+
+    return None
+
+
+def scaling_needs_reading(text: str, level: int | None) -> bool:
+    """Whether ``text`` states a level-based change this module could not read.
+
+    The gate for asking a model instead, and it is deliberately narrow. A spell that never
+    mentions a level cannot scale with one, and a spell whose scaling this module *did*
+    read needs no help - so only the gap between the two costs a model call. Gating on
+    "mentions a level" alone would spend one on every levelled spell in the corpus, since
+    the header line names the spell's own level.
+    """
+    if level is None:
+        return False
+    sentence = _scaling_sentence(text)
+    if sentence is None:
+        return False
+    # Below the first level the sentence states there is nothing to state, so there is
+    # nothing to ask about either - a level 3 caster's Booming Blade has not changed.
+    stated = _stated_levels(sentence)
+    if stated and level < min(stated):
+        return False
+    return scaling(text, level) is None
+
+
+def _stated_levels(sentence: str) -> list[int]:
+    """Every level a scaling sentence names, in any of the three phrasings."""
+    levels = [int(n) for n, _value in _LEVEL_HEAD.findall(sentence)]
+    levels += [int(n) for n, _value in _LEVEL_TAIL.findall(sentence)]
+    levels += [int(n) for n in _ORDINAL_LEVEL.findall(sentence)]
+    levels += [int(n) for n in _AT_ORDINAL_LEVEL.findall(sentence)]
+    levels += [int(n) for _value, n in _AT_LEVEL.findall(sentence)]
+    return levels
+
+
+def _scaling_sentence(text: str) -> str | None:
+    """The paragraph stating how the spell scales with level, or ``None``.
+
+    The labelled paragraph is preferred, because it is unambiguous. The corpus omits the
+    label on 4 of its cantrips, so a bare paragraph is accepted too - but only when it
+    states a level and a value and says something increases, which is what keeps an
+    ordinary sentence that mentions a level out of this.
+    """
+    labelled = _UPGRADE_LABEL.search(text)
+    if labelled:
+        return labelled.group(1)
+
+    for paragraph in re.split(r"\n\s*\n", text):
+        if _SLOT_PHRASE.search(paragraph):
+            continue
+        if not _SCALING_VERB.search(paragraph):
+            continue
+        if _LEVEL_VALUE.search(paragraph) or _AT_ORDINAL_LEVEL.search(paragraph):
+            return paragraph
+    return None
+
+
+def _level_pairs(sentence: str) -> list[tuple[int, str]]:
+    """Every ``(level, value)`` a scaling sentence states, in the order it states them.
+
+    The list is written with the level named once and then implied - "levels 5 (2d10),
+    11 (3d10), and 17 (4d10)" - so the first entry is read with its label and the rest are
+    read as bare numbers from the text that follows. Reading only the labelled form is what
+    made every cantrip report its level 5 value at level 11 and 17 as well.
+    """
+    head = _LEVEL_HEAD.search(sentence)
+    if head:
+        pairs = [(int(head.group(1)), head.group(2).strip())]
+        pairs += [
+            (int(level), value.strip())
+            for level, value in _LEVEL_TAIL.findall(sentence[head.end():])
+        ]
+        return pairs
+
+    # The corpus's ordinal phrasing, `5th level (2d6), 11th level (3d6)`, names every
+    # level, so each entry is read with its own label.
+    normalised = _ORDINAL_LEVEL.sub(r"level \1", sentence)
+    return [
+        (int(level), value.strip())
+        for level, value in _LEVEL_HEAD.findall(normalised)
+    ]
+
+
+def _value_at(pairs: list[tuple[int, str]], level: int) -> str | None:
+    """The value for the highest stated level at or below ``level``.
+
+    ``None`` when the character is below the first stated level, which is the honest
+    answer for a cantrip that has not upgraded yet.
+    """
+    applicable = [value for stated, value in sorted(pairs) if stated <= level]
+    return applicable[-1] if applicable else None
+
+
+def _scaling_subject(sentence: str) -> str:
+    """What the scaling sentence is about, in the file's own words."""
+    lowered = sentence.lower()
+    for subject in _SCALING_SUBJECTS:
+        if subject in lowered:
+            return subject
+    return "damage"
+
+
+def _digits(value: str) -> str:
+    """``two beams`` -> ``2 beams``. A value already in digits is left alone."""
+    head, _, rest = value.partition(" ")
+    return f"{_NUMBER_WORDS.get(head.lower(), head)}{' ' + rest if rest else ''}"
 
 
 def parse(text: str) -> dict | None:

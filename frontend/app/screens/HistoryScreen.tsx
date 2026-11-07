@@ -51,7 +51,7 @@ export function HistoryScreen() {
 
   return (
     <div className="space-y-3">
-      <h2 className="text-lg font-semibold text-parchment">Past runs</h2>
+      <h2 className="text-lg font-semibold text-parchment">Past scenarios</h2>
       {/* Flex rather than a grid: an opened run needs to take the full width, and a
           grid cell cannot span its own row without knowing the column count. */}
       <div className="flex flex-wrap gap-3">

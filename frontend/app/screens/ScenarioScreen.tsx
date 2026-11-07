@@ -109,6 +109,8 @@ export function ScenarioScreen() {
           },
           // The id we just loaded by, so a book opened from history is rateable too.
           run_id: runId,
+          // A stored run is not a conversation, so there is no thread to continue.
+          thread_id: null,
         })
         setPhase("done")
       })

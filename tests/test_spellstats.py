@@ -197,6 +197,170 @@ def test_attach_does_not_mutate_its_input():
     assert "stats" not in spell
 
 
+# --- scaling to a character's level ---------------------------------------------
+
+
+def test_a_cantrip_upgrade_is_read_at_the_characters_level():
+    """The card shows the row that applies, not the table."""
+    text = (
+        "You hurl a mote of fire. On a hit, the target takes 1d10 Fire damage.\n\n"
+        "_Cantrip Upgrade._ The damage increases by 1d10 when you reach levels "
+        "5 (2d10), 11 (3d10), and 17 (4d10)."
+    )
+    assert spellstats.scaling(text, 5) == "2d10 damage (L5)"
+    assert spellstats.scaling(text, 11) == "3d10 damage (L11)"
+    assert spellstats.scaling(text, 17) == "4d10 damage (L17)"
+    # The label is the character's level, not the level the value was stated at.
+    assert spellstats.scaling(text, 12) == "3d10 damage (L12)"
+
+
+def test_below_the_first_stated_level_there_is_no_note():
+    """A cantrip at level 3 has not upgraded, and the level 5 row would be a lie.
+
+    This is the case a "nearest level" implementation gets wrong, and it is invisible
+    because the note still looks plausible.
+    """
+    text = (
+        "_Cantrip Upgrade._ The damage increases by 1d8 when you reach levels "
+        "5 (2d8), 11 (3d8), and 17 (4d8)."
+    )
+    assert spellstats.scaling(text, 1) is None
+    assert spellstats.scaling(text, 4) is None
+    assert spellstats.scaling(text, 5) == "2d8 damage (L5)"
+
+
+def test_a_level_between_two_stated_levels_uses_the_lower_one():
+    """Levels 6-10 are still the level 5 row, which is what the rule says."""
+    text = (
+        "_Cantrip Upgrade._ The damage increases by 1d8 when you reach levels "
+        "5 (2d8), 11 (3d8), and 17 (4d8)."
+    )
+    assert spellstats.scaling(text, 10) == "2d8 damage (L10)"
+
+
+def test_the_phrase_before_at_level_is_kept_whole():
+    """Eldritch Blast's answer is "2 beams", and "2" alone would not be an answer."""
+    text = (
+        "_Cantrip Upgrade._ The spell creates two beams at level 5, three beams at "
+        "level 11, and four beams at level 17."
+    )
+    assert spellstats.scaling(text, 5) == "2 beams (L5)"
+    assert spellstats.scaling(text, 11) == "3 beams (L11)"
+
+
+def test_the_subject_of_the_scaling_is_the_files_own_word():
+    """A range is not damage, and the sentence is what says which it is."""
+    text = (
+        "_Cantrip Upgrade._ The range doubles when you reach levels 5 (30 feet), "
+        "11 (60 feet), and 17 (120 feet)."
+    )
+    assert spellstats.scaling(text, 5) == "range 30 feet (L5)"
+
+
+def test_a_damage_die_is_not_read_as_damage():
+    """Shillelagh changes the die, not the number of dice, and the two read differently."""
+    text = (
+        "_Cantrip Upgrade._ The damage die changes when you reach levels 5 (d10), "
+        "11 (d12), and 17 (2d6)."
+    )
+    assert spellstats.scaling(text, 5) == "d10 damage die (L5)"
+
+
+def test_a_choice_of_values_is_kept_whole():
+    """Toll the Dead deals one of two amounts, so both are shown."""
+    text = (
+        "_Cantrip Upgrade._ The damage increases by one die when you reach levels "
+        "5 (2d8 or 2d12), 11 (3d8 or 3d12), and 17 (4d8 or 4d12)."
+    )
+    assert spellstats.scaling(text, 5) == "2d8 or 2d12 damage (L5)"
+
+
+def test_the_corpus_ordinal_phrasing_is_read():
+    """The corpus writes `5th level (2d6)` where the SRD writes `levels 5 (2d6)`."""
+    text = (
+        "The spell's damage increases by 1d6 when you reach 5th level (2d6), "
+        "11th level (3d6), and 17th level (4d6)."
+    )
+    assert spellstats.scaling(text, 5) == "2d6 damage (L5)"
+
+
+def test_a_slot_scaled_spell_gets_no_note():
+    """A Warlock's slots are all one level, so "for each slot above 3rd" has one answer.
+
+    That answer is the spell's own text, so there is nothing to contextualise - and
+    showing a slot formula as a level note would state a number the character cannot use.
+    """
+    text = (
+        "**Casting Time:** Action\n\n"
+        "When you cast this spell using a spell slot of 4th level or higher, the damage "
+        "increases by 1d8 for each slot level above 3rd."
+    )
+    assert spellstats.scaling(text, 5) is None
+
+
+def test_a_spell_that_does_not_scale_gets_no_note():
+    text = "**Casting Time:** Action\n\nA bright streak flashes from your pointing finger."
+    assert spellstats.scaling(text, 5) is None
+
+
+def test_no_level_means_no_note():
+    """A sheet with no level cannot be contextualised, and guessing one is worse."""
+    text = "_Cantrip Upgrade._ The damage increases by 1d8 when you reach levels 5 (2d8)."
+    assert spellstats.scaling(text, None) is None
+
+
+def test_the_model_is_only_asked_about_a_gap():
+    """The gate is what keeps a model call off every levelled spell in the corpus.
+
+    A spell whose scaling this module read needs no help, and a spell that never mentions a
+    level cannot scale with one. Only the space between the two is worth a call.
+    """
+    read = "_Cantrip Upgrade._ The damage increases by 1d8 when you reach levels 5 (2d8)."
+    assert spellstats.scaling_needs_reading(read, 5) is False
+
+    # The header line names the spell's own level, which is why "mentions a level" is not
+    # the gate: every levelled spell would pass it.
+    levelled = "**Casting Time:** Action\n\n_Level 3 Evocation (Wizard)_\n\nA fireball."
+    assert spellstats.scaling_needs_reading(levelled, 5) is False
+
+    # Booming Blade's real phrasing: it scales at 5th/11th/17th, but in prose rather than
+    # in a table, so there is no value to read for a given level.
+    prose = (
+        "This spell's damage increases when you reach certain levels. At 5th level, the "
+        "melee attack deals an extra 1d8 Thunder damage to the target on a hit, and the "
+        "damage the target takes for moving increases to 2d8."
+    )
+    assert spellstats.scaling_needs_reading(prose, 5) is True
+    # Below the first stated level there is nothing to state, so nothing to ask about.
+    assert spellstats.scaling_needs_reading(prose, 3) is False
+
+
+def test_eldritch_blast_reads_as_two_beams_at_level_five():
+    """The case the feature was asked for, against the real vendored text."""
+    spell = rules.find_spell("Eldritch Blast")
+    assert spell is not None
+    assert spellstats.scaling(spell["text"], 5) == "2 beams (L5)"
+
+
+def test_every_scaling_cantrip_in_the_corpus_is_read():
+    """A scaling sentence this file cannot read is a card that shows the table instead.
+
+    Checked against the real corpus rather than a sample, because the failure mode is a
+    pattern that handles the common phrasing and silently drops the rest.
+    """
+    unread = []
+    for name in _corpus_spells():
+        spell = rules.find_spell(name)
+        if spell is None:
+            continue
+        if spellstats.scaling_needs_reading(spell["text"], 5):
+            unread.append(name)
+    # Two cantrips scale in prose rather than in a table - Booming Blade and Green-Flame
+    # Blade - and those are exactly what the fast model is for. Anything else appearing
+    # here is a phrasing this file has stopped understanding.
+    assert unread == ["Booming Blade", "Green-Flame Blade"]
+
+
 # --- against the real corpus -----------------------------------------------------
 
 
