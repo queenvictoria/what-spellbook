@@ -486,10 +486,10 @@ function RulesContextDrawer({
 
           {!loading && !answer && !searching && search === null && (
             <p className="text-center text-parchment/60">
-              Select text in a book to see what it retrieves, or type in the
-              box above — the cards follow what you write. Press Ask to have it
-              explained. Any spell the selection names is attached
-              automatically.
+              Select text in a book or on the character sheet to see what it
+              retrieves, or type in the box above — the cards follow what you
+              write. Press Ask to have it explained. Any spell the selection
+              names is attached automatically.
             </p>
           )}
         </div>

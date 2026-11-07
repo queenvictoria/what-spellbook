@@ -161,7 +161,7 @@ export function ScenarioScreen() {
               }}
             />
             <Button
-              className="w-full text-void-900 bg-verdant-400 rounded-full"
+              className="w-full text-void-900 bg-verdant-400 hover:bg-verdant-300 hover:text-verdant-600 rounded-full"
               onClick={generate}
               disabled={phase === "running" || !scenario.trim()}
             >

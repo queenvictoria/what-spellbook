@@ -1298,13 +1298,13 @@ acts on purpose:
   and a reader checking a claim needs both on screen at once. Verified by index: the answer
   renders before the "In the index" section.
 - **The drawer opens on the settled value only.** A drag fires `selectionchange` per character,
-  so a wait is what keeps one drag from issuing a request per letter - `SELECTION_SETTLE_MS`,
-  shorter than the typing delay because the reader has already finished choosing by the time
-  the mouse comes up. The timer reads `context`, `documents` and `explore` through a **ref**,
-  not through its dependency array: `documents` is a fresh array on every `selectionchange` and
-  `explore` is rebuilt on every provider render (which is continuous while an answer streams),
-  so either one in the array would restart the timer on events that did not change the
-  selection and postpone the search for as long as the churn continued.
+  so a wait is what keeps one drag from issuing a request per letter. The wait is timed from
+  **`pointerup`, not from the last `selectionchange`** - see *The gesture ends the selection;
+  a timer cannot* below. The timer reads `context`, `documents` and `explore` through a
+  **ref**, not through its dependency array: `documents` is a fresh array on every
+  `selectionchange` and `explore` is rebuilt on every provider render (which is continuous
+  while an answer streams), so either one in the array would restart the timer on events that
+  did not change the selection and postpone the search for as long as the churn continued.
 - **The guard is reset when the selection empties.** `clearSelection` runs once the drawer
   holds the words, so the hook reports `""` - and the effect must treat that as "the last
   selection is over". Without the reset, re-selecting the *same* phrase would be refused by the
@@ -1398,6 +1398,44 @@ Four things this cost, each worth keeping:
   *question*, but "Repelling Blast misses, so Thorn Whip pulls it" is a question about two
   spells, and their descriptions are the rules. Documents therefore rescue a refusal - and with
   no document the refusal correctly stands, which is still tested.
+
+### The gesture ends the selection; a timer cannot
+
+The drawer used to open on `SELECTION_SETTLE_MS` after the last `selectionchange`, which fired
+it **too soon**. While dragging over a phrase, a reader who pauses to check a word fires no
+events, so the timer read the pause as "finished" and opened on half a phrase - and the only
+cure was to drag again. No value of that timer fixes it: a drag's pause and a drag's end emit
+the same signal, so the length of the wait decides which half of the problem you get.
+
+`pointerup` is the actual end of a drag, so it is now the trigger. `useSelection` tracks
+`pointerdown`/`pointerup` on the **document** - a drag routinely begins outside the watched
+element and ends inside it, or the reverse - keeps a `dragging` flag, ignores
+`selectionchange` while it is set, and publishes as *settled* when the button comes up.
+`SelectionWatcher` acts on a settled selection at once and leaves `SELECTION_SETTLE_MS` (900)
+as a **safety net** for the selections no gesture ends: Ctrl+A, double-click, keyboard, a
+selection restored by the browser.
+
+Four things are worth keeping, because each one looked like a working fix and was not:
+
+- **Publishing on `pointerup` and then waiting anyway is the same bug inverted.** The first
+  version raised the timer instead of replacing it, so the reader released the button and
+  still sat through a second of nothing. The gesture has to *short-circuit* the wait, which is
+  why the hook reports `settled` rather than merely publishing earlier.
+- **A browser re-reports the finished selection *after* the mouse comes up.** Measured live:
+  two `selectionchange` events landed **35ms after** the `pointerup` that had already
+  published the same words. Treating every publish as new work demoted a settled selection
+  back to "wait for the timer" and reinstated the delay at the last moment. Only a publish
+  whose **text changed** unsettles the selection.
+- **Measure the mount, not a poll.** A `setTimeout` polling chain reported the drawer opening
+  exactly 1000ms after the mouse-up - a suspiciously round number that was really the poll's
+  own latency, and a `requestAnimationFrame` loop never fired at all in a non-visible page. A
+  `MutationObserver` on `document.body` recorded the dialog mounting **34ms** after
+  `pointerup` on the character sheet and **44ms** on a book. When a timing looks like a
+  constant, suspect the measurement before the code.
+- **The same gate has to hold on every selection surface.** The hook is shared, so the fix
+  landed for both books and the character sheet at once - but the sheet needed `dd` added to
+  `surroundingText`'s block selector first, or a selection inside a bolded value resolved to
+  the `<strong>` and carried two words of context instead of the value.
 
 ### Do not let a drag on a link become a click
 

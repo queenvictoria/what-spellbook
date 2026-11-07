@@ -89,7 +89,7 @@ export function AskBox({
         disabled={!canAsk}
         aria-label="Ask"
         title="Ask the 2024 SRD"
-        className="shrink-0 rounded-full bg-verdant-400 whitespace-nowrap text-void-900"
+        className="shrink-0 rounded-full bg-verdant-400 hover:bg-verdant-300 hover:text-verdant-600 whitespace-nowrap text-void-900"
       >
         {loading ? (
           <Loader2 className="h-4 w-4 animate-spin" />

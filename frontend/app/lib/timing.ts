@@ -26,10 +26,16 @@ export const TYPING_DEBOUNCE_MS = 600
 /**
  * How long a text selection has to hold still before it is acted on.
  *
- * Shorter than {@link TYPING_DEBOUNCE_MS} because the gesture is different. A drag fires
- * `selectionchange` on every intermediate character, so *some* wait is required - but the
- * reader has already finished choosing by the time the mouse comes up, so this only has to
- * outlast the drag itself. Reusing the typing delay here would make every selection feel like
- * the app had stalled.
+ * This is a **safety net, not the trigger**. A selection is normally acted on the moment the
+ * gesture that made it ends - `useSelection` publishes on `pointerup` - because the mouse
+ * coming up is the reader saying they have finished choosing. What this catches is the
+ * selections no gesture ends: Ctrl+A, a double-click on a word, a selection made from the
+ * keyboard, or one the browser restores.
+ *
+ * It is therefore longer than a drag rather than shorter. The first version was 350ms and
+ * fired *during* a drag: a reader who paused mid-phrase for a third of a second had the
+ * drawer open on half a sentence while they were still choosing the other half. A drag that
+ * pauses is not a drag that has finished, and no timer can tell the two apart - which is why
+ * the gesture, not the clock, is what decides.
  */
-export const SELECTION_SETTLE_MS = 350
+export const SELECTION_SETTLE_MS = 900

@@ -23,6 +23,14 @@ import { useSelection } from "@/lib/useSelection"
  * The wait exists because a drag fires `selectionchange` on every intermediate character.
  * Searching each one would issue a request per letter of the drag and leave several
  * responses racing to fill one panel, so the highlight must hold still first.
+ *
+ * The gesture ending is the real signal, and `useSelection` reports whether it saw one. A
+ * selection a mouseup finished is acted on immediately; the timer below is a *safety net*
+ * for the selections no gesture ends: Ctrl+A, a double-click on a word, a selection made
+ * from the keyboard, or one restored by the browser. It is deliberately longer than a drag,
+ * because a drag that pauses mid-phrase must not be mistaken for a finished one - which is
+ * exactly what a short timer did. Waiting after a mouseup would be the same bug inverted:
+ * the reader has released the button and is made to sit through a second of nothing.
  */
 export function SelectionWatcher({ target }: { target: RefObject<HTMLElement | null> }) {
   const names = useSpellNames()
@@ -32,7 +40,7 @@ export function SelectionWatcher({ target }: { target: RefObject<HTMLElement | n
     (text: string) => extractSpellNames(text, names),
     [names],
   )
-  const { selectedText, context, documents, clearSelection } = useSelection(
+  const { selectedText, context, documents, settled, clearSelection } = useSelection(
     target,
     mentionsOf,
   )
@@ -65,9 +73,9 @@ export function SelectionWatcher({ target }: { target: RefObject<HTMLElement | n
     }
     if (selectedText === openedFor.current) return
 
-    const timer = setTimeout(() => {
-      // Re-checked inside the timer: the selection may have moved on during the wait, and
-      // the point of the wait is that only the settled value is searched.
+    const open = () => {
+      // Re-checked when the timer fires: the selection may have moved on during the wait,
+      // and only the settled value is the one the reader chose.
       if (selectedText === openedFor.current) return
       openedFor.current = selectedText
       const { context, documents, explore } = latest.current
@@ -77,9 +85,17 @@ export function SelectionWatcher({ target }: { target: RefObject<HTMLElement | n
       // stale highlight - and clearing it here, in the same tick the words are handed over,
       // is what lets the same phrase be selected again later and open the drawer afresh.
       clearSelection()
-    }, SELECTION_SETTLE_MS)
+    }
+
+    // A mouseup already said the reader has finished, so there is nothing left to wait for.
+    if (settled) {
+      open()
+      return
+    }
+
+    const timer = setTimeout(open, SELECTION_SETTLE_MS)
     return () => clearTimeout(timer)
-  }, [selectedText, clearSelection])
+  }, [selectedText, settled, clearSelection])
 
   return null
 }

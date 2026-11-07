@@ -1,20 +1,21 @@
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes } from "react-router-dom"
 
-import { CharacterScreen } from '@/screens/CharacterScreen'
-import { ChatsScreen } from '@/screens/ChatsScreen'
-import { HistoryScreen } from '@/screens/HistoryScreen'
-import { RulesScreen } from '@/screens/RulesScreen'
-import { ScenarioScreen } from '@/screens/ScenarioScreen'
-import { SearchScreen } from '@/screens/SearchScreen'
-import { cn } from '@/lib/utils'
+import { CharacterScreen } from "@/screens/CharacterScreen"
+import { ChatsScreen } from "@/screens/ChatsScreen"
+import { HistoryScreen } from "@/screens/HistoryScreen"
+import { RulesScreen } from "@/screens/RulesScreen"
+import { ScenarioScreen } from "@/screens/ScenarioScreen"
+import { SearchScreen } from "@/screens/SearchScreen"
+import { cn } from "@/lib/utils"
+import { GraphStar } from "lucide-react"
 
 const NAV = [
-  { to: '/scenario', label: 'Scenario' },
-  { to: '/history', label: 'History' },
-  { to: '/chats', label: 'Chats' },
-  { to: '/character', label: 'Character' },
-  { to: '/rules', label: 'Rules' },
-  { to: '/search', label: 'Search' },
+  { to: "/scenario", label: "Scenario" },
+  { to: "/rules", label: "Rules" },
+  { to: "/character", label: "Character" },
+  { to: "/history", label: "History" },
+  { to: "/chats", label: "Chats" },
+  // { to: '/search', label: 'Search' },
 ]
 
 export function App() {
@@ -24,26 +25,42 @@ export function App() {
           content needs no compensating top padding. z-40 sits below the drawers (z-50). */}
       <header className="sticky top-0 z-40 border-b border-void-800 bg-void-900/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
-          <span className="font-semibold tracking-tight text-parchment">
+          <span className="font-semibold tracking-tight text-parchment whitespace-nowrap">
             What Spellbook
           </span>
-          <nav className="flex gap-1">
+          <nav className="flex gap-1 w-full">
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 className={({ isActive }) =>
                   cn(
-                    'rounded-md px-3 py-1.5 text-sm transition-colors',
+                    "rounded-md px-3 py-1.5 text-sm transition-colors",
                     isActive
-                      ? 'bg-void-800 text-parchment'
-                      : 'text-parchment/60 hover:text-parchment',
+                      ? "bg-void-800 text-parchment"
+                      : "text-parchment/60 hover:text-parchment",
                   )
                 }
               >
                 {item.label}
               </NavLink>
             ))}
+            <NavLink
+              key="search"
+              to="/search"
+              className={({ isActive }) =>
+                cn(
+                  "rounded-md px-3 py-1.5 text-sm transition-colors",
+                  "ml-auto flex gap-1 items-center justify-center",
+                  isActive
+                    ? "bg-void-800 text-parchment"
+                    : "text-parchment/60 hover:text-parchment",
+                )
+              }
+            >
+              <GraphStar className="ml-1 inline h-4 w-4 text-parchment/60 transition-colors group-hover:text-parchment" />
+              Search
+            </NavLink>
           </nav>
         </div>
       </header>
