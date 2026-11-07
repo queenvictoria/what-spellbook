@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import pytest
 
-from backend.libs import rules
+from backend.libs import config, rules
 
 
 # --- the vendored corpus is present and complete -------------------------------
@@ -1463,3 +1463,42 @@ def test_the_vector_lane_falls_back_to_the_chunk_when_the_section_is_gone():
                             text="the rule as it was indexed")])
     found = rules.gather_from_index(db, "something")
     assert "the rule as it was indexed" in found["text"]
+
+
+def test_class_context_files_are_derived_from_the_directory():
+    """Derived, not listed: a list would name files that do not exist, and a link to a file
+    that is not there is worse than no link."""
+    found = [str(path.relative_to(config.CONTEXT_DIR_PATH)) for path in rules.class_context_files()]
+    assert "classes/warlock/base.md" in found
+    assert "classes/warlock/pact/tome.md" in found
+    assert "classes/warlock/subclass/celestial.md" in found
+    # Class-wide rules first, then pacts, then patrons - the order a reader meets them in.
+    assert found.index("classes/warlock/base.md") < found.index("classes/warlock/pact/tome.md")
+    assert found.index("classes/warlock/pact/tome.md") < found.index(
+        "classes/warlock/subclass/celestial.md"
+    )
+
+
+def test_a_class_context_path_cannot_escape_its_directory():
+    """The path arrives from a URL, so it is checked rather than trusted.
+
+    Without this the endpoint would read any file on the machine and serve it as a rule.
+    """
+    for attempt in (
+        "../../../../etc/passwd",
+        "/etc/passwd",
+        "warlock/../../../AGENTS.md",
+        "warlock/base.txt",
+    ):
+        with pytest.raises(rules.RulesUnavailable):
+            rules.class_context_path(attempt)
+
+
+def test_a_class_context_name_is_the_phrase_the_prose_uses():
+    """The name is what the front end searches generated prose for, so it has to be the
+    phrase the prose writes - not the filename, which is a path segment."""
+    assert rules._linkable_name("Warlock - base class rules (D&D 5.5e / 2024)") == "Warlock"
+    assert rules._linkable_name("Celestial Patron (D&D 5.5e / 2024)") == "Celestial Patron"
+    assert rules._linkable_name("Pact of the Tome (D&D 5.5e / 2024)") == "Pact of the Tome"
+    # A title with no edition tag or clause is already the name.
+    assert rules._linkable_name("Something") == "Something"

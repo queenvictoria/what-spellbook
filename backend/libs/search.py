@@ -147,10 +147,12 @@ class Result:
 
     ``where`` is the Chroma clause actually sent, echoed back because a filter that
     silently matches nothing is the commonest failure here and the clause is the fastest
-    way to see why. ``total_matching`` counts the distinct spells the request's *criteria*
-    admit - filters always, plus the words in text mode - so it says whether a filter is
-    too narrow rather than whether the query was any good. A vector search has no
-    threshold, so it cannot say how many spells are "relevant".
+    way to see why. ``total_matching`` counts the distinct *documents* the request's
+    *criteria* admit - filters always, plus the words in text mode - so it says whether a
+    filter is too narrow rather than whether the query was any good. A vector search has no
+    threshold, so it cannot say how many documents are "relevant". It is a count of
+    documents and not of chunks, which matters now that the collection holds the rulebook:
+    the two differ by a factor of two, and a caller that labels it "chunks" is wrong.
     """
 
     query: str
@@ -294,7 +296,7 @@ def _class_clause(db, wanted) -> tuple[dict | None, bool]:
 
 
 def _filters(*, classes, school, level_min, level_max, ritual, spells_only,
-             doc_type="all") -> dict:
+             doc_type=None) -> dict:
     return {
         "classes": [str(c) for c in classes],
         "school": school,
@@ -307,17 +309,31 @@ def _filters(*, classes, school, level_min, level_max, ritual, spells_only,
 
 
 def _where(db, filters: dict) -> tuple[dict | None, bool]:
-    """The Chroma clause for a filter set, and whether it is unsatisfiable."""
+    """The Chroma clause for a filter set, and whether it is unsatisfiable.
+
+    ``doc_type`` and ``spells_only`` overlap, and the rule is that **an explicit ``doc_type``
+    wins outright**. ``spells_only`` is kept because it is part of the published contract and
+    predates the rulebook being in the collection at all, so it remains the answer for a
+    caller who names no type - ``true`` selects spells, ``false`` selects everything.
+
+    The two must not be combined, and the reason is not tidiness: ``doc_type=all`` with the
+    default ``spells_only=true`` used to resolve to *spells only*, so the one value that reads
+    as "search everything" returned the narrowest possible set. That was invisible from the
+    outside - a 200 with plausible hits - and it silently defeated the Rules tab asking for
+    the rulebook. Distinguishing "not given" from "given as all" is what makes the word mean
+    what it says.
+    """
     clauses: list[dict] = []
 
-    # ``doc_type`` supersedes ``spells_only`` when it is set to anything but ``all``: the
-    # two are the same question asked at different resolutions, and honouring both would
-    # make ``doc_type=srd`` with the default ``spells_only=true`` match nothing at all.
-    doc_type = filters.get("doc_type") or "all"
-    if doc_type != "all":
+    doc_type = filters.get("doc_type")
+    if doc_type is None:
+        # No explicit type, so the older, coarser switch decides. Defaulting to spells keeps
+        # the recommender's view for a caller that said nothing.
+        if filters["spells_only"]:
+            clauses.append(spells.doc_type_filter(spells.DOC_TYPE_SPELL))
+    elif doc_type != "all":
         clauses.append(spells.doc_type_filter(doc_type))
-    elif filters["spells_only"]:
-        clauses.append(spells.doc_type_filter(spells.DOC_TYPE_SPELL))
+    # ``doc_type="all"`` adds no clause, which is what makes it mean the whole collection.
 
     class_clause, impossible = _class_clause(db, filters["classes"])
     if impossible:
@@ -339,10 +355,10 @@ def _where(db, filters: dict) -> tuple[dict | None, bool]:
 
 # --- search ---
 def _validate(mode: str, limit: int, offset: int, level_min, level_max,
-              doc_type: str = "all") -> None:
+              doc_type: str | None = None) -> None:
     if mode not in MODES:
         raise ValueError(f"Unknown search mode '{mode}'. Use one of {', '.join(MODES)}.")
-    if doc_type not in DOC_TYPES:
+    if doc_type is not None and doc_type not in DOC_TYPES:
         raise ValueError(
             f"Unknown doc_type '{doc_type}'. Use one of {', '.join(DOC_TYPES)}."
         )
@@ -437,7 +453,7 @@ def search(db, query: str = "", *, mode: str = "vector", limit: int = DEFAULT_LI
            offset: int = 0, classes=(), school: str | None = None,
            level_min: int | None = None, level_max: int | None = None,
            ritual: bool | None = None, spells_only: bool = True,
-           all_terms: bool = True, doc_type: str = "all") -> Result:
+           all_terms: bool = True, doc_type: str | None = None) -> Result:
     """Search the index, returning distinct documents rather than chunks.
 
     ``mode='text'`` accepts an empty query, which lists everything the filters admit -
@@ -445,9 +461,11 @@ def search(db, query: str = "", *, mode: str = "vector", limit: int = DEFAULT_LI
     through the ordered hits; there is no cursor, because the ordering is total and stable
     for a given query so a page number is enough.
 
-    ``doc_type`` narrows to one kind of indexed text - ``spell``, ``item`` or ``srd`` - and
-    defaults to ``all`` so the diagnostic surface shows the whole collection. It takes
-    precedence over ``spells_only``, which is the same question at a coarser resolution.
+    ``doc_type`` narrows to one kind of indexed text: ``spell``, ``item``, ``srd``, or
+    ``all`` for the whole collection. **An explicit value wins outright** - ``all`` includes
+    the rulebook even though ``spells_only`` defaults true, and ``None`` (not given) falls
+    back to ``spells_only``. Passing ``"all"`` is therefore how a caller asks for a search
+    that can reach the rulebook, and it is what the Rules tab does.
     """
     started = time.perf_counter()
     query = " ".join(str(query or "").split())

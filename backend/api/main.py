@@ -594,8 +594,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                    level_max: int | None = Query(default=None, ge=0, le=9),
                    ritual: bool | None = Query(default=None),
                    spells_only: bool = Query(default=True),
-                   doc_type: str = Query(default="all",
-                                         description="all, spell, item or srd"),
+                   doc_type: str | None = Query(
+                       default=None,
+                       description=("all, spell, item or srd. An explicit value wins over "
+                                    "spells_only; omit it to leave the choice to spells_only"),
+                   ),
                    all_terms: bool = Query(default=True,
                                            description="Text mode: require every word, not just one")):
         """Search the vector index directly, for inspection and testing.
@@ -621,11 +624,14 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         one comma-joined value and Chroma's ``$contains`` does not match inside it - see
         ``search._class_clause``.
 
-        ``doc_type`` narrows to one kind of indexed text and defaults to ``all``: the
-        collection holds the spell corpus, the magic items that share its directory, and the
-        vendored 2024 SRD. It takes precedence over ``spells_only``, which is the same
-        question at a coarser resolution - ``doc_type=srd`` with the default
-        ``spells_only=true`` would otherwise match nothing.
+        ``doc_type`` narrows to one kind of indexed text: ``all``, ``spell``, ``item`` or
+        ``srd``. **An explicit value wins outright**, so ``doc_type=all`` returns the whole
+        collection including the rulebook and the magic items - which is what a caller
+        asking about a *rule* needs. Omitting it leaves the choice to ``spells_only``, whose
+        default gives the recommender's view. The two are not combined: ``doc_type=all`` with
+        the default ``spells_only=true`` used to resolve to spells only, so the value that
+        reads as "everything" returned the narrowest set and silently defeated a rules
+        search.
 
         A 400 means the request cannot work (an unknown mode, an inverted level range, a
         vector search with nothing to embed); an empty result is a normal answer.
@@ -706,6 +712,48 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             return schemas.SrdSectionSchema(
                 document=found.name, title=found.title, heading=found.title,
                 slug="", path=found.path, text=srd.text(name),
+            )
+        except rules.RulesUnavailable as e:
+            raise _error(404, str(e))
+
+    # --- our own class context ---
+
+    @app.get("/api/class-context",
+              response_model=list[schemas.ClassContextFileSchema], tags=["rules"])
+    def class_context_files():
+        """Every class context file, class-wide rules first, then pacts, then patrons.
+
+        These are the files spliced into a prompt as ``=== CHARACTER CONTEXT ===``, and
+        they are listed so a reader can see what the answer was given. They are *not* SRD
+        text: they are our own summary of a class, and the response says so through
+        ``source``.
+
+        Derived from the directory rather than listed in code, so a class added to
+        ``context/classes/`` appears here without an edit - and a file that does not exist
+        is never offered as a link.
+        """
+        return [
+            schemas.ClassContextFileSchema(**found)
+            for found in rules.class_context_index()
+        ]
+
+    @app.get("/api/class-context/{path:path}",
+              response_model=schemas.ClassContextSchema, tags=["rules"])
+    def class_context_file(path: str):
+        """One class context file, as renderable Markdown.
+
+        Deterministic, like ``/api/srd/{name}``: the text is read from the file, so this
+        cannot paraphrase. A 404 means the file is not there, which is a real miss - the
+        list above is derived from the same directory, so a stale link means the file was
+        removed.
+
+        The path is checked rather than trusted, because it arrives from a URL: anything
+        resolving outside ``context/classes`` is refused, so this cannot be turned into a
+        reader for the rest of the machine.
+        """
+        try:
+            return schemas.ClassContextSchema.from_document(
+                rules.class_context_document(path)
             )
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))

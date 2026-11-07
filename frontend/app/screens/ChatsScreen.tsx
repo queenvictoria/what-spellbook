@@ -6,7 +6,7 @@ import type { Conversation, ConversationKind, ConversationSummary } from "@/api/
 import { AttachmentChips } from "@/components/AttachmentChips"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
-import { SrdPathLink } from "@/components/SrdPathLink"
+import { RulePathLink } from "@/components/RulePathLink"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -196,7 +196,7 @@ function ViewThread({
                   <div className="space-y-1">
                     {turn.citations.map((path) => (
                       <p key={path} className="truncate">
-                        <SrdPathLink path={path} />
+                        <RulePathLink path={path} />
                       </p>
                     ))}
                   </div>

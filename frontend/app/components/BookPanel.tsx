@@ -3,7 +3,7 @@ import { ChevronDown, ChevronRight, Star, MessageSquare } from "lucide-react"
 
 import { api, ApiError } from "@/api/client"
 import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
-import { RulesContextButton } from "@/components/RulesContextButton"
+import { SelectionWatcher } from "@/components/SelectionWatcher"
 import type { Answer, Book } from "@/api/types"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
@@ -184,7 +184,7 @@ export function BookPanel({
               />
             </div>
 
-            <RulesContextButton target={prose} />
+            <SelectionWatcher target={prose} />
           </RulesContextDrawerProvider>
 
           <div className="border-t border-void-800 pt-3 space-y-3">
@@ -209,8 +209,8 @@ export function BookPanel({
             <div className="flex items-center gap-2 text-sm text-parchment/60">
               <MessageSquare className="h-4 w-4" />
               <span>
-                Or select text in the book above and click the button to ask
-                about it
+                Or select text in the book above — the index search opens on
+                its own, and you can ask about it from there
               </span>
             </div>
           </div>

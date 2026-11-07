@@ -75,7 +75,10 @@ Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGE
   question, a similarity search over the indexed rulebook is the last resort, labelled
   `rules-inferred`.
 - The vendored SRD is indexed alongside the spells, so the rulebook is searchable and the
-  recommender is grounded in the rules a *scenario* turns on.
+  recommender is grounded in the rules a *scenario* turns on. The Rules tab's index lane
+  asks for `doc_type=all`, so a question like "how does cover work" is answered by the
+  **Cover** rule as well as by spells that mention cover — the two are listed under separate
+  headings, because a rule shown as a spell reads as a spell with its stats missing.
 
 ### Front ends
 - CLI REPL with `/slash` + TAB completion, formatted markdown, and a live progress line.

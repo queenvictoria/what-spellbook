@@ -75,7 +75,6 @@ export function SearchScreen() {
   const [levelMin, setLevelMin] = useState("")
   const [levelMax, setLevelMax] = useState("")
   const [ritual, setRitual] = useState(false)
-  const [spellsOnly, setSpellsOnly] = useState(true)
   const [docType, setDocType] = useState<NonNullable<SearchParams["doc_type"]>>("all")
   const [allTerms, setAllTerms] = useState(true)
   const [showFilters, setShowFilters] = useState(false)
@@ -105,14 +104,14 @@ export function SearchScreen() {
       level_min: levelMin === "" ? undefined : Number(levelMin),
       level_max: levelMax === "" ? undefined : Number(levelMax),
       ritual: ritual ? true : undefined,
-      // The doc-type control is the single source of truth for what is searched, so
-      // ``spells_only`` is derived from it rather than set independently. Two controls for
-      // one question is how a reader ends up with a filter that silently does nothing.
-      spells_only: docType === "all" ? spellsOnly : docType === "spell",
+      // ``doc_type`` is the single source of truth for what is searched, and the server
+      // lets an explicit value win outright. Sending ``spells_only`` alongside it would be
+      // a second control for one question - and the one that used to silently override the
+      // other, so ``all`` returned spells only.
       all_terms: allTerms,
       doc_type: docType,
     }),
-    [query, mode, classes, school, levelMin, levelMax, ritual, spellsOnly, allTerms, docType],
+    [query, mode, classes, school, levelMin, levelMax, ritual, allTerms, docType],
   )
 
   async function run(overrides: Partial<SearchParams> = {}) {
@@ -152,10 +151,10 @@ export function SearchScreen() {
           >
             <SlidersHorizontal className="h-4 w-4" />
             Filters
-            {activeFilterCount(classes, school, levelMin, levelMax, ritual, spellsOnly, docType) >
+            {activeFilterCount(classes, school, levelMin, levelMax, ritual, docType) >
               0 && (
               <Badge tone="arcane">
-                {activeFilterCount(classes, school, levelMin, levelMax, ritual, spellsOnly, docType)}
+                {activeFilterCount(classes, school, levelMin, levelMax, ritual, docType)}
               </Badge>
             )}
           </Button>
@@ -197,8 +196,11 @@ export function SearchScreen() {
                 {option.label}
                 {facets && (
                   <span className="ml-1 text-parchment/35">
+                    {/* Every count here is a count of *documents*, so "Everything" is the
+                        sum of the parts. Showing ``facets.chunks`` instead compared 3651
+                        chunks against 522 spells and read as if the buttons disagreed. */}
                     {option.value === "all"
-                      ? facets.chunks
+                      ? facets.doc_types.reduce((total, f) => total + f.count, 0)
                       : (facets.doc_types.find((f) => f.value === option.value)?.count ?? 0)}
                   </span>
                 )}
@@ -264,9 +266,6 @@ export function SearchScreen() {
               setLevelMax={setLevelMax}
               ritual={ritual}
               setRitual={setRitual}
-              spellsOnly={spellsOnly}
-              setSpellsOnly={setSpellsOnly}
-              docType={docType}
             />
           )}
         </CardContent>
@@ -298,7 +297,6 @@ function activeFilterCount(
   levelMin: string,
   levelMax: string,
   ritual: boolean,
-  spellsOnly: boolean,
   docType: string,
 ) {
   return (
@@ -307,7 +305,6 @@ function activeFilterCount(
     (levelMin !== "" ? 1 : 0) +
     (levelMax !== "" ? 1 : 0) +
     (ritual ? 1 : 0) +
-    (spellsOnly ? 0 : 1) +
     (docType !== "all" ? 1 : 0)
   )
 }
@@ -325,9 +322,6 @@ function Filters({
   setLevelMax,
   ritual,
   setRitual,
-  spellsOnly,
-  setSpellsOnly,
-  docType,
 }: {
   facets: SearchFacets | null
   classes: string[]
@@ -340,9 +334,6 @@ function Filters({
   setLevelMax: (value: string) => void
   ritual: boolean
   setRitual: (value: boolean) => void
-  spellsOnly: boolean
-  setSpellsOnly: (value: boolean) => void
-  docType: string
 }) {
   const toggleClass = (name: string) =>
     setClasses(
@@ -424,28 +415,10 @@ function Filters({
           />
           Ritual only
         </label>
-        {/* Disabled while a doc type is chosen, because the two are the same question at
-            different resolutions and the server lets doc_type win. Leaving it live would
-            offer a control that silently does nothing. */}
-        <label
-          className={cn(
-            "flex items-center gap-2 text-xs",
-            docType === "all" ? "text-parchment/70" : "text-parchment/35",
-          )}
-          title={
-            docType === "all"
-              ? "Exclude the 22 magic items that share the corpus directory"
-              : "Ignored while a document type is selected"
-          }
-        >
-          <input
-            type="checkbox"
-            checked={spellsOnly}
-            disabled={docType !== "all"}
-            onChange={(e) => setSpellsOnly(e.target.checked)}
-          />
-          Spells only
-        </label>
+        {/* The doc-type buttons above are the only control for what is searched. A
+            ``spells_only`` checkbox beside them would be a second control for one question,
+            and the server lets an explicit ``doc_type`` win - so it would silently do
+            nothing. The buttons carry the counts instead. */}
       </div>
 
       {facets && (

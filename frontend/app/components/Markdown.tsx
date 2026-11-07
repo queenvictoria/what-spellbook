@@ -21,8 +21,14 @@
  *   as a sibling of `## Actions`.
  */
 
+import { ClassLink } from "@/components/ClassLink"
 import { SpellLink } from "@/components/SpellLink"
-import { splitSpells, useSpellNames } from "@/lib/spellNames"
+import {
+  splitClassNames,
+  splitSpells,
+  useClassNames,
+  useSpellNames,
+} from "@/lib/spellNames"
 
 type Block =
   | { kind: "heading"; level: number; text: string }
@@ -168,8 +174,19 @@ function toBlocks(text: string): Block[] {
  * Spell names are linked inside plain runs *and* inside bold runs, because the books
  * bold the spell they are recommending - the most useful mention to make clickable is
  * exactly the one that would otherwise be skipped.
+ *
+ * Class context names are linked the same way and in the same runs, because an answer that
+ * names the documents it was given ("the attached documents show **Celestial Patron**") is
+ * naming something the reader can open. The two linkers run in sequence rather than as one
+ * alternation: a spell and a class file are different kinds of thing, and a single pattern
+ * would have to decide which a name is before either could look it up.
  */
-function inline(text: string, names: ReadonlySet<string>, linkSpells = true) {
+function inline(
+  text: string,
+  names: ReadonlySet<string>,
+  classes: ReadonlyMap<string, string>,
+  linkSpells = true,
+) {
   const parts = text
     .split(/(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`|(?<![\w])_[^_\n]+_(?![\w]))/g)
     .filter(Boolean)
@@ -177,7 +194,7 @@ function inline(text: string, names: ReadonlySet<string>, linkSpells = true) {
     if (part.startsWith("**") && part.endsWith("**")) {
       return (
         <strong key={i}>
-          {withSpells(part.slice(2, -2), names, i, linkSpells)}
+          {withSpells(part.slice(2, -2), names, classes, i, linkSpells)}
         </strong>
       )
     }
@@ -193,30 +210,58 @@ function inline(text: string, names: ReadonlySet<string>, linkSpells = true) {
     }
     if (part.startsWith("*") && part.endsWith("*")) {
       return (
-        <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+        <em key={i}>
+          {withSpells(part.slice(1, -1), names, classes, i, linkSpells)}
+        </em>
       )
     }
     if (part.startsWith("_") && part.endsWith("_")) {
       return (
-        <em key={i}>{withSpells(part.slice(1, -1), names, i, linkSpells)}</em>
+        <em key={i}>
+          {withSpells(part.slice(1, -1), names, classes, i, linkSpells)}
+        </em>
       )
     }
-    return withSpells(part, names, i, linkSpells)
+    return withSpells(part, names, classes, i, linkSpells)
   })
 }
 
-/** A plain run with any spell names in it turned into links. */
+/**
+ * A plain run with any spell names and class context names in it turned into links.
+ *
+ * Spells are split first and classes second, so a class name inside a spell's own text is
+ * still linked - the two sets do not overlap, and running them in sequence means neither
+ * has to know about the other.
+ */
 function withSpells(
   text: string,
   names: ReadonlySet<string>,
+  classes: ReadonlyMap<string, string>,
   key: number,
   linkSpells: boolean,
 ) {
   if (!linkSpells) return text
   const parts = splitSpells(text, names)
-  if (parts.length === 1 && !parts[0][1]) return text
+  if (parts.length === 1 && !parts[0][1]) return withClasses(text, classes, key)
   return parts.map(([chunk, isSpell], i) =>
-    isSpell ? <SpellLink key={`${key}-${i}`} name={chunk} /> : chunk,
+    isSpell ? (
+      <SpellLink key={`${key}-${i}`} name={chunk} />
+    ) : (
+      <span key={`${key}-${i}`}>{withClasses(chunk, classes, i)}</span>
+    ),
+  )
+}
+
+/** A plain run with any class context names in it turned into links. */
+function withClasses(
+  text: string,
+  classes: ReadonlyMap<string, string>,
+  key: number,
+) {
+  const parts = splitClassNames(text, classes)
+  if (parts.length === 1 && parts[0][1] === null) return text
+  return parts.map(([chunk, path], i) =>
+    path ? <ClassLink key={`${key}-${i}`} name={chunk} path={path} /> : chunk,
   )
 }
 
@@ -233,25 +278,49 @@ export function Markdown({
   text,
   className,
   linkSpells = true,
+  anchors,
 }: {
   text: string
   className?: string
   /** Off when the text *is* a spell, so its own title does not link back to itself. */
   linkSpells?: boolean
+  /**
+   * An `id` for each heading, in document order, so a fragment can land on one.
+   *
+   * Opt-in, and off by default: a generated book or answer has no anchors to be addressed
+   * by, and giving its headings ids would put them in the page's global namespace for no
+   * reader's benefit. Only the SRD browser passes this, because only there does a URL
+   * fragment name a heading.
+   *
+   * A heading inside a blockquote is *not* counted, because the backend's table of contents
+   * does not count it either - `_scan` only matches a line that begins with `#`, so a quoted
+   * `> ### Breaking Your Oath` is text inside a rule rather than a section of the document.
+   * Counting it here would shift every anchor after it onto the wrong heading.
+   */
+  anchors?: string[]
 }) {
   const names = useSpellNames()
+  const classes = useClassNames()
   const blocks = toBlocks(text)
+  // A cursor rather than an index, because the blocks that are not headings must not advance
+  // it - the list is positional over headings alone.
+  let next = 0
   return (
     <div className={className}>
       {blocks.map((block, i) => {
         if (block.kind === "heading") {
           const Tag = HEADING_TAG[Math.min(block.level, 6) - 1]
+          const id = anchors?.[next++]
           return (
             <Tag
               key={i}
-              className="mt-4 mb-1 text-sm font-semibold text-arcane-300"
+              id={id}
+              // `scroll-mt-20` clears the app's sticky header, which is ~3.5rem tall. Without
+              // it a fragment lands with the heading hidden behind the header - the reader
+              // arrives at the right place and cannot see it.
+              className="mt-4 mb-1 scroll-mt-20 text-sm font-semibold text-arcane-300"
             >
-              {inline(block.text, names, linkSpells)}
+              {inline(block.text, names, classes, linkSpells)}
             </Tag>
           )
         }
@@ -259,7 +328,7 @@ export function Markdown({
           return (
             <ul key={i} className="my-2 list-disc space-y-1 pl-5">
               {block.items.map((item, j) => (
-                <li key={j}>{inline(item, names, linkSpells)}</li>
+                <li key={j}>{inline(item, names, classes, linkSpells)}</li>
               ))}
             </ul>
           )
@@ -268,7 +337,7 @@ export function Markdown({
           return (
             <ol key={i} className="my-2 list-decimal space-y-1 pl-5">
               {block.items.map((item, j) => (
-                <li key={j}>{inline(item, names, linkSpells)}</li>
+                <li key={j}>{inline(item, names, classes, linkSpells)}</li>
               ))}
             </ol>
           )
@@ -300,7 +369,7 @@ export function Markdown({
                         key={j}
                         className="border-b border-void-700 px-2 py-1 font-semibold text-parchment"
                       >
-                        {inline(cell, names, linkSpells)}
+                        {inline(cell, names, classes, linkSpells)}
                       </th>
                     ))}
                   </tr>
@@ -313,7 +382,7 @@ export function Markdown({
                           key={k}
                           className="border-b border-void-800/60 px-2 py-1 text-parchment/80"
                         >
-                          {inline(cell, names, linkSpells)}
+                          {inline(cell, names, classes, linkSpells)}
                         </td>
                       ))}
                     </tr>
@@ -325,7 +394,7 @@ export function Markdown({
         }
         return (
           <p key={i} className="my-2">
-            {inline(block.text, names, linkSpells)}
+            {inline(block.text, names, classes, linkSpells)}
           </p>
         )
       })}

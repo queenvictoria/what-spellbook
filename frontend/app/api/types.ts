@@ -284,6 +284,35 @@ export interface SrdSection {
   ancestors: SrdCrumb[]
 }
 
+/**
+ * One class context file in the list, without its text. Mirrors `ClassContextFileSchema`.
+ *
+ * `name` is the phrase a reader recognises — "Warlock", "Celestial Patron" — derived from
+ * the file's own title rather than from its filename, which is a path segment (`celestial`).
+ * It is what the prose is searched for, so it has to be the phrase the prose uses.
+ */
+export interface ClassContextFile {
+  name: string
+  title: string
+  path: string
+}
+
+/**
+ * One class context file, as renderable Markdown. Mirrors `ClassContextSchema`.
+ *
+ * Deliberately not an `SrdSection`: these files are our own summary of a class, written to
+ * be read by a model, and they are not the rulebook. `source` is always `class-context`, and
+ * the card shows a different badge for it — a summary must not be able to look like a
+ * quotation.
+ */
+export interface ClassContext {
+  name: string
+  title: string
+  path: string
+  text: string
+  source: string
+}
+
 export interface Character {
   name: string
   sheet: Record<string, unknown>
@@ -392,7 +421,8 @@ export interface SearchResult {
     level_max: number | null
     ritual: boolean | null
     spells_only: boolean
-    doc_type: 'all' | 'spell' | 'item' | 'srd'
+    /** `null` when the caller named no type, in which case `spells_only` decided. */
+    doc_type: 'all' | 'spell' | 'item' | 'srd' | null
   }
   /** Set when the result needs explaining: an unsatisfiable filter, an AND that found
    * nothing, or a candidate cap that truncated the ranking. */
@@ -415,9 +445,11 @@ export interface SearchParams {
   /**
    * Which kind of indexed text to search: `all`, `spell`, `item` or `srd`.
    *
-   * Defaults to `all` server-side, and it takes precedence over `spells_only` — the two are
-   * the same question at different resolutions, and honouring both would make `srd` with the
-   * default `spells_only` match nothing.
+   * **An explicit value wins outright.** `all` means the whole collection — the rulebook
+   * included — even though `spells_only` defaults true; omitting the field leaves the choice
+   * to `spells_only`. The two are never combined, because `all` with the default
+   * `spells_only` used to resolve to spells only: the value that reads as "search
+   * everything" returned the narrowest set, so a rules search could never find a rule.
    */
   doc_type?: 'all' | 'spell' | 'item' | 'srd'
 }

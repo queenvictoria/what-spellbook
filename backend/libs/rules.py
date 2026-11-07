@@ -79,6 +79,13 @@ INVOCATION_SECTION = "Eldritch Invocation Options"
 # does.
 CLASS_SOURCE = "class-context"
 
+# The directory under ``context/`` that holds our own class rules, laid out as
+# ``classes/<class>/base.md``, ``classes/<class>/pact/<pact>.md`` and
+# ``classes/<class>/subclass/<patron>.md``. `prompts.context_files_for` derives the same
+# paths from a character sheet; `rules.class_context_files` walks the tree without one,
+# which is what lets the front end address a file it was told about by name.
+CLASS_CONTEXT_DIR = "classes"
+
 # The class context files that carry invocation tables, in the order a lookup should try
 # them. The base class file holds the full list; the pact files hold the handful that
 # relate to that pact. These are the fallback for an invocation the SRD does not carry.
@@ -1786,6 +1793,136 @@ def _corpus_spell(wanted: str) -> dict | None:
         "url": _reference(path),
         "source": CORPUS_SOURCE,
     }
+
+
+def class_context_files() -> list[Path]:
+    """Every class context file, class-wide rules first, then pacts, then patrons.
+
+    Derived from the directory rather than listed, because a list would name files that do
+    not exist - and a link to a file that is not there is worse than no link. The order is
+    the order a reader should meet them in, which is also the order
+    :func:`prompts.context_files_for` loads them for a character.
+
+    The tree is ``classes/<class>/base.md``, ``classes/<class>/pact/<pact>.md`` and
+    ``classes/<class>/subclass/<patron>.md``, so the class level is walked rather than
+    assumed - a second class drops in without an edit here.
+    """
+    root = config.CONTEXT_DIR_PATH / CLASS_CONTEXT_DIR
+    if not root.is_dir():
+        return []
+    found: list[Path] = []
+    for cls in sorted(path for path in root.iterdir() if path.is_dir()):
+        found.extend(sorted(cls.glob("*.md")))
+        for group in ("pact", "subclass"):
+            directory = cls / group
+            if directory.is_dir():
+                found.extend(sorted(directory.glob("*.md")))
+    return found
+
+
+def class_context_path(relative: str) -> Path:
+    """Resolve a class context path, refusing anything outside ``context/classes``.
+
+    The path arrives from a URL, so it is checked rather than trusted: ``..`` segments and
+    absolute paths are rejected outright, and the resolved result must still sit under the
+    class context directory. A traversal here would read any file on the machine and serve
+    it as a rule.
+
+    Three spellings are accepted, because three callers have three of them: the list
+    endpoint hands out ``context/classes/warlock/base.md`` (the repo-relative path, which is
+    also what a citation prints), a hand-typed URL may say ``classes/warlock/base.md``, and
+    the tail ``warlock/base.md`` is what a reader would guess. All three resolve to the same
+    file, so accepting them costs nothing and refusing two of them would be a link that
+    fails for no reason.
+    """
+    wanted = str(relative).strip().lstrip("/")
+    for prefix in ("context/classes/", "classes/"):
+        if wanted.startswith(prefix):
+            wanted = wanted.removeprefix(prefix)
+            break
+    candidate = (config.CONTEXT_DIR_PATH / CLASS_CONTEXT_DIR / wanted).resolve()
+    root = (config.CONTEXT_DIR_PATH / CLASS_CONTEXT_DIR).resolve()
+    if not candidate.is_relative_to(root) or candidate.suffix != ".md":
+        raise RulesUnavailable(f"'{relative}' is not a class context file.")
+    if not candidate.is_file():
+        raise RulesUnavailable(f"No class context file at '{relative}'.")
+    return candidate
+
+
+def class_context_document(relative: str) -> dict:
+    """One class context file, as a title and its renderable Markdown.
+
+    The title is the file's own ``#`` heading, not its filename: the files are named for
+    their path (``base``, ``tome``, ``celestial``) while the heading names the thing a
+    reader recognises ("Warlock - base class rules"). A card titled "base" would be a
+    filename shown as a rule.
+    """
+    path = class_context_path(relative)
+    text = path.read_text(encoding="utf-8").lstrip("\ufeff")
+    title = _first_heading(text) or path.stem
+    return {
+        "name": _linkable_name(title),
+        "title": title,
+        "path": _reference(path),
+        "text": text.strip(),
+    }
+
+
+def class_context_index() -> list[dict]:
+    """Every class context file as name, title and path, without the text.
+
+    The list a client needs to know what exists and what to call it. The text is fetched
+    per file, on the click that needs it - the same split as the SRD table of contents.
+
+    Reads each file's heading and discards the rest, which is the one thing this shares
+    with :func:`class_context_document`. Kept separate rather than built by calling it,
+    because that would carry every file's whole text through a list that exists to avoid
+    sending it.
+    """
+    found = []
+    for path in class_context_files():
+        text = path.read_text(encoding="utf-8").lstrip("\ufeff")
+        title = _first_heading(text) or path.stem
+        found.append(
+            {
+                "name": _linkable_name(title),
+                "title": title,
+                "path": _reference(path),
+            }
+        )
+    return found
+
+
+def _first_heading(text: str) -> str:
+    """The text of the file's first ``#`` heading, or an empty string."""
+    for line in text.splitlines():
+        match = re.match(r"^#\s+(.*?)\s*#*\s*$", line)
+        if match:
+            return match.group(1)
+    return ""
+
+
+# The edition tag every context file's title carries: `# Warlock - base class rules
+# (D&D 5.5e / 2024)`. It is provenance, not part of the name.
+_EDITION_TAG = re.compile(r"\s*\(D&D[^)]*\)\s*$")
+# The descriptive clause after the name: `Warlock - base class rules`. A reader says
+# "Warlock", and that is the phrase the prose uses and a link has to match.
+_DESCRIPTIVE_CLAUSE = re.compile(r"\s+[-–—]\s+.*$")
+
+
+def _linkable_name(title: str) -> str:
+    """The phrase a reader would recognise for a context file, from its own title.
+
+    Derived rather than listed, so a new context file is linkable without an edit here -
+    and derived from the *title* rather than the filename, because the filename is a path
+    segment (``celestial``) while the title names the thing ("Celestial Patron").
+
+    This is the phrase the front end looks for in generated prose, so it has to be the one
+    the prose actually uses. ``# Warlock - base class rules (D&D 5.5e / 2024)`` becomes
+    ``Warlock``; ``# Celestial Patron (D&D 5.5e / 2024)`` becomes ``Celestial Patron``.
+    """
+    stripped = _DESCRIPTIVE_CLAUSE.sub("", _EDITION_TAG.sub("", title)).strip()
+    return stripped or title.strip()
 
 
 # A markdown table row: `| Agonizing Blast | 2 | A damage-dealing cantrip | Yes |`.

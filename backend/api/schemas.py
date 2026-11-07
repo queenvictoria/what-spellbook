@@ -558,3 +558,46 @@ class SrdSectionSchema(BaseModel):
                 for h in section.ancestors
             ],
         )
+
+
+class ClassContextSchema(BaseModel):
+    """One class context file, as renderable Markdown.
+
+    A separate shape from ``SrdSectionSchema`` because it is a separate kind of document.
+    The SRD is the 2024 authority and is quoted; ``context/classes/**`` is our own summary
+    of a class, written to be read by a model, and it is *not* the rulebook. Sending one as
+    the other would let a summary wear the quotation badge - which is the exact confusion
+    ``SourceBadge`` exists to prevent.
+
+    ``path`` is the repo-relative file, so a reader can find it themselves, and it is also
+    the address: the front end turns it back into a link through the same
+    ``context/classes/…`` pattern it was given.
+    """
+
+    name: str
+    title: str
+    path: str
+    text: str
+    source: str = "class-context"
+
+    @classmethod
+    def from_document(cls, document: dict) -> "ClassContextSchema":
+        return cls(
+            name=document["name"],
+            title=document["title"],
+            path=document["path"],
+            text=document["text"],
+        )
+
+
+class ClassContextFileSchema(BaseModel):
+    """One class context file in the list, without its text.
+
+    The list is what a client needs to know which files exist and what to call them; the
+    text is fetched per file, on the click that needs it. Same split as the SRD table of
+    contents, for the same reason.
+    """
+
+    name: str
+    title: str
+    path: str

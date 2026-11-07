@@ -29,6 +29,9 @@ function surroundingText(range: Range): string {
  * the ref object itself never changes, never gets a second chance - which is how this hook
  * silently reported "nothing selected" for every selection ever made.
  *
+ * The caller clears the selection with `clearSelection` once it has taken the words, so the
+ * empty update this produces is the normal end of a selection rather than an error path.
+ *
  * `mentionsOf` is supplied as a function so the caller can decide what a mention is (the
  * prose renderer already knows, from the corpus's spell list) without this hook taking a
  * dependency on a context it does not otherwise need.

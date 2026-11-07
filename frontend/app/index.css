@@ -1,4 +1,4 @@
-@import 'tailwindcss';
+@import "tailwindcss";
 
 /* Tailwind v4 reads the config from CSS, so there is no tailwind.config.js.
    The palette is a dark "arcane tome" scheme: it is a tool you read for a long
@@ -7,22 +7,61 @@
   --color-parchment: oklch(0.94 0.02 85);
   --color-ink: oklch(0.2 0.02 275);
 
+  /* --- VOID --- */
   --color-void-950: oklch(0.16 0.02 275);
   --color-void-900: oklch(0.2 0.025 275);
   --color-void-800: oklch(0.26 0.03 275);
   --color-void-700: oklch(0.33 0.035 275);
+  --color-void-600: oklch(0.435 0.031 275);
+  --color-void-500: oklch(0.54 0.027 275);
+  --color-void-400: oklch(0.645 0.023 275);
+  --color-void-300: oklch(0.75 0.018 275);
+  --color-void-200: oklch(0.855 0.014 275);
+  --color-void-100: oklch(0.96 0.01 275);
 
-  --color-arcane-300: oklch(0.82 0.12 300);
-  --color-arcane-400: oklch(0.72 0.16 300);
+  /* --- ARCANE --- */
+  --color-arcane-950: oklch(0.16 0.02 300);
+  --color-arcane-900: oklch(0.211 0.039 300);
+  --color-arcane-800: oklch(0.313 0.077 300);
+  --color-arcane-700: oklch(0.416 0.114 300);
+  --color-arcane-600: oklch(0.518 0.152 300);
   --color-arcane-500: oklch(0.62 0.19 300);
+  --color-arcane-400: oklch(0.72 0.16 300);
+  --color-arcane-300: oklch(0.82 0.12 300);
+  --color-arcane-200: oklch(0.89 0.075 300);
+  --color-arcane-100: oklch(0.96 0.03 300);
 
-  --color-radiant-400: oklch(0.82 0.15 85);
+  /* --- RADIANT --- */
+  --color-radiant-950: oklch(0.16 0.02 30);
+  --color-radiant-900: oklch(0.226 0.036 35);
+  --color-radiant-800: oklch(0.357 0.067 45);
+  --color-radiant-700: oklch(0.488 0.098 55);
+  --color-radiant-600: oklch(0.619 0.129 65);
   --color-radiant-500: oklch(0.75 0.16 75);
+  --color-radiant-400: oklch(0.82 0.15 85);
+  --color-radiant-300: oklch(0.867 0.11 88.3);
+  --color-radiant-200: oklch(0.913 0.07 91.7);
+  --color-radiant-100: oklch(0.96 0.03 95);
 
+  /* --- VERDANT --- */
+  --color-verdant-950: oklch(0.16 0.02 155);
+  --color-verdant-900: oklch(0.216 0.031 155);
+  --color-verdant-800: oklch(0.329 0.053 155);
+  --color-verdant-700: oklch(0.442 0.075 155);
+  --color-verdant-600: oklch(0.555 0.096 155);
+  --color-verdant-500: oklch(0.667 0.118 155);
   --color-verdant-400: oklch(0.78 0.14 155);
+  --color-verdant-300: oklch(0.84 0.1 155);
+  --color-verdant-200: oklch(0.9 0.06 155);
+  --color-verdant-100: oklch(0.96 0.02 155);
 }
 
 @layer base {
+  html,
+  body,
+  * {
+    @apply scrollbar-thin scrollbar-track-void-900 scrollbar-thumb-void-600/50;
+  }
   html {
     color-scheme: dark;
   }

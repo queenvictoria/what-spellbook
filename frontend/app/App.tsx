@@ -20,7 +20,9 @@ const NAV = [
 export function App() {
   return (
     <div className="min-h-screen">
-      <header className="border-b border-void-800 bg-void-900/70 backdrop-blur">
+      {/* Sticky rather than fixed: the header keeps its place in the flow, so the main
+          content needs no compensating top padding. z-40 sits below the drawers (z-50). */}
+      <header className="sticky top-0 z-40 border-b border-void-800 bg-void-900/70 backdrop-blur">
         <div className="mx-auto flex max-w-6xl items-center gap-6 px-6 py-3">
           <span className="font-semibold tracking-tight text-parchment">
             What Spellbook

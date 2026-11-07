@@ -146,6 +146,8 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/spells`                  | Every name the UI should link — spells and invocations     |
 | `GET /api/srd`                     | The vendored SRD as a table of contents, file by file      |
 | `GET /api/srd/{name}?slug=`        | One section of one SRD file, quoted; omit `slug` for the whole file |
+| `GET /api/class-context`           | Our own class context files, without their text            |
+| `GET /api/class-context/{path}`    | One class context file, quoted; not SRD text               |
 | `GET /api/search`                  | Search the vector index directly, for inspection           |
 | `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
 
@@ -188,6 +190,31 @@ trail is also the way to the parent rule.
 Every vendored file opens with a single root heading that repeats the document title, so a
 section directly under it would breadcrumb as "Rules Glossary / Rules Glossary". The root is
 dropped when it is the only ancestor _and_ its text matches the title.
+
+#### Our own class context, and why it is a separate endpoint
+
+`context/classes/**` holds the class-wide rules, the pact and the patron — the files spliced
+into a prompt as `=== CHARACTER CONTEXT ===`. They are **not** the SRD: they are our own
+summary of a class, written to be read by a model. `GET /api/class-context` lists them and
+`GET /api/class-context/{path}` returns one, quoted from the file.
+
+They are a separate endpoint and a separate schema rather than more SRD documents, because
+the two are not equally authoritative. The SRD is the 2024 rulebook and is quoted; a class
+context file is a summary. Serving one as the other would let a summary wear the quotation
+badge, which is the one confusion `SourceBadge` exists to prevent — so the response carries
+`source: "class-context"` and the card shows a different badge.
+
+The list is derived from the directory rather than hard-coded, so a class added to
+`context/classes/` appears without an edit and a file that does not exist is never offered as
+a link. Each entry's `name` is the phrase a reader would recognise — `Warlock`,
+`Celestial Patron` — derived from the file's own `#` heading rather than from its filename,
+which is a path segment (`celestial`). That name is what the front end searches generated
+prose for, so it has to be the phrase the prose actually writes.
+
+The path arrives from a URL, so it is checked rather than trusted: anything resolving outside
+`context/classes` is refused, and the front end declines to render a link for a path that
+does not match the pattern. A traversal here would read any file on the machine and serve it
+as a rule.
 
 #### The Rules tab's ask box: three readings, in parallel
 
@@ -295,7 +322,7 @@ the character could never pick, on purpose. The Search tab drives it.
 | ------------------------- | ---------------------------------------------------------------------------------------------- |
 | `query`                   | Text to search for. May be empty in `text` mode, which then lists everything the filters admit |
 | `mode`                    | `vector` (similarity), `text` (substring), or `hybrid` (vector, word matches first)            |
-| `doc_type`                | `all`, `spell`, `item` or `srd`. Default `all`; takes precedence over `spells_only`            |
+| `doc_type`                | `all`, `spell`, `item` or `srd`. An explicit value wins outright; omit it to leave the choice to `spells_only` |
 | `class`                   | Repeatable; matches any of the named classes                                                   |
 | `school`                  | Exact school name                                                                              |
 | `level_min` / `level_max` | Inclusive level bounds, 0–9                                                                    |
@@ -336,9 +363,13 @@ marker was `is_spell`, which cannot distinguish "not a spell" from "not a spell 
 pick" — an SRD row is `is_spell=False` exactly like a magic item, so a filter that asked only
 for "not a spell" would have handed the recommender the rulebook.
 
-`doc_type` takes precedence over `spells_only`, which is the same question at a coarser
-resolution. Honouring both would make `doc_type=srd` with the default `spells_only=true`
-match nothing at all.
+`doc_type` and `spells_only` overlap, and the rule is that **an explicit `doc_type` wins
+outright**: `all` means the whole collection, and omitting the parameter leaves the choice to
+`spells_only`, whose default gives the recommender's view. The two are never combined, and
+the reason is not tidiness — `doc_type=all` with the default `spells_only=true` used to
+resolve to spells only, so the one value that reads as "search everything" returned the
+narrowest possible set. It failed silently: a 200 with plausible hits, and a Rules tab that
+could never find a rule.
 
 An SRD row is keyed by its _section_, not its heading text, because the SRD repeats headings:
 `classes.md` has six `Level 1: Spellcasting` sections, one per class, and keying on the text

@@ -1,7 +1,7 @@
 # Pact of the Tome (D&D 5.5e / 2024)
 
 Pact rules for a Warlock who has taken the **Pact of the Tome** eldritch invocation.
-Load this alongside `context/warlock/base.md` and the patron file.
+Load this alongside `context/classes/warlock/base.md` and the patron file.
 
 This file describes the pact only. How many picks are available and at what levels is
 determined by the character's level from the character sheet.
@@ -9,7 +9,7 @@ determined by the character's level from the character sheet.
 ## What the pact grants
 
 Pact of the Tome costs **one eldritch invocation pick** from the Invocations total in
-`context/warlock/base.md`. In exchange it grants the **Book of Shadows**:
+`context/classes/warlock/base.md`. In exchange it grants the **Book of Shadows**:
 
 | Property | Value |
 | --- | --- |

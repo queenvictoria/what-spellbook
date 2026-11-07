@@ -4,8 +4,8 @@ Class-wide rules for the Warlock. Load this alongside the chosen pact and patron
 files. Character-specific values (actual level, chosen spells, ability scores) come
 from the character sheet, not from here.
 
-- Pact file: `context/warlock/pact/tome.md` (or `blade.md`, `chain.md`)
-- Patron file: `context/warlock/subclass/celestial.md` (or another patron)
+- Pact file: `context/classes/warlock/pact/tome.md` (or `blade.md`, `chain.md`)
+- Patron file: `context/classes/warlock/subclass/celestial.md` (or another patron)
 - Casting-economy rules for combining spells: `context/spells.md`
 
 ## Progression (levels 1-20)

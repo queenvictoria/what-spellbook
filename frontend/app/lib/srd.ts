@@ -18,10 +18,63 @@ import type { SrdDocument, SrdHeading, SrdSection } from '@/api/types'
  * second route entry for the same screen - two ways to reach one page, which is how the two
  * drift.
  */
-export function srdHref(document: string, slug: string | null): string {
+export function srdHref(
+  document: string,
+  slug: string | null,
+  fragment?: string | null,
+): string {
   const params = new URLSearchParams({ doc: document })
   if (slug) params.set('section', slug)
-  return `/rules?${params.toString()}`
+  // The fragment goes last, and it has to: everything after a `#` is the fragment, so
+  // `/rules#anchor?doc=…` would swallow the query string and the section would never be
+  // read. `URLSearchParams` cannot carry it either - it would percent-encode the `#`.
+  return `/rules?${params.toString()}${fragment ? `#${fragment}` : ''}`
+}
+
+/**
+ * The anchor each heading in a section's own text should carry, in document order.
+ *
+ * A section's text runs from its heading line to the next heading at the same or a higher
+ * level, so the headings inside it are exactly the subtree rooted at it. That is what makes
+ * this a lookup rather than a guess - checked against all 1280 sections, where the two lists
+ * agree line for line.
+ *
+ * The slugs come from the table of contents because that is the only place they exist: they
+ * are de-duplicated per document, so `classes.md`'s eleven `Level 19: Epic Boon` headings are
+ * `level-19-epic-boon` through `level-19-epic-boon-11`. Slugifying the heading text here
+ * would produce the first of those every time and land on the wrong section.
+ *
+ * A heading the table of contents does not know about gets no anchor rather than an invented
+ * one. Nothing in the corpus is in that position today, and a made-up slug is a link that
+ * silently lands nowhere.
+ */
+export function srdAnchors(
+  documents: SrdDocument[] | null,
+  section: SrdSection,
+): string[] {
+  const found = documents?.find((document) => document.name === section.document)
+  if (!found) return []
+  // A whole-file view carries no slug of its own, and its text is the entire document, so
+  // every heading in the file is in it.
+  if (!section.slug) return [...walk(found.headings)].map((heading) => heading.slug)
+  const root = findHeading(found.headings, section.slug)
+  return root ? [...walk([root])].map((heading) => heading.slug) : []
+}
+
+function findHeading(headings: SrdHeading[], slug: string): SrdHeading | null {
+  for (const heading of headings) {
+    if (heading.slug === slug) return heading
+    const found = findHeading(heading.children, slug)
+    if (found) return found
+  }
+  return null
+}
+
+function* walk(headings: SrdHeading[]): Generator<SrdHeading> {
+  for (const heading of headings) {
+    yield heading
+    yield* walk(heading.children)
+  }
 }
 
 /**

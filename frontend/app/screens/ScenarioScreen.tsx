@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { median } from "@/lib/format"
+import { WandSparkles } from "lucide-react"
 
 type Phase = "idle" | "running" | "done" | "error"
 
@@ -160,10 +161,11 @@ export function ScenarioScreen() {
               }}
             />
             <Button
-              className="w-full"
+              className="w-full text-void-900 bg-verdant-400 rounded-full"
               onClick={generate}
               disabled={phase === "running" || !scenario.trim()}
             >
+              <WandSparkles className="mr-2 h-4 w-4" />
               {phase === "running" ? "Scribing…" : "Recommend spells"}
             </Button>
             <p className="text-xs text-parchment/45">

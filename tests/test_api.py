@@ -1054,3 +1054,109 @@ def test_search_rejects_a_doc_type_it_does_not_have(api):
                                               "doc_type": "monster"})
     assert response.status_code == 400
     assert "Unknown doc_type" in response.json()["detail"]
+
+
+def test_doc_type_all_reaches_the_rulebook(api):
+    """``all`` is the value a rules search sends, so it has to mean the whole collection.
+
+    It used to resolve to spells only, because ``spells_only`` defaults true and silently
+    overrode it - so the one value that reads as "search everything" returned the narrowest
+    set. The symptom was a rules tab that could never find a rule, with no error anywhere.
+    """
+    body = api.get("/api/search", params={"query": "", "mode": "text",
+                                          "doc_type": "all"}).json()
+    assert body["where"] is None
+    assert {hit["doc_type"] for hit in body["hits"]} == {"spell", "item", "srd"}
+    assert "Cover" in {hit["name"] for hit in body["hits"]}
+
+
+def test_an_omitted_doc_type_still_means_spells_only(api):
+    """The published default is unchanged: a caller that names no type gets the
+    recommender's view, not the rulebook."""
+    body = api.get("/api/search", params={"query": "", "mode": "text"}).json()
+    assert body["where"] == {"doc_type": "spell"}
+    assert {hit["doc_type"] for hit in body["hits"]} == {"spell"}
+
+
+def test_class_context_lists_the_files_a_prompt_is_given(api):
+    """The files spliced into a prompt as ``=== CHARACTER CONTEXT ===``, listed.
+
+    Derived from ``context/classes/`` rather than hard-coded, so a class added to the
+    directory appears here without an edit - and a file that does not exist is never
+    offered as a link.
+    """
+    response = api.get("/api/class-context")
+    assert response.status_code == 200
+    files = response.json()
+    paths = [found["path"] for found in files]
+    assert "context/classes/warlock/base.md" in paths
+    assert "context/classes/warlock/pact/tome.md" in paths
+    assert "context/classes/warlock/subclass/celestial.md" in paths
+
+    # The class-wide rules come first, then the pact, then the patron - the order a reader
+    # should meet them in, and the order `prompts.context_files_for` loads them.
+    assert paths.index("context/classes/warlock/base.md") < paths.index(
+        "context/classes/warlock/pact/tome.md"
+    )
+    assert paths.index("context/classes/warlock/pact/tome.md") < paths.index(
+        "context/classes/warlock/subclass/celestial.md"
+    )
+
+
+def test_a_class_context_name_is_the_phrase_the_prose_uses(api):
+    """The name is what the front end searches generated prose for, so it has to be the
+    phrase the prose actually writes - not the filename, which is a path segment.
+
+    ``# Warlock - base class rules (D&D 5.5e / 2024)`` becomes ``Warlock``; the edition tag
+    and the descriptive clause are provenance, not part of the name.
+    """
+    files = api.get("/api/class-context").json()
+    by_path = {found["path"]: found for found in files}
+    assert by_path["context/classes/warlock/base.md"]["name"] == "Warlock"
+    assert by_path["context/classes/warlock/pact/tome.md"]["name"] == "Pact of the Tome"
+    assert (
+        by_path["context/classes/warlock/subclass/celestial.md"]["name"]
+        == "Celestial Patron"
+    )
+    # The title keeps the whole heading, so a card can show what the file calls itself.
+    assert by_path["context/classes/warlock/base.md"]["title"].startswith("Warlock - base")
+
+
+def test_class_context_file_returns_the_text_verbatim(api):
+    """Deterministic, like ``/api/srd/{name}``: no model sits between the file and the
+    caller, so this cannot paraphrase a rule."""
+    response = api.get("/api/class-context/classes/warlock/subclass/celestial.md")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "Celestial Patron (D&D 5.5e / 2024)"
+    assert body["path"] == "context/classes/warlock/subclass/celestial.md"
+    # Not the SRD's badge: these files are our own summary of a class, and a summary must
+    # not be able to look like a quotation.
+    assert body["source"] == "class-context"
+    assert "Healing Light" in body["text"]
+
+
+def test_a_class_context_path_may_omit_the_classes_prefix(api):
+    """The list gives a repo-relative path; a caller may also pass the tail of it."""
+    body = api.get("/api/class-context/warlock/base.md").json()
+    assert body["path"] == "context/classes/warlock/base.md"
+
+
+def test_class_context_refuses_a_path_outside_the_directory(api):
+    """The path arrives from a URL, so it is checked rather than trusted.
+
+    Without this the endpoint would read any file on the machine and serve it as a rule.
+    """
+    for attempt in (
+        "../../../../etc/passwd",
+        "warlock/../../../AGENTS.md",
+        "warlock/base.txt",
+    ):
+        response = api.get(f"/api/class-context/{attempt}")
+        assert response.status_code == 404, attempt
+
+
+def test_an_unknown_class_context_file_is_a_404(api):
+    response = api.get("/api/class-context/warlock/nope.md")
+    assert response.status_code == 404
+    assert "nope.md" in response.json()["detail"]

@@ -284,15 +284,35 @@ def test_a_doc_type_filter_selects_only_that_kind(db):
     assert [hit.name for hit in items_only.hits] == ["Armblade"]
 
 
-def test_doc_type_takes_precedence_over_spells_only(db):
-    """The two are the same question at different resolutions.
+def test_an_explicit_doc_type_wins_over_spells_only(db):
+    """The two settings overlap, and the documented rule is that the explicit one wins.
 
-    Honouring both would make ``doc_type=srd`` with the default ``spells_only=true`` match
-    nothing at all - a filter that silently returns an empty page.
+    ``doc_type="all"`` is the case that matters: it must reach the whole collection even
+    though ``spells_only`` defaults true. Combining them made the value that reads as
+    "search everything" return the narrowest possible set, which is invisible from the
+    outside - a 200 with plausible hits - and it silently defeated a rules search.
     """
-    result = search.search(db, "", mode="text", doc_type="srd", spells_only=True)
-    assert [hit.name for hit in result.hits] == ["Cover"]
-    assert result.where == {"doc_type": "srd"}
+    everything = search.search(db, "", mode="text", doc_type="all", spells_only=True)
+    assert {hit.name for hit in everything.hits} == {
+        "Fire Bolt", "Fireball", "Cure Wounds", "Detect Magic", "Cover", "Armblade",
+    }
+    assert everything.where is None, "no clause means the whole collection"
+
+    # A named type still narrows, and still beats spells_only on either setting.
+    rules_only = search.search(db, "", mode="text", doc_type="srd", spells_only=True)
+    assert [hit.name for hit in rules_only.hits] == ["Cover"]
+    assert rules_only.where == {"doc_type": "srd"}
+
+
+def test_omitting_doc_type_leaves_it_to_spells_only(db):
+    """A caller that names no type gets the old, coarser switch - which is the contract
+    ``spells_only`` was published with."""
+    assert {hit.name for hit in search.search(db, "", mode="text").hits} == {
+        "Fire Bolt", "Fireball", "Cure Wounds", "Detect Magic",
+    }
+    assert {hit.name for hit in search.search(db, "", mode="text", spells_only=False).hits} == {
+        "Fire Bolt", "Fireball", "Cure Wounds", "Detect Magic", "Cover", "Armblade",
+    }
 
 
 def test_an_srd_hit_carries_the_heading_it_came_from(db):

@@ -2,7 +2,7 @@ import { ChevronRight } from "lucide-react"
 
 import type { SrdSection } from "@/api/types"
 import { srdHref } from "@/lib/srd"
-import { useOpenSrd } from "@/lib/srdDrawer"
+import { useOpenRule } from "@/lib/ruleDrawer"
 import { cn } from "@/lib/utils"
 
 /**
@@ -22,6 +22,13 @@ import { cn } from "@/lib/utils"
  * itself. The document's root heading is the first crumb, so a top-level rule reads as
  * "Rules Glossary / Rules Glossary" - which is why the root is dropped when it is the only
  * ancestor and its text matches the document title.
+ *
+ * Each crumb carries the anchor of the heading it opens, so following one lands on the rule
+ * the reader was reading rather than at the top of its parent. A parent's text runs to the
+ * next heading at its own level, so it *contains* the child - "Warlock Class Features" holds
+ * all ten of the Warlock's feature headings - and without the anchor the reader arrives at
+ * the top of a long section and has to find their place again. The anchor is the child's
+ * slug, which is the heading the parent's text will render with that id.
  */
 export function SrdBreadcrumb({
   section,
@@ -30,7 +37,7 @@ export function SrdBreadcrumb({
   section: SrdSection
   className?: string
 }) {
-  const open = useOpenSrd()
+  const open = useOpenRule()
 
   // The root heading of every vendored file repeats the document's title, so a section
   // directly under it would otherwise show the same name twice in a row.
@@ -42,17 +49,30 @@ export function SrdBreadcrumb({
   return (
     <nav aria-label="Breadcrumb" className={cn("min-w-0", className)}>
       <ol className="flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs">
-        {ancestors.map((crumb) => (
-          <li key={crumb.slug} className="flex min-w-0 items-center gap-1">
-            <Crumb
-              href={srdHref(section.document, crumb.slug)}
-              onClick={() => open({ document: section.document, slug: crumb.slug })}
-            >
-              {crumb.text}
-            </Crumb>
-            <ChevronRight className="h-3 w-3 shrink-0 text-parchment/25" />
-          </li>
-        ))}
+        {ancestors.map((crumb, index) => {
+          // The heading this crumb opens: the next one down the trail, or the section itself
+          // for the last ancestor. `ancestors` is the trail minus the section, so the child
+          // of crumb *i* is crumb *i + 1*.
+          const child = ancestors[index + 1] ?? section
+          return (
+            <li key={crumb.slug} className="flex min-w-0 items-center gap-1">
+              <Crumb
+                href={srdHref(section.document, crumb.slug, child.slug)}
+                onClick={() =>
+                  open({
+                    kind: "srd",
+                    document: section.document,
+                    slug: crumb.slug,
+                    anchor: child.slug,
+                  })
+                }
+              >
+                {crumb.text}
+              </Crumb>
+              <ChevronRight className="h-3 w-3 shrink-0 text-parchment/25" />
+            </li>
+          )
+        })}
         <li className="min-w-0">
           {/* The current page: not a link, because a link to where you already are is a
               control that does nothing. `aria-current` is what says so to a screen reader. */}

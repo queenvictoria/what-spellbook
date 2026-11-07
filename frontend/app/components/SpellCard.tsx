@@ -3,7 +3,7 @@ import { TrendingUp } from "lucide-react"
 import type { Spell } from "@/api/types"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
-import { SrdPathLink } from "@/components/SrdPathLink"
+import { RulePathLink } from "@/components/RulePathLink"
 import { SpellStatsStrip } from "@/components/SpellStats"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -89,10 +89,10 @@ export function SpellCard({
         />
         {/* A link when the text came from the vendored SRD, plain text when it came from
             the retrieval corpus - which is not a rulebook page and has no headings to
-            browse. `SrdPathLink` makes that distinction, so a corpus spell does not offer
+            browse. `RulePathLink` makes that distinction, so a corpus spell does not offer
             a link that cannot open. */}
         <p className="border-t border-void-800 pt-2">
-          <SrdPathLink path={spell.url} />
+          <RulePathLink path={spell.url} />
         </p>
       </CardContent>
     </Card>

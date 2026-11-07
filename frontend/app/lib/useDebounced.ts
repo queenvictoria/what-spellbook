@@ -1,14 +1,15 @@
 /**
  * Settling a value, or a call, until the typing stops.
  *
- * The Rules tab's ask box drives three things at once, two of which are requests - a vector
- * search and a model call. Firing either on every keystroke would triple the cost of typing a
- * question and leave several responses racing to fill one panel, so both wait for a pause.
+ * Two boxes use this: the Rules tab's ask box, which drives three things at once (a vector
+ * search, a model call, and a keyword filter), and the contextual drawer's input, which drives
+ * the index search below it. Firing a request on every keystroke would triple the cost of
+ * typing a question and leave several responses racing to fill one panel, so the requests wait
+ * for a pause. The durations live in `lib/timing.ts`, so the two boxes feel alike.
  *
- * The third lane - the keyword filter - is deliberately not debounced, because it is
- * synchronous and its whole value is that it answers while the other two are still waiting.
- * That is why this debounces the *call* rather than the query: there is no settled value
- * anyone wants.
+ * The keyword filter is deliberately *not* debounced, because it is synchronous and its whole
+ * value is that it answers while the other lanes are still waiting. That is why this debounces
+ * the *call* rather than the query: there is no settled value anyone wants.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 

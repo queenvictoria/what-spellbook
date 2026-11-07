@@ -728,6 +728,24 @@ type it wants.
 - **`doc_type` supersedes `spells_only` rather than combining with it.** They are the same
   question at different resolutions, and honouring both makes `doc_type=srd` with the default
   `spells_only=true` match nothing at all.
+- **`doc_type=all` meaning spells-only was a silent trap, and it defeated the Rules tab.**
+  The original code read `doc_type = filters.get("doc_type") or "all"`, then
+  `if doc_type != "all": <clause>` / `elif spells_only: {"doc_type": "spell"}` — so the one
+  value that reads as "search everything" fell through to the narrowest possible set.
+  Confirmed live: `?doc_type=all` returned `where: {'doc_type': 'spell'}`. Nothing failed; a
+  200 with plausible hits is exactly what a wrong filter looks like. The Rules tab's index
+  lane asked for `all` and got eleven spells that mention cover, never the **Cover** rule.
+  The fix needs **"not given" to be distinguishable from "given as all"**, which is why the
+  sentinel is `None` and not `"all"`: an explicit value wins outright, `"all"` adds no clause,
+  and `None` falls back to `spells_only`. A default of `"all"` in the signature or in
+  `Query(...)` re-introduces the bug by making every caller explicit.
+- **A control that cannot change the answer must not be rendered.** Once `doc_type` won
+  outright, the Search tab's "Spells only" checkbox could never affect a request — it was
+  disabled while a type was chosen, and the type is always chosen. It was removed rather than
+  left as a dead control, and the doc-type buttons carry the counts instead. The same
+  reasoning applies to the counts themselves: "Everything" showed `facets.chunks` (3651)
+  beside "Spells 522", comparing chunks against documents and reading as if the buttons
+  disagreed. Every count is now a count of documents, so the parts sum to the whole.
 
 ### Indexing the SRD: chunk by heading, keep the tables
 
@@ -1102,6 +1120,55 @@ tables, blockquotes (recursively, because an SRD sidebar contains its own headin
 heading levels. That also fixed a pre-existing gap - 107 corpus files contain pipe tables
 that were rendering as raw `|`-separated text.
 
+### A fragment is the last thing in a URL, and the anchor is the child's slug
+
+A breadcrumb opens a parent rule, but the reader was reading the child - and a parent's text
+*runs to the next heading at its own level*, so it contains the child. "Warlock Class
+Features" holds all ten of the Warlock's feature headings, so opening it without an anchor
+drops the reader at the top of a long section to find their place again. Each crumb now
+carries the anchor of the heading it opens.
+
+Four things had to be true at once, and each was a separate failure:
+
+- **The fragment goes last.** `/rules#anchor?doc=…` is not a URL with a fragment and a query;
+  everything after the `#` *is* the fragment, so `location.search` is empty and no section
+  renders. The working form is `/rules?doc=…&section=…#anchor`. `URLSearchParams` cannot
+  carry it either - it percent-encodes the `#` - so the hash is a field of its own
+  (`navigate({ pathname, search, hash })`), never concatenated into the search string.
+- **The anchor is the child's slug, not a slugified heading.** Slugs are de-duplicated per
+  document, so the eleventh `Level 19: Epic Boon` in `classes.md` is `level-19-epic-boon-11`.
+  Slugifying the heading text client-side gives `level-19-epic-boon` and lands on the wrong
+  class's feature. The slugs exist only in the table of contents, so that is where they are
+  read from.
+- **A section's headings are its subtree, in order.** The text runs from the heading line to
+  the next heading at the same or a higher level, so the headings inside it are exactly the
+  subtree rooted at it - verified against all 1280 sections, where the two lists agree line
+  for line. That is what makes `srdAnchors` a lookup rather than a guess. A heading inside a
+  blockquote is *not* counted, because `_scan` does not count it either; counting it would
+  shift every anchor after it onto the wrong heading.
+- **The ids must exist before the scroll runs.** The browser scrolls for a fragment it loaded
+  itself, but not for one that arrives after the content does - and here the content always
+  arrives after, because the section is fetched. So the scroll is an effect, and it needs a
+  key that changes when the *content* changes rather than when the anchor does: following a
+  breadcrumb from a child to its parent keeps the same anchor while replacing the whole card,
+  so an effect keyed on the anchor alone never re-runs.
+
+Two traps found by testing it live rather than by reading it:
+
+- **`SrdCard` fetching its own table of contents put the ids a commit too late.** The caller
+  gated the scroll on its own copy, which was ready, while the ids came from the card's copy,
+  which was not - so the effect ran, found nothing, and never ran again. The table of contents
+  is now a prop, so one value decides both when the anchors exist and when to scroll.
+- **The same heading id exists twice when the drawer is open over the Rules screen.** A global
+  `getElementById` finds the screen's copy - first in the DOM - and scrolls the page behind
+  the panel, leaving the panel where it was. The lookup is scoped to the panel's scroll
+  container, which is why `useAnchorScroll` takes one.
+
+`scroll-mt-20` on the heading clears the app's sticky header, which `scrollIntoView` honours
+and a hand-computed offset would have to duplicate. `scrollIntoView` rather than
+`location.hash = …`, because the latter pushes a history entry for a scroll and makes the back
+button undo a jump rather than a navigation.
+
 ### A printed path is an invitation to read the rule
 
 Every answer in this app ends with the file it came from, and that path used to be dead
@@ -1192,7 +1259,9 @@ Three things were learned building it, and each changed the design:
 ### The plumbing, not the matcher, was most of the bug
 
 Four independent failures sat between the highlight and the answer, and fixing only the
-matcher would have left the feature just as dead. Each is a shape worth recognising:
+matcher would have left the feature just as dead. Three survive as shapes worth recognising;
+the fourth - a click that cleared the selection before reading it, sending an empty string -
+is gone with the click itself (see *The selection opens the panel* below).
 
 - **A query parameter must match the name FastAPI declared.** The client sent
   `selectedText`, the route declared `selected_text`, and *every* request 422'd. Worse, the
@@ -1201,18 +1270,89 @@ matcher would have left the feature just as dead. Each is a shape worth recognis
 - **A ref read in an effect body is `null` and stays `null`.** `useSelection` did
   `const element = ref.current; if (!element) return`, and the ref object itself never
   changes - so the effect never re-ran and the hook reported "nothing selected" for every
-  selection ever made. `RulesContextButton` then made it unfixable by passing
-  `{ current: null }`, a ref that can never point at anything. Read the ref *inside* the
-  listener. A hook that takes an element to watch also needs an element to watch: the button
-  is now handed the book's prose container, and the selection is scoped to it.
-- **A click that clears the selection before reading it sends an empty string.** The
-  button's handler only called `clearSelection()`. The selected text has to be captured and
-  handed to the drawer first; the drawer holds it, so the highlight can then be dropped
-  without losing what was asked.
+  selection ever made. A caller that passed `{ current: null }` then made it unfixable, since
+  that ref can never point at anything. Read the ref *inside* the listener. A hook that takes
+  an element to watch also needs an element to watch: it is handed the book's prose container,
+  and the selection is scoped to it.
 - **A component that renders `null` unconditionally cannot be debugged from the outside.**
   "The button never appears" had three separate causes stacked in one small component, and
   each hid the next. When a guard makes a component invisible, check the guard's input is
   ever non-empty before looking at the guard.
+
+### The selection opens the panel; the answer waits for a click
+
+The contextual menu used to require a click on a button that appeared on selection. That was
+the *only* way in, so a reader who had selected the wrong words found out only after paying for
+an answer - and because the selection is what the action acts on, the click itself was the
+gesture that cancelled it: the text had to be read at click time and handed to the drawer
+before the highlight was dropped.
+
+`SelectionWatcher` replaced it. Selecting prose now opens the drawer on what the words
+*retrieve*; an Ask button at the top of the panel spends the model call. The two are different
+acts on purpose:
+
+- **The index search costs no model call**, so it can run the moment the highlight settles.
+  The reader sees the raw material immediately, and a selection that retrieves nothing says so
+  before a question is spent on it.
+- **The answer is pushed in above the hits**, not instead of them. The hits are the evidence,
+  and a reader checking a claim needs both on screen at once. Verified by index: the answer
+  renders before the "In the index" section.
+- **The drawer opens on the settled value only.** A drag fires `selectionchange` per character,
+  so a wait is what keeps one drag from issuing a request per letter - `SELECTION_SETTLE_MS`,
+  shorter than the typing delay because the reader has already finished choosing by the time
+  the mouse comes up. The timer reads `context`, `documents` and `explore` through a **ref**,
+  not through its dependency array: `documents` is a fresh array on every `selectionchange` and
+  `explore` is rebuilt on every provider render (which is continuous while an answer streams),
+  so either one in the array would restart the timer on events that did not change the
+  selection and postpone the search for as long as the churn continued.
+- **The guard is reset when the selection empties.** `clearSelection` runs once the drawer
+  holds the words, so the hook reports `""` - and the effect must treat that as "the last
+  selection is over". Without the reset, re-selecting the *same* phrase would be refused by the
+  "already searched this" check and the panel would stay shut with no way to bring it back.
+- **A stale answer must not land on a newer selection.** `explore` bumps the same run counter
+  `ask` claims, so an answer in flight for the previous words is recognised as superseded and
+  dropped. Otherwise the panel would clear on the new selection and then have the old answer
+  drop back in - above the new hits, under a provenance badge for words that are no longer
+  there.
+- **Editing the question drops the selection's sentence.** The sentence explains *those* words;
+  once they have changed it describes something else, and passing it along has the model read
+  the new question in the old context. Nothing downstream can detect that mismatch, because the
+  prompt is the only place the two are compared. `setSelectedText` clears it.
+
+### The drawer's box is an input, not a label
+
+The box at the top of the drawer was the selection's echo - it showed the words and could be
+edited, but editing only changed what Ask would send. The cards below it are the index's
+reading of what the box *says*, so they now follow the typing, on the same
+`TYPING_DEBOUNCE_MS` the Rules tab's box uses.
+
+Five things this has to get right, and each is a shape rather than a detail:
+
+- **One duration, in `lib/timing.ts`.** The same number written in two files is two numbers
+  that will eventually disagree, and the disagreement shows up as one input feeling laggy
+  beside another that feels responsive. `TYPING_DEBOUNCE_MS` (600) and
+  `SELECTION_SETTLE_MS` (350) are different values because the *gestures* differ - typing is
+  slower than a mouse-up - and the names carry the unit, because a bare `600` at a call site
+  is unreadable and a unit mistake is invisible.
+- **Editing drops the generated answer.** It was written for the previous words, and the
+  provenance badge on it is a claim about *those* words. Leaving it under a box that now says
+  something else would put a "2024 SRD" badge above text the reader cannot see the question
+  for - the exact confusion the badge exists to prevent. The in-flight run is invalidated the
+  same way `explore` does it, so an answer already on its way is discarded rather than landing
+  on words it does not describe. Editing is not a model call; pressing Ask is.
+- **Editing re-derives the attachments.** `ask` already keeps a list only while the words are
+  unchanged, so deriving them here is what it would have done anyway. Showing the old chips
+  beside cards for the new words would advertise an attachment the question will not carry.
+- **A selection cancels a pending typed search.** Words typed a moment before the reader
+  selects something would otherwise fire on their own timer and overwrite the hits for the
+  selection - two searches for one panel, and the loser is the one the reader asked for.
+- **`pending` is folded into `searching`.** The wait is part of the operation, and a spinner
+  that only appears once the request is in flight leaves the debounce looking like nothing
+  happened. Verified live: 12 keystrokes at 30ms produced exactly **one** request, and the
+  spinner was up for the whole wait.
+- **The box is `AskBox`, the same one the Rules tab uses.** The two surfaces had their own
+  input and their own Ask button, differing in shape, colour, icon and disabled rule. See
+  *One ask box, two surfaces* below.
 
 ### A sentence about spells is not a question about a spell
 
@@ -1389,10 +1529,150 @@ Two consequences worth keeping:
   rating to 3 when none was set, so selecting "won" recorded a score the user never gave.
   It now requires the rating first and says so.
 - **Render the model's markdown; do not print it.** A history preview showing
-  `**Book 1 — “X”**` reads as corruption, not as a preview. The renderer is hand-written
+  `**Book 1 — "X"**` reads as corruption, not as a preview. The renderer is hand-written
   for the subset actually emitted (headings, bold, italics, lists) rather than pulling in
   a general parser, because a general parser needs `dangerouslySetInnerHTML` and would put
   raw model output into the page as HTML.
+
+### A named document should be a link, and the name has to be the one the prose uses
+
+An answer that says "the attached documents show **Celestial Patron**" is naming a document
+the reader can open, and leaving it as dead text makes them go and find it by hand. The
+class context files are now addressable (`GET /api/class-context/{path}`) and linked in
+generated prose by the same front-end layer that links spells.
+
+Four things this cost, each worth keeping:
+
+- **The linkable name is derived from the file's own `#` heading, not its filename.** The
+  files are named for their path (`base`, `tome`, `celestial`) while the heading names the
+  thing a reader recognises. `# Warlock - base class rules (D&D 5.5e / 2024)` becomes
+  `Warlock`; the edition tag and the descriptive clause are provenance. A name taken from
+  the filename would be a phrase the prose never writes, so nothing would ever link.
+- **A single-word name is rejected after a capitalised word, exactly as a single-word spell
+  is.** "Celestial Patron" links; the "Warlock" inside "Celestial Warlock" does not, because
+  two capitalised words in a row usually form one longer proper name and "Celestial Warlock"
+  is not a file. Measured over the real cache: 27 rendered "Warlock" mentions, of which the
+  false positives are exactly this shape.
+- **The class context is a separate endpoint and a separate schema from the SRD.** They are
+  not equally authoritative — the SRD is the 2024 rulebook and is quoted, a class context
+  file is our own summary — and serving one as the other would let a summary wear the
+  quotation badge. The card shows a different badge, and the drawer's screen-reader
+  description says which kind it is.
+- **A path from a URL is checked, not trusted.** `class_context_path` refuses anything
+  resolving outside `context/classes`, and the front end declines to render a link for a
+  path that does not match the pattern. Without it the endpoint reads any file on the
+  machine and serves it as a rule.
+
+Two smaller ones:
+
+- **The card drops the file's own `#` heading rather than turning the linker off.** The
+  heading is already the card title, so rendering it again states the name twice and the
+  second copy links to the page the reader is on. `linkSpells={false}` would have fixed the
+  duplicate but also killed the sibling cross-references and every spell the file names —
+  which are the useful links.
+- **The context files cross-referenced each other by a path that did not exist.** They said
+  `context/warlock/base.md` while the file is at `context/classes/warlock/base.md`, so the
+  references were stale prose that could never have been a working link. Fixing the paths is
+  what makes them clickable; a link to a file that is not there is worse than no link.
+
+### One index list, four places, one component
+
+The "In the index" reading now appears in the Rules tab's column, the Search tab, and the
+contextual drawer. All four render `IndexHitsCard`, lifted out of `RulesScreen` the same way
+`SearchResults` was lifted out of `SearchScreen` - and for the same reason: two copies are two
+readings of one response, and the disagreement is invisible because each panel looks right on
+its own. The card owns the preview line, the rule/spell opening and the match dial, because
+those are properties of the *response* rather than of the screen showing it.
+
+Three things worth keeping:
+
+- **One list, in the API's order.** The card used to partition into a Rulebook group and a
+  Spells group, rules first. That read as two searches, and it made the reader compare a rule's
+  dial against a spell's across a heading to work out which the index actually preferred. The
+  API already sorts by distance ascending, so the ranking is shown as it is. Verified live on
+  "how does cover work": `63, 60, 55, 38, 36, 36, 35, 34, 34, 32, 32, 31`, with the spell
+  *Bigby's Hand* interleaved at 32% among the rules.
+- **One row component for both kinds.** A rule and a spell differ in exactly two things - the
+  address they open and the label in the trailing slot - and those are the only two places
+  `IndexHitRow` branches. Everything else is shared, because the two used to differ in their
+  *hit region* as well: a rule was an `<a>` wrapping the whole row while a spell was a `<div>`
+  with only its name as a link, so one list had two clickable areas and two hover states.
+  Measured after the change: all twelve rows are `<a>` at 486×38 with identical padding and
+  radius.
+- **The distance badge was replaced by the dial, not by a percentage.** `SearchResults` used to
+  print `d 0.721`, which is a number with no scale attached - a reader cannot tell a good hit
+  from a poor one without comparing twelve of them. The raw distance is still in the dial's
+  `title`, so nothing was lost.
+
+### One ask box, two surfaces
+
+`AskBox` is the input and the Ask button, used by the Rules tab and by the contextual drawer.
+Both had their own: the Rules tab an `Input` beside a rounded verdant `Button`, the drawer an
+`Input` beside a parchment `<button>`. They differed in the button's shape, colour, icon and
+disabled rule, so the same act looked like two different acts depending on which panel you were
+in.
+
+What is shared is the *shape* of the control, not the behaviour. The caller owns the text, what
+typing does, and what asking does - because the two surfaces really do differ there, and a
+component that tried to own both would need a flag per difference. Three details are the box's
+own, because they are what "the same box" means: the clear button lives inside the field (it
+acts on the text, not on the question), Escape clears and Enter asks, and the button is disabled
+while there is nothing to ask and spins while a question is in flight.
+
+- **`onClick={() => onAsk()}`, not `onClick={onAsk}`.** Passing the handler directly hands it
+  the click event, and `askNow(text = question)` then read the event as the question -
+  `text.trim is not a function`, caught live in the browser and not by the type checker, because
+  the parameter was inferred. It is now annotated `text: string`, so the same mistake fails to
+  compile.
+
+### Typing searches; asking is a separate act
+
+On the Rules tab the debounce drives **only** the two cheap readings - the synchronous heading
+filter and the vector search. The ask is reached only from the Ask button or Enter.
+
+- **A model call is not something to spend on a pause.** The ask used to be debounced alongside
+  the search, so a sentence typed at speed spent a model call on every pause in it. A reader
+  composing a question is not asking it yet, and the answer to a half-typed question is not a
+  reading they wanted.
+- **The button cancels the pending search rather than racing it.** The ask is the reader saying
+  they are done typing, so the search the debounce would have run is the same search the button
+  runs immediately; letting both go issues one request twice and leaves two replies racing to
+  fill one panel.
+- **An example chip passes its text explicitly.** `type(example)` then `askNow(example)`, because
+  reading `question` inside `askNow` would ask the *previous* question - the state update has not
+  been applied yet.
+- Verified live by request log: typing `how does cover work` produced exactly one
+  `GET /api/search`; pressing Ask produced `GET /api/search` + `GET /api/rules`. In the drawer,
+  typing `2 beams` produced one `GET /api/search` and Ask produced only
+  `GET /api/rules/contextual`.
+
+### A similarity reading is not a confidence
+
+The match dial shows a 0-100 number in a doughnut, and that number **must not be called a
+confidence**. It is `1 - distance / 1.4` over a Chroma `l2` distance from `nomic-embed-text`,
+which is a squared euclidean distance between embeddings: unbounded above, with no threshold
+that means "relevant". A confidence would be a claim about the answer being right, and this
+cannot make that claim. The tooltip says so in full, because a percentage on screen will
+otherwise be read as a probability.
+
+`MAX_DISTANCE` is 1.4 rather than a round 1.0 because the constant is set from measured data,
+not chosen. Sampling the live index:
+
+| Query | nearest | furthest |
+| --- | --- | --- |
+| `fireball` (a name) | 0.30 | 0.80 |
+| `how does cover work` (a question) | 0.52 | 0.96 |
+| `protect an ally from being grappled` (a description) | 0.61 | 0.82 |
+| nonsense words | 0.97 | 1.02 |
+
+A scale of 1.0 would clip every nonsense query to 0% and stop distinguishing one bad result
+from another; 1.4 puts nonsense at 3% and an exact name match at 79%, with neither end pinned.
+
+The honest cost: on this embedder the absolute distance separates "found it" from "found
+nothing" far better than it separates "good" from "better" - 0.52 and 0.61 are 66% and 59%.
+Ordering within one result set is the reliable signal, and that is what the list already
+shows. Four colour bands, not a gradient, for the same reason: a continuous colour would imply
+the scale resolves 0.61 from 0.66, and it does not.
 
 ### A spell card is about a character, not just a spell
 

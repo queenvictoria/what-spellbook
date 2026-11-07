@@ -1,7 +1,7 @@
 # Celestial Patron (D&D 5.5e / 2024)
 
 Subclass rules for a Warlock whose patron is a Celestial. Load this alongside
-`context/warlock/base.md` and the pact file.
+`context/classes/warlock/base.md` and the pact file.
 
 This file describes the subclass only. Which of these features is actually online is
 determined by the character's level from the character sheet.

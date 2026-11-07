@@ -1,6 +1,6 @@
 import { BookOpen } from "lucide-react"
 
-import { useOpenSrd, srdInPath } from "@/lib/srdDrawer"
+import { useOpenRule, ruleInPath } from "@/lib/ruleDrawer"
 import { cn } from "@/lib/utils"
 
 /**
@@ -13,18 +13,18 @@ import { cn } from "@/lib/utils"
  *
  * A path that is *not* SRD text - the retrieval corpus, a character sheet - stays plain
  * text rather than becoming a link that cannot open. That distinction is the whole reason
- * `srdInPath` exists: a link that fails is worse than no link, because it looks like the
+ * `ruleInPath` exists: a link that fails is worse than no link, because it looks like the
  * rule is missing rather than like the path is not a rule.
  */
-export function SrdPathLink({
+export function RulePathLink({
   path,
   className,
 }: {
   path: string
   className?: string
 }) {
-  const open = useOpenSrd()
-  const target = srdInPath(path)
+  const open = useOpenRule()
+  const target = ruleInPath(path)
 
   if (!target) {
     return (

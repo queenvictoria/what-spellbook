@@ -1,9 +1,10 @@
-import type { SrdSection } from "@/api/types"
+import type { SrdDocument, SrdSection } from "@/api/types"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
 import { SrdBreadcrumb } from "@/components/SrdBreadcrumb"
-import { SrdPathLink } from "@/components/SrdPathLink"
+import { RulePathLink } from "@/components/RulePathLink"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { srdAnchors } from "@/lib/srd"
 
 /**
  * One section of the vendored SRD, quoted.
@@ -20,14 +21,27 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
  * The breadcrumb sits above the title because it answers a question the title cannot: a rule
  * read from a citation arrives without its context, and "Prone [Condition]" does not say it
  * lives under *Rules Definitions* in the *Rules Glossary*.
+ *
+ * The headings in the text carry the anchors the table of contents gives them, so a fragment
+ * can name one. That is what lets a breadcrumb open a parent *at* the child the reader was
+ * reading, and what makes a link to a rule inside a long section land on the rule.
+ *
+ * The table of contents is a prop rather than fetched here, because the caller needs it too:
+ * it is what says the anchors are on the page, and a second copy fetched in this component
+ * would arrive a commit later - so the caller would scroll before the ids existed and never
+ * try again.
  */
 export function SrdCard({
   section,
+  documents,
   className,
 }: {
   section: SrdSection
+  documents: SrdDocument[] | null
   className?: string
 }) {
+  const anchors = srdAnchors(documents, section)
+
   return (
     <Card className={className}>
       <CardHeader className="gap-2">
@@ -38,9 +52,9 @@ export function SrdCard({
         <SrdBreadcrumb section={section} />
       </CardHeader>
       <CardContent className="space-y-3">
-        <Markdown text={section.text} className="prose-spell" />
+        <Markdown text={section.text} className="prose-spell" anchors={anchors} />
         <p className="border-t border-void-800 pt-2">
-          <SrdPathLink
+          <RulePathLink
             path={`${section.path}${section.slug ? `#${section.slug}` : ""}`}
           />
         </p>

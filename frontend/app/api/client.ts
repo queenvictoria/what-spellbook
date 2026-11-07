@@ -2,6 +2,8 @@ import type {
   Answer,
   Book,
   Character,
+  ClassContext,
+  ClassContextFile,
   Conversation,
   ConversationKind,
   ConversationSummary,
@@ -198,6 +200,30 @@ export const api = {
   srdSection: (name: string, slug?: string) =>
     request<SrdSection>(
       `/api/srd/${encodeURIComponent(name)}${query({ slug })}`,
+    ),
+
+  /**
+   * Every class context file, without its text — the list of what exists.
+   *
+   * These are the files spliced into a prompt as `=== CHARACTER CONTEXT ===`. They are not
+   * SRD text, so they are a separate call and a separate type: a summary of a class must
+   * not be able to wear the quotation badge.
+   */
+  classContextFiles: () => request<ClassContextFile[]>('/api/class-context'),
+
+  /**
+   * One class context file, as renderable Markdown.
+   *
+   * `path` is the repo-relative path the list gave, e.g.
+   * `context/classes/warlock/subclass/celestial.md`. Deterministic, like `srdSection`: the
+   * text is read from the file, so this cannot paraphrase.
+   */
+  classContext: (path: string) =>
+    request<ClassContext>(
+      `/api/class-context/${path
+        .split('/')
+        .map(encodeURIComponent)
+        .join('/')}`,
     ),
 
   history: (character?: string) =>

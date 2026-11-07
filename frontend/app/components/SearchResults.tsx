@@ -1,11 +1,20 @@
 import { useState } from "react"
 
 import type { SearchHit, SearchResult } from "@/api/types"
+import { MatchDial } from "@/components/MatchDial"
 import { SpellCard } from "@/components/SpellCard"
-import { SrdPathLink } from "@/components/SrdPathLink"
+import { RulePathLink } from "@/components/RulePathLink"
 import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useSpell } from "@/lib/useSpell"
+
+/** What one document of each kind is called, for the summary line. */
+const DOC_TYPE_NOUNS: Record<string, string> = {
+  all: "document",
+  spell: "spell",
+  item: "item",
+  srd: "rule",
+}
 
 /**
  * The vector search's results, in the shape both the Search tab and the Rules tab show.
@@ -55,18 +64,23 @@ export function SearchResults({
 /**
  * What the search did, in one line.
  *
- * `total_matching` is the number of distinct spells the *criteria* admit, which is the
+ * `total_matching` is the number of distinct documents the *criteria* admit, which is the
  * number that says whether a filter is too narrow. It is deliberately not called "results":
- * a vector search has no relevance threshold, so it cannot say how many spells are
+ * a vector search has no relevance threshold, so it cannot say how many documents are
  * relevant, only how many were eligible to be ranked.
+ *
+ * The noun follows the doc type, because the collection holds the rulebook and the magic
+ * items as well as the spells. Calling 1818 mixed documents "spells" is the same category
+ * error the doc-type control exists to prevent.
  */
 function SearchSummary({ result }: { result: SearchResult }) {
+  const noun = DOC_TYPE_NOUNS[result.filters.doc_type ?? "all"]
   return (
     <div className="space-y-2 text-xs text-parchment/55">
       <div className="flex flex-wrap items-center gap-2">
         <Badge tone="muted">{result.mode}</Badge>
         <span>
-          {result.hits.length} shown · {result.total_matching} spell
+          {result.hits.length} shown · {result.total_matching} {noun}
           {result.total_matching === 1 ? "" : "s"} match the criteria
         </span>
         <span className="font-mono">{result.elapsed_ms.toFixed(0)}ms</span>
@@ -136,9 +150,7 @@ function SearchHitRow({
         </button>
         <div className="flex shrink-0 flex-col items-end gap-1">
           {hit.distance !== null && (
-            <Badge tone="muted" title="Chroma distance — lower is closer, not a percentage">
-              d {hit.distance.toFixed(3)}
-            </Badge>
+            <MatchDial distance={hit.distance} size={30} />
           )}
           <span className="text-[0.7rem] text-parchment/40">
             {hit.chunks} chunk{hit.chunks === 1 ? "" : "s"}
@@ -159,7 +171,7 @@ function SearchHitRow({
         {open ? (
           <>
             {isRule && hit.document && hit.slug && (
-              <SrdPathLink path={`context/srd/${hit.document}.md`} />
+              <RulePathLink path={`context/srd/${hit.document}.md`} />
             )}
             {spell && <SpellCard spell={spell} />}
             {missing && (

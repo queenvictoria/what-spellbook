@@ -19,6 +19,23 @@ export function useSpellNames(): ReadonlySet<string> {
 }
 
 /**
+ * The class context files, keyed by the phrase a reader would recognise for each.
+ *
+ * A separate context from the spell names because the two are different kinds of thing and
+ * are linked to different places: a spell opens the spell drawer, a class context file opens
+ * the rule drawer on our own summary of the class. Folding them into one set would make
+ * "Warlock" a spell.
+ *
+ * Empty until the list arrives, which simply means nothing is linked yet - the same
+ * degradation the spell names have, and for the same reason: linking is an enhancement.
+ */
+export const ClassNamesContext = createContext<ReadonlyMap<string, string>>(new Map())
+
+export function useClassNames(): ReadonlyMap<string, string> {
+  return useContext(ClassNamesContext)
+}
+
+/**
  * Case- and apostrophe-insensitive key, so a name can be looked up the way prose writes it.
  *
  * The corpus stores apostrophes as typographic `’`, while the model writes a plain `'`.
@@ -116,4 +133,63 @@ function findCanonical(text: string, names: ReadonlySet<string>): string {
     if (foldSpellName(name) === key) return name
   }
   return text
+}
+
+/**
+ * A regex matching any known class context name in text, or null when there is nothing to
+ * match.
+ *
+ * The same shape as `buildSpellPattern` and for the same reasons - case-sensitive,
+ * longest-first, word-boundary guarded - with one difference that matters: a **single-word**
+ * name is rejected when a capitalised word sits immediately before it, exactly as a
+ * single-word spell is. "Celestial Patron" is two words and links; the "Warlock" inside
+ * "Celestial Warlock" does not, because two capitalised words in a row usually form one
+ * longer proper name and "Celestial Warlock" is not a file.
+ *
+ * Case-sensitive because these are proper names: "warlock" in ordinary prose is the word,
+ * and the file is the class.
+ */
+export function buildClassNamePattern(
+  names: ReadonlyMap<string, string>,
+): RegExp | null {
+  if (names.size === 0) return null
+
+  const escaped = [...names.keys()]
+    .filter((name) => name.length > 2)
+    .sort((a, b) => b.length - a.length)
+    .map((name) => {
+      const body = name
+        .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        .replace(/[’']/g, "['’]")
+      return name.includes(' ') ? body : `(?<![A-Z][a-z]+ )${body}`
+    })
+
+  if (escaped.length === 0) return null
+  return new RegExp(`(?<![\\w'’])(?:${escaped.join('|')})(?![\\w'’])`, 'g')
+}
+
+/**
+ * Splits text into plain runs and class context names.
+ *
+ * Returns `[text, path | null]` pairs, so the caller can render a link for the names and
+ * leave everything else untouched. The path is the file to open, which is why the map is
+ * keyed by name rather than being a set.
+ */
+export function splitClassNames(
+  text: string,
+  names: ReadonlyMap<string, string>,
+): Array<[string, string | null]> {
+  const pattern = buildClassNamePattern(names)
+  if (!pattern) return [[text, null]]
+
+  const parts: Array<[string, string | null]> = []
+  let cursor = 0
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) parts.push([text.slice(cursor, index), null])
+    parts.push([match[0], names.get(match[0]) ?? null])
+    cursor = index + match[0].length
+  }
+  if (cursor < text.length) parts.push([text.slice(cursor), null])
+  return parts
 }
