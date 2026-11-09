@@ -208,3 +208,91 @@ def test_the_repo_env_and_the_default_agree():
         assert requested == config.OPENROUTER_MODEL
     else:
         assert requested == config.OLLAMA_MODEL
+
+
+# --- explaining a failure ---
+
+def test_a_connection_failure_names_the_command_that_fixes_it():
+    """The raw Ollama text says what is wrong; this says what to do about it.
+
+    It is the message the API returns as its 503 detail and the UI shows verbatim, so the
+    address, the command and the model all have to be in it - otherwise the user is left
+    with "the model is unavailable" and no next step.
+    """
+    message = llm.explain_failure(
+        ConnectionError("Failed to connect to Ollama."), model="qwen3.5:4b"
+    )
+    assert "ollama serve" in message
+    assert "ollama pull qwen3.5:4b" in message
+    assert llm.ollama_host() in message
+
+
+def test_a_remote_failure_does_not_tell_you_to_start_ollama():
+    """Advice that cannot apply is worse than none: a remote model is not local."""
+    message = llm.explain_failure(
+        ConnectionError("connection refused"), model="anthropic/claude-sonnet-4.5",
+        local=False,
+    )
+    assert "ollama serve" not in message
+    assert "anthropic/claude-sonnet-4.5" in message
+
+
+def test_a_missing_model_is_told_apart_from_a_dead_server():
+    """Ollama answering "model not found" means it is running, so the fix is a pull."""
+    message = llm.explain_failure(
+        RuntimeError("model 'qwen3.5:4b' not found, try pulling it first"),
+        model="qwen3.5:4b",
+    )
+    assert "ollama pull qwen3.5:4b" in message
+    assert "ollama serve" not in message
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ConnectionError("Failed to connect to Ollama."),
+        RuntimeError("httpx.ConnectError: [Errno 111] Connection refused"),
+        RuntimeError("HTTPConnectionPool: Max retries exceeded with url"),
+        RuntimeError("[Errno -2] Name or service not known"),
+    ],
+)
+def test_transport_failures_are_recognised_through_their_wrappers(error):
+    """LangChain re-raises httpx and urllib3 errors, so the type alone is not enough."""
+    assert llm.names_connection_failure(error)
+
+
+def test_a_server_error_is_not_mistaken_for_a_transport_failure():
+    """A 500 from a running server must not be reported as "Ollama is not running"."""
+    assert not llm.names_connection_failure(RuntimeError("500 Internal Server Error"))
+
+
+def test_embedding_failures_are_typed_and_named():
+    """The vector store's failure is the same Ollama, reached by a different stack."""
+    failure = llm.embedding_failure(ConnectionError("Failed to connect to Ollama."))
+    assert isinstance(failure, llm.EmbeddingUnavailable)
+    assert config.EMBEDDING_MODEL in str(failure)
+
+
+def test_a_non_transport_embedding_error_is_left_alone():
+    """Only a transport failure is ours to explain; anything else keeps its own traceback."""
+    assert llm.embedding_failure(ValueError("bad metadata")) is None
+
+
+def test_invoke_explains_what_it_could_not_reach():
+    """``invoke`` is the one place every model call passes through, so it types the error.
+
+    The client's *type name* is what decides whether the advice is local, so the stub is
+    named like the real one - a generic stub would be reported as a remote provider and
+    would get the wrong advice.
+    """
+    dead = type("OllamaLLM", (), {
+        "model": "qwen3.5:4b",
+        "invoke": lambda self, prompt: (_ for _ in ()).throw(
+            ConnectionError("Failed to connect to Ollama.")
+        ),
+    })()
+
+    with pytest.raises(llm.LLMUnavailable) as caught:
+        llm.invoke(dead, "hello")
+    assert "ollama serve" in str(caught.value)
+    assert "qwen3.5:4b" in str(caught.value)

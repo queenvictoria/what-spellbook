@@ -1,4 +1,4 @@
-# What spellbook?
+# What Loadout?
 
 This project is designed to recommend spells to suit a scenario or encounter given a prompt and grounded in a ruleset and spell list.
 
@@ -127,28 +127,28 @@ Interactive docs are at `http://localhost:8000/docs`. The API contains no logic:
 route validates its input, calls one `SpellbookService` method, and maps the result or a
 typed error to a status code. That is what keeps the CLI and the API from drifting apart.
 
-| Endpoint                           | Purpose                                                    |
-| ---------------------------------- | ---------------------------------------------------------- |
-| `GET /api/health`                  | Liveness, loaded model, index version                      |
-| `GET /api/characters`              | Sheet names on disk, for a picker                          |
-| `GET /api/character`               | The loaded sheet                                           |
-| `GET /api/character/ask?question=` | The `/c` command                                           |
-| `GET /api/sheet-keys`              | Every value `/c` can look up                               |
-| `POST /api/scenario`               | Generate, or replay the stored run for the same key        |
-| `GET /api/cached?scenario=`        | The stored run, or `null` — a miss is not an error         |
-| `POST /api/ask?scenario=`          | The `/ask` command                                         |
-| `GET /api/history`                 | Every stored run, newest first                             |
-| `GET /api/runs/{id}`               | One run reopened for reading                               |
-| `POST /api/runs/{id}/rate`         | Record an outcome rating                                   |
-| `GET /api/rules?question=`         | The `/?` command, grounded in the 2024 SRD                 |
-| `GET /api/spell?name=`             | One spell's description, for every spell mention in the UI |
-| `GET /api/invocation?name=`        | One Eldritch Invocation, from the SRD's class chapter      |
-| `GET /api/spells`                  | Every name the UI should link — spells and invocations     |
-| `GET /api/srd`                     | The vendored SRD as a table of contents, file by file      |
-| `GET /api/srd/{name}?slug=`        | One section of one SRD file, quoted; omit `slug` for the whole file |
-| `GET /api/class-context`           | Our own class context files, without their text            |
-| `GET /api/class-context/{path}`    | One class context file, quoted; not SRD text               |
-| `GET /api/search`                  | Search the vector index directly, for inspection           |
+| Endpoint                           | Purpose                                                                   |
+| ---------------------------------- | ------------------------------------------------------------------------- |
+| `GET /api/health`                  | Liveness, loaded model, index version                                     |
+| `GET /api/characters`              | Sheet names on disk, for a picker                                         |
+| `GET /api/character`               | The loaded sheet                                                          |
+| `GET /api/character/ask?question=` | The `/c` command                                                          |
+| `GET /api/sheet-keys`              | Every value `/c` can look up                                              |
+| `POST /api/scenario`               | Generate, or replay the stored run for the same key                       |
+| `GET /api/cached?scenario=`        | The stored run, or `null` — a miss is not an error                        |
+| `POST /api/ask?scenario=`          | The `/ask` command                                                        |
+| `GET /api/history`                 | Every stored run, newest first                                            |
+| `GET /api/runs/{id}`               | One run reopened for reading                                              |
+| `POST /api/runs/{id}/rate`         | Record an outcome rating                                                  |
+| `GET /api/rules?question=`         | The `/?` command, grounded in the 2024 SRD                                |
+| `GET /api/spell?name=`             | One spell's description, for every spell mention in the UI                |
+| `GET /api/invocation?name=`        | One Eldritch Invocation, from the SRD's class chapter                     |
+| `GET /api/spells`                  | Every name the UI should link — spells and invocations                    |
+| `GET /api/srd`                     | The vendored SRD as a table of contents, file by file                     |
+| `GET /api/srd/{name}?slug=`        | One section of one SRD file, quoted; omit `slug` for the whole file       |
+| `GET /api/class-context`           | Our own class context files, without their text                           |
+| `GET /api/class-context/{path}`    | One class context file, quoted; not SRD text                              |
+| `GET /api/search`                  | Search the vector index directly, for inspection                          |
 | `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
@@ -221,11 +221,11 @@ as a rule.
 One typed question is answered three ways at once, each column filling in as it resolves
 rather than waiting for the others:
 
-| Lane             | What it reads                                | When it answers       |
-| ---------------- | -------------------------------------------- | --------------------- |
-| Keyword filter   | The 1274 SRD headings, client-side           | Synchronously         |
-| Index search     | `GET /api/search` over the spell corpus      | After a 400 ms pause  |
-| The answer       | `GET /api/rules` — the SRD's own matcher     | After a 400 ms pause  |
+| Lane           | What it reads                            | When it answers      |
+| -------------- | ---------------------------------------- | -------------------- |
+| Keyword filter | The 1274 SRD headings, client-side       | Synchronously        |
+| Index search   | `GET /api/search` over the spell corpus  | After a 400 ms pause |
+| The answer     | `GET /api/rules` — the SRD's own matcher | After a 400 ms pause |
 
 None of the three short-circuits the others. A rule can be named under a heading, absent
 from the spell index, and answerable by interpretation all at once, and the reader picks
@@ -272,11 +272,11 @@ width: the lanes resolve independently, so for the first few hundred millisecond
 have nothing in them, and an empty bordered box reads as a failure rather than as a request
 still in flight. The three are:
 
-| Column             | Shows                                                                | Hidden when             |
-| ------------------ | -------------------------------------------------------------------- | ----------------------- |
-| Filtered titles    | The matched headings, each with the trail that says where it lives   | Nothing matched         |
-| The spell index    | Up to 12 titles, each a link, plus one line of the matched chunk     | No hits and no error    |
-| The answer         | The RAG response, its source badge and its citations                 | No answer and no error  |
+| Column          | Shows                                                              | Hidden when            |
+| --------------- | ------------------------------------------------------------------ | ---------------------- |
+| Filtered titles | The matched headings, each with the trail that says where it lives | Nothing matched        |
+| The spell index | Up to 12 titles, each a link, plus one line of the matched chunk   | No hits and no error   |
+| The answer      | The RAG response, its source badge and its citations               | No answer and no error |
 
 The title column lists **matches only**, without their ancestors, which is the opposite of
 what the tree does. The two answer different questions: the tree says _where_ a rule lives, so
@@ -318,18 +318,18 @@ is legal for this character"; this answers "what is in the index, and what does 
 bring back" — which is how a missing recommendation gets explained. It can return a spell
 the character could never pick, on purpose. The Search tab drives it.
 
-| Parameter                 | Meaning                                                                                        |
-| ------------------------- | ---------------------------------------------------------------------------------------------- |
-| `query`                   | Text to search for. May be empty in `text` mode, which then lists everything the filters admit |
-| `mode`                    | `vector` (similarity), `text` (substring), or `hybrid` (vector, word matches first)            |
+| Parameter                 | Meaning                                                                                                        |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `query`                   | Text to search for. May be empty in `text` mode, which then lists everything the filters admit                 |
+| `mode`                    | `vector` (similarity), `text` (substring), or `hybrid` (vector, word matches first)                            |
 | `doc_type`                | `all`, `spell`, `item` or `srd`. An explicit value wins outright; omit it to leave the choice to `spells_only` |
-| `class`                   | Repeatable; matches any of the named classes                                                   |
-| `school`                  | Exact school name                                                                              |
-| `level_min` / `level_max` | Inclusive level bounds, 0–9                                                                    |
-| `ritual`                  | `true` to require a ritual                                                                     |
-| `spells_only`             | Default `true`; `false` includes the 22 magic items the collection also holds                  |
-| `all_terms`               | `text` mode: require every word (default) rather than any one                                  |
-| `limit` / `offset`        | Page size (max 100) and page start                                                             |
+| `class`                   | Repeatable; matches any of the named classes                                                                   |
+| `school`                  | Exact school name                                                                                              |
+| `level_min` / `level_max` | Inclusive level bounds, 0–9                                                                                    |
+| `ritual`                  | `true` to require a ritual                                                                                     |
+| `spells_only`             | Default `true`; `false` includes the 22 magic items the collection also holds                                  |
+| `all_terms`               | `text` mode: require every word (default) rather than any one                                                  |
+| `limit` / `offset`        | Page size (max 100) and page start                                                                             |
 
 Three modes, because they fail differently. A vector search that returns nothing means the
 embedding did not surface it; a text search that returns nothing means the words are not in
@@ -392,11 +392,11 @@ that dropped the markup would index a confident rule with its bonuses missing.
 
 The SRD is used in three places:
 
-| Where | How | Labelled |
-| ----- | --- | -------- |
-| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections | `srd` |
-| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both heading-anchored paths refuse | `rules-inferred` |
-| `POST /api/scenario` | `retrieval.gather_srd_context` — the rules the _scenario_ turns on | retrieved context |
+| Where                          | How                                                                             | Labelled          |
+| ------------------------------ | ------------------------------------------------------------------------------- | ----------------- |
+| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections                               | `srd`             |
+| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both heading-anchored paths refuse | `rules-inferred`  |
+| `POST /api/scenario`           | `retrieval.gather_srd_context` — the rules the _scenario_ turns on              | retrieved context |
 
 The rules lane is the only retrieval path that is not heading-anchored, and it is reached
 only after `rules.gather` and `rules.gather_inferred` have both refused. The anchor is what
@@ -614,7 +614,7 @@ A file is a **thread**, not an answer: the opening question, its kind, and every
 that followed. A follow-up ("and a grapple?") is only meaningful beside the question it
 followed, so the thread is the unit — the same reason `/history` lists runs rather than
 books. The thread is keyed on the character and a hash of its opening question, so a
-repeat of the same opening question *replays* rather than re-asks.
+repeat of the same opening question _replays_ rather than re-asks.
 
 ```bash
 /chats                   # list stored conversations, newest first, numbered
@@ -624,9 +624,10 @@ repeat of the same opening question *replays* rather than re-asks.
 
 The same store is served over HTTP: `GET /api/conversations` lists threads,
 `GET /api/conversations/{id}` reads one, and every ask endpoint returns a `thread_id`
-that a client passes back to continue the conversation. The **Chats** screen in the UI is
-that listing: filter by surface, then open a thread to read every turn with its
-provenance. It is the read side of the store, so nothing on it costs a model call.
+that a client passes back to continue the conversation. The **Conversations** subtab of
+the UI's History screen is that listing: filter by surface, then open a thread to read
+every turn with its provenance. It is the read side of the store, so nothing on it costs
+a model call.
 
 **A replay is guarded, not blind.** A character answer is only replayed while the sheet
 is unchanged — an edited sheet gives a different answer to the same question, so a
@@ -797,8 +798,8 @@ LLM_MODEL_FAST=deepseek/deepseek-v4-flash-0731   # OpenRouter
 LLM_MODEL_FAST=qwen2.5-coder:1.5b-base           # local
 ```
 
-Its output is capped (`llm.FAST_MAX_TOKENS`), and the cap has to cover the model's *hidden
-reasoning* as well as the answer — a cap sized to the phrase alone truncates a reasoning
+Its output is capped (`llm.FAST_MAX_TOKENS`), and the cap has to cover the model's _hidden
+reasoning_ as well as the answer — a cap sized to the phrase alone truncates a reasoning
 model to an empty reply.
 
 Its answers are cached under `.cache/scaling/<character>/<level>-<spell>-<hash>.json`, keyed

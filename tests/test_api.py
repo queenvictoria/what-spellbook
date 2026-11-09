@@ -192,6 +192,55 @@ def test_scenario_reports_an_unreachable_model_as_503(api, monkeypatch):
     assert response.status_code == 503
 
 
+def test_an_unreachable_model_says_how_to_fix_it(api, monkeypatch):
+    """The detail is the whole point of the 503: it is what the UI shows the user.
+
+    A bare "connection refused" tells someone the model is down but not that the fix is one
+    command, so the message is asserted rather than only the status.
+    """
+    monkeypatch.setattr(
+        "backend.libs.llm.invoke",
+        lambda *a, **k: (_ for _ in ()).throw(
+            llm.LLMUnavailable(
+                llm.explain_failure(ConnectionError("Failed to connect to Ollama."),
+                                    model="qwen3.5:4b")
+            )
+        ),
+    )
+    response = api.post("/api/scenario", json={"scenario": "a third scenario"})
+    assert response.status_code == 503
+    detail = response.json()["detail"]
+    assert "ollama serve" in detail
+    assert "qwen3.5:4b" in detail
+
+
+def test_a_dead_embedding_server_is_503_not_500(api, monkeypatch):
+    """Embeddings go to the same Ollama, so the same failure arrives by another stack.
+
+    It reaches the route from ``retrieval`` rather than from ``invoke``, and an untyped
+    ``ConnectionError`` there would surface as an unhandled 500 - which tells the caller to
+    retry a request that cannot work until someone starts the server.
+    """
+    monkeypatch.setattr(
+        "backend.libs.retrieval.retrieve",
+        lambda *a, **k: (_ for _ in ()).throw(
+            llm.EmbeddingUnavailable("Ollama is not reachable at http://127.0.0.1:11434")
+        ),
+    )
+    response = api.post("/api/scenario", json={"scenario": "a fourth scenario"})
+    assert response.status_code == 503
+    assert "not reachable" in response.json()["detail"]
+
+
+def test_an_embedding_failure_is_a_model_failure_too(api, monkeypatch):
+    """``EmbeddingUnavailable`` subclasses ``LLMUnavailable``, so no route needs to name it.
+
+    That is the reason for the subclass: five routes already handle the model being down, and
+    a sibling type would have had to be added to each of them or fall through as a 500.
+    """
+    assert issubclass(llm.EmbeddingUnavailable, llm.LLMUnavailable)
+
+
 def test_ask_without_cached_books_is_404(api):
     response = api.post("/api/ask", params={"scenario": "never run"},
                         json={"question": "why?"})

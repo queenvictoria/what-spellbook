@@ -1,6 +1,7 @@
 import { useState } from "react"
 
 import type { SearchHit, SearchResult } from "@/api/types"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { MatchDial } from "@/components/MatchDial"
 import { SpellCard } from "@/components/SpellCard"
 import { RulePathLink } from "@/components/RulePathLink"
@@ -179,7 +180,7 @@ function SearchHitRow({
                 {missing} The chunk below is what the index matched.
               </p>
             )}
-            {error && <p className="text-xs text-red-300">{error}</p>}
+            {error != null && <ErrorNotice error={error} compact />}
             {!spell && !missing && !error && !isRule && (
               <p className="text-xs text-parchment/50">Loading…</p>
             )}

@@ -12,7 +12,7 @@
  */
 import { useEffect, useState } from 'react'
 
-import { api, ApiError } from '@/api/client'
+import { api } from '@/api/client'
 import type { ClassContext, ClassContextFile } from '@/api/types'
 
 /**
@@ -55,7 +55,7 @@ export function classContextInPath(path: string | null | undefined): string | nu
  */
 export function useClassContextFiles() {
   const [files, setFiles] = useState<ClassContextFile[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -65,7 +65,7 @@ export function useClassContextFiles() {
         if (!cancelled) setFiles(found)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : String(e))
+        if (!cancelled) setError(e)
       })
     return () => {
       cancelled = true
@@ -96,11 +96,7 @@ export function useClassContext(path: string | null) {
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setResult({
-          key: path,
-          kind: 'error',
-          message: e instanceof ApiError ? e.message : String(e),
-        })
+        setResult({ key: path, kind: 'error', error: e })
       })
     return () => {
       cancelled = true
@@ -110,11 +106,11 @@ export function useClassContext(path: string | null) {
   const current = result?.key === path ? result : null
   return {
     document: current?.kind === 'ok' ? current.document : null,
-    error: current?.kind === 'error' ? current.message : null,
+    error: current?.kind === 'error' ? current.error : null,
     loading: path !== null && current === null,
   }
 }
 
 type Result =
   | { key: string; kind: 'ok'; document: ClassContext }
-  | { key: string; kind: 'error'; message: string }
+  | { key: string; kind: 'error'; error: unknown }

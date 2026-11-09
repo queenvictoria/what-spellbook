@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 
-import { api, ApiError } from "@/api/client"
+import { api } from "@/api/client"
 import type { Book, Generation } from "@/api/types"
 import { BookPanel } from "@/components/BookPanel"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { Markdown } from "@/components/Markdown"
 import { StageProgress } from "@/components/StageProgress"
 import { preambleOf } from "@/lib/bookText"
@@ -34,7 +35,7 @@ export function ScenarioScreen() {
   // stored books were read back. Labelling it "from cache" would imply the model ran.
   const [storedAt, setStoredAt] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>("idle")
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [elapsed, setElapsed] = useState(0)
   const [estimate, setEstimate] = useState<number | null>(null)
   const [stage, setStage] = useState(0)
@@ -117,7 +118,7 @@ export function ScenarioScreen() {
       })
       .catch((e: unknown) => {
         if (cancelled) return
-        setError(e instanceof ApiError ? e.message : String(e))
+        setError(e)
         setPhase("error")
       })
     return () => {
@@ -138,7 +139,7 @@ export function ScenarioScreen() {
       setGeneration(result)
       setPhase("done")
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e)
       setPhase("error")
     }
   }, [scenario])
@@ -193,16 +194,7 @@ export function ScenarioScreen() {
           </Card>
         )}
 
-        {error && (
-          <Card className="border-red-500/40">
-            <CardHeader>
-              <CardTitle className="text-red-300">The run failed</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-parchment/70">{error}</p>
-            </CardContent>
-          </Card>
-        )}
+        {error != null && <ErrorNotice error={error} onRetry={generate} />}
 
         {generation && (
           <Card>

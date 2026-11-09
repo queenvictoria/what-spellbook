@@ -67,8 +67,10 @@ backend ever needs a terminal or a request object, the other surfaces cannot reu
 (`Generation`, `Book`, `Answer`); it never prints, prompts or exits. The REPL renders
 those objects; the API serialises them; the UI draws them. Errors are typed
 (`NoEligibleSpells`, `llm.EmptyCompletion`, `llm.LLMUnavailable`,
-`CharacterNotFound`, `RulesUnavailable`, `IndexUnavailable`) so each surface decides how
-to report them - which is why the library no longer calls `sys.exit`.
+`llm.EmbeddingUnavailable`, `CharacterNotFound`, `RulesUnavailable`, `IndexUnavailable`) so
+each surface decides how to report them - which is why the library no longer calls
+`sys.exit`. The *message* is written once, in `llm.explain_failure`, so the terminal and
+the browser cannot disagree about the same failure.
 
 **Import the real modules.** There is no compatibility shim any more: use
 `from backend.libs import service, characters` and run with `python -m backend`.
@@ -1571,6 +1573,11 @@ Two consequences worth keeping:
   for the subset actually emitted (headings, bold, italics, lists) rather than pulling in
   a general parser, because a general parser needs `dangerouslySetInnerHTML` and would put
   raw model output into the page as HTML.
+- **A failure is chrome too, and it has one shape.** `ErrorNotice` is the only place a
+  failure is rendered, so a stopped Ollama looks the same on the scenario screen, in a
+  book, in the drawer and in the search panel. The alternative - a red `<p>` per screen -
+  is how the same 503 came to be reported four different ways, one of which was a bare
+  `e.message` with no indication that retrying was the point.
 
 ### A named document should be a link, and the name has to be the one the prose uses
 
@@ -1858,6 +1865,65 @@ of hidden reasoning and return an **empty** `response` with `done_reason: "stop"
 HTTP 200. The CLI therefore treats an empty completion as a failure and says so; a
 silent empty print looks like a successful run. `_extract_text()` reads `content`,
 which is empty, so an explicit check is required.
+
+### A dead Ollama must not take the backend with it
+
+The failure that started this: Ollama stopped, and a raw `ConnectionError` from
+`langchain_chroma` → `langchain_ollama` → `ollama._client` came out of `add_texts` as an
+unhandled 500. Two separate problems, and fixing only one leaves the feature dead.
+
+**The index rebuild deleted the index it could not replace.** `build_index` called
+`reset_db` (which `shutil.rmtree`s the directory) and *then* embedded, so a stopped Ollama
+left the user with no index at all - the failure destroyed the thing it was trying to
+improve. Embedding now runs first, so a transport failure aborts with the previous index
+still on disk. `langchain_chroma` has no `from_embeddings`, so the vectors are computed
+once and replayed through a small `_Precomputed` wrapper passed as the embedding function;
+`Chroma.add_texts` would otherwise embed the whole corpus a second time.
+
+**The message has to name the fix, not the symptom.** Ollama's own text is *"Failed to
+connect to Ollama. Please check that Ollama is downloaded, running and accessible.
+https://ollama.com/download"* - true, and useless in this project, where the answer is one
+command. `llm.explain_failure` turns a backend exception into a sentence naming the
+address, the command and the model, and it lives at the **library boundary** so the CLI and
+the API cannot drift into telling the user two different things. The route handlers pass
+the typed error to `_model_failure` and let the library's wording through.
+
+Four things that shaped it:
+
+- **`EmbeddingUnavailable` subclasses `LLMUnavailable`.** Embeddings go to the same Ollama
+  as the reasoning model, so the same failure arrives by a different stack - from
+  `retrieval`/`search`/`indexing` rather than from `invoke`. A *sibling* type would have
+  had to be added to five route handlers and four CLI commands or fall through as a 500;
+  a subclass is handled everywhere the model already is.
+- **The type alone is not enough to recognise a transport failure.** Ollama raises a
+  builtin `ConnectionError`, but httpx and urllib3 surface their own spellings through
+  LangChain, so `names_connection_failure` checks the message too. The distinction is
+  load-bearing: a connection failure has one obvious fix and every other failure does not.
+- **Advice that cannot apply is worse than none.** A remote provider is not something the
+  user can start, so `explain_failure(local=False)` says to check the key instead of
+  suggesting `ollama serve`. `is_local` decides by client *type name*, not by re-reading
+  the environment, which may have changed since the client was built.
+- **A 502 and a 503 mean different things to a caller.** 502 is "the model answered with
+  nothing" (a thinking model spent its budget on hidden reasoning) - retrying or a smaller
+  scenario may work. 503 is "the model could not be reached at all" - retrying is pointless
+  until someone starts the server. Collapsing them throws away the only thing the caller
+  acts on.
+
+**The front end must show the message, and only offer a retry that could work.** The
+screens printed `e.message` as a red line, which is fine for "no such run" and useless for
+the failure that actually happens. `ErrorNotice` renders a headline naming the *kind* of
+failure, the backend's message, and a Retry button only when `ApiError.isPermanent` says
+retrying is honest. `lib/errors.ts` does the classification and deliberately does **not**
+rewrite the message - the backend already wrote it for a person.
+
+Two traps in wiring it up:
+
+- **A hook that carries `error.message` throws away the status.** `useSpell`, `useSrdSection`,
+  `useClassContext` and `useSrdDocuments` all stored a string, so the notice could not tell
+  a 404 from a 503 and offered a Retry for both. They now carry the error object.
+- **`{error && <Notice/>}` does not narrow `unknown`.** TypeScript rejects it as a
+  `ReactNode`, so the guard is `{error != null && …}`. The same applies to a `useState`
+  holding the error rather than its message.
 
 ### Prompt size is a real limit
 

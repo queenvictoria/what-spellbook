@@ -389,25 +389,69 @@ def test_an_empty_srd_context_renders_as_nothing():
     assert retrieval.format_srd_context(None) == ""
 
 
-def test_building_over_a_live_index_does_not_double_it(tmp_path, monkeypatch):
-    """``Chroma.from_documents`` *adds* to an existing collection rather than replacing it.
+class _StubEmbeddings:
+    """An embeddings client that returns one vector per text, without a server."""
 
-    ``ensure_db`` resets first, but a direct ``build_index`` call does not - and a doubled
-    index is invisible until a count looks wrong. This was found live: calling
-    ``build_index`` twice reported 7302 chunks for a 3651-chunk corpus.
-    """
-    reset = []
-    monkeypatch.setattr(indexing, "reset_db", lambda db_dir: reset.append(db_dir))
-    monkeypatch.setattr(indexing, "get_embeddings", lambda: None)
-    monkeypatch.setattr(indexing.Chroma, "from_documents",
-                        classmethod(lambda cls, *a, **k: "db"))
+    def __init__(self):
+        self.calls = 0
 
+    def embed_documents(self, texts):
+        self.calls += 1
+        return [[0.0, 0.0] for _ in texts]
+
+    def embed_query(self, text):
+        return [0.0, 0.0]
+
+
+def _spell_corpus(tmp_path, count=11):
     docs = tmp_path / "spells"
     docs.mkdir()
-    for index in range(11):
+    for index in range(count):
         (docs / f"Spell {index}.md").write_text(
             f"# Spell {index}\n\n**Casting Time:** Action\n", encoding="utf-8"
         )
+    return docs
 
+
+def test_building_over_a_live_index_does_not_double_it(tmp_path, monkeypatch):
+    """A rebuild must replace the collection, not add to it.
+
+    ``Chroma.from_documents`` *adds* to an existing collection rather than replacing it, so
+    building over a live index doubled every row - invisible until a count looked wrong.
+    This was found live: calling ``build_index`` twice reported 7302 chunks for a
+    3651-chunk corpus. ``build_index`` now resets the directory and adds the rows itself.
+    """
+    reset = []
+    monkeypatch.setattr(indexing, "reset_db", lambda db_dir: reset.append(db_dir))
+    monkeypatch.setattr(indexing, "get_embeddings", _StubEmbeddings)
+    monkeypatch.setattr(indexing.Chroma, "add_texts",
+                        lambda self, *a, **k: None)
+
+    docs = _spell_corpus(tmp_path)
     indexing.build_index(docs, str(tmp_path / "db"), srd_path=tmp_path / "no-srd")
     assert reset == [str(tmp_path / "db")]
+
+
+def test_a_failed_embedding_leaves_the_old_index_alone(tmp_path, monkeypatch):
+    """The rebuild must not delete the index it cannot replace.
+
+    The reset deletes the directory, so embedding *after* it meant a stopped Ollama left the
+    user with no index at all - the failure destroyed the thing it was trying to improve.
+    Embedding first turns that into a clean abort.
+    """
+    reset = []
+
+    class _DeadEmbeddings:
+        def embed_documents(self, texts):
+            raise ConnectionError("Failed to connect to Ollama.")
+
+    monkeypatch.setattr(indexing, "reset_db", lambda db_dir: reset.append(db_dir))
+    monkeypatch.setattr(indexing, "get_embeddings", _DeadEmbeddings)
+
+    docs = _spell_corpus(tmp_path)
+    with pytest.raises(indexing.IndexUnavailable) as caught:
+        indexing.build_index(docs, str(tmp_path / "db"), srd_path=tmp_path / "no-srd")
+
+    assert reset == [], "the old index was deleted before the new one could be built"
+    # The message has to be actionable: this is what the API returns as its 503 detail.
+    assert "ollama serve" in str(caught.value)

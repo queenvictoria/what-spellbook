@@ -23,7 +23,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-from . import config, rules, spells, srd
+from . import config, llm, rules, spells, srd
 
 # The embeddings client is built lazily so importing this module never talks to Ollama.
 _embeddings = None
@@ -167,16 +167,57 @@ def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None):
     # ``Chroma.from_documents`` *adds* to an existing collection rather than replacing it,
     # so building over a live index would double every row. ``ensure_db`` resets first, but
     # a direct call does not - and a doubled index is invisible until a count looks wrong.
+    #
+    # The embeddings run *before* the reset, for a reason that cost a user their index: the
+    # reset deletes the directory, so an Ollama that is down used to leave a failed rebuild
+    # with nothing to fall back to. Embedding first means a transport failure aborts with
+    # the previous index still on disk.
+    embeddings = get_embeddings()
+    texts = [doc.page_content for doc in final_docs]
+    try:
+        vectors = embeddings.embed_documents(texts)
+    except Exception as e:
+        failure = llm.embedding_failure(e)
+        if failure is not None:
+            raise IndexUnavailable(str(failure)) from e
+        raise IndexUnavailable(f"The spell index could not be embedded: {e}") from e
+
     reset_db(db_dir)
 
-    db = Chroma.from_documents(
-        final_docs,
-        get_embeddings(),
+    db = Chroma(
+        embedding_function=_Precomputed(embeddings, vectors),
         persist_directory=str(config.resolve(db_dir)),
         collection_metadata={"index_version": config.INDEX_VERSION, "hnsw:space": "l2"},
     )
+    db.add_texts(
+        texts,
+        metadatas=[doc.metadata for doc in final_docs],
+        ids=[f"{config.INDEX_VERSION}-{index}" for index in range(len(texts))],
+    )
     logging.info(f"Rebuild Complete: Indexed {len(final_docs)} total text chunks into ChromaDB.")
     return db
+
+
+class _Precomputed:
+    """An ``Embeddings`` wrapper that replays vectors already computed once.
+
+    ``Chroma.add_texts`` embeds whatever it is given, which would embed the whole corpus a
+    second time. This hands back the vectors from the first pass, in the same order, so the
+    expensive call happens once and can fail before the old index is deleted.
+    """
+
+    def __init__(self, embeddings, vectors):
+        self._embeddings = embeddings
+        self._vectors = list(vectors)
+        self._next = 0
+
+    def embed_documents(self, texts):
+        start = self._next
+        self._next += len(texts)
+        return self._vectors[start:self._next]
+
+    def embed_query(self, text):
+        return self._embeddings.embed_query(text)
 
 
 def _srd_documents(srd_path: Path | None = None) -> list[Document]:

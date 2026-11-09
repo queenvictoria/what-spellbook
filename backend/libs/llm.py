@@ -17,6 +17,89 @@ from . import config
 # (reasoning reached 1635 tokens on one call at a higher cap).
 FAST_MAX_TOKENS = 1024
 
+# Where Ollama listens when OLLAMA_HOST is unset. Both the reasoning model and the
+# embeddings model are reached here, so a failure to connect means the whole local stack
+# is down rather than one model.
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+
+
+def ollama_host() -> str:
+    """The Ollama address, so an error can name what it tried to reach."""
+    import os
+
+    return (os.getenv("OLLAMA_HOST") or "").strip() or DEFAULT_OLLAMA_HOST
+
+
+def _text_of(error) -> str:
+    return f"{type(error).__name__}: {error}".lower()
+
+
+def names_connection_failure(error) -> bool:
+    """Whether ``error`` is the transport failing, rather than the server answering badly.
+
+    Ollama's client raises a builtin ``ConnectionError`` when nothing is listening, but
+    httpx and urllib3 surface their own spellings through LangChain, so the message is
+    checked too. The distinction matters: a connection failure has one obvious fix (start
+    Ollama) and every other failure does not.
+    """
+    if isinstance(error, ConnectionError):
+        return True
+    return any(needle in _text_of(error) for needle in (
+        "failed to connect",
+        "connection refused",
+        "connecterror",
+        "connection error",
+        "max retries exceeded",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "nodename nor servname",
+    ))
+
+
+def names_missing_model(error) -> bool:
+    """Whether Ollama answered that the requested model is not present."""
+    text = _text_of(error)
+    return "not found" in text or "no such model" in text or "pull model" in text
+
+
+def explain_failure(error, *, model: str | None = None, purpose: str = "the model",
+                    local: bool = True) -> str:
+    """Turn a backend exception into a sentence a person can act on.
+
+    The raw text from the Ollama client is ``Failed to connect to Ollama. Please check that
+    Ollama is downloaded, running and accessible. https://ollama.com/download``, which says
+    what is wrong but not what to do about it in *this* project - and it is buried behind
+    an HTTP 503 the UI only shows as a red line. Naming the address, the command and the
+    model is the difference between a bug report and a fix.
+    """
+    if local and names_connection_failure(error):
+        message = (
+            f"Ollama is not reachable at {ollama_host()}, so {purpose} could not run. "
+            "Start it with: ollama serve"
+        )
+        if model:
+            message += f" - and make sure the model is installed with: ollama pull {model}"
+        return message + ". Then retry."
+    if local and names_missing_model(error) and model:
+        return (
+            f"Ollama is running but does not have the model '{model}'. Install it with: "
+            f"ollama pull {model} - then retry."
+        )
+    if not local and names_connection_failure(error):
+        # A remote provider is not something the user can start, so the advice is about the
+        # two things they *can* change: the key and the network.
+        named = f"'{model}'" if model else "the model"
+        return (
+            f"Could not reach {named} at the configured provider. Check that "
+            "OPENROUTER_API_KEY is set and valid, and that the network allows the request."
+        )
+    if isinstance(error, TimeoutError) or "timed out" in _text_of(error):
+        return (
+            f"{purpose.capitalize()} timed out. A local model can be slow to load into "
+            "memory on first use; retry in a moment."
+        )
+    return f"Could not reach {purpose}: {error}"
+
 
 def build_llm():
     """Build the reasoning client chosen by ``config.select_model()``.
@@ -119,12 +202,52 @@ class LLMUnavailable(RuntimeError):
     """Raised when the backend call itself fails (network, auth, transport)."""
 
 
+class EmbeddingUnavailable(LLMUnavailable):
+    """Raised when the *embedding* backend fails, which is the same Ollama the model uses.
+
+    A subclass rather than a sibling so every surface that already handles
+    ``LLMUnavailable`` handles this too - the CLI's commands and the API's routes all need
+    the same "the local stack is down, retry when it is back" treatment, and a second type
+    would have to be added to each of them or it would fall through as an unhandled 500.
+    """
+
+
+def is_local(llm) -> bool:
+    """Whether this client talks to a local Ollama rather than a remote provider.
+
+    The advice differs: a local failure is fixed with ``ollama serve``, a remote one is a
+    key, quota or network problem. Decided by client type rather than by re-reading the
+    environment, which could have changed since the client was built.
+    """
+    return type(llm).__name__.lower().startswith("ollama")
+
+
+def embedding_failure(error) -> "EmbeddingUnavailable | None":
+    """Translate a vector store's embedding exception, or return ``None``.
+
+    Embeddings go to the same Ollama as the reasoning model, so the same transport failure
+    appears here with a different stack: the store calls ``embed_documents`` while adding
+    or ``embed_query`` while searching, and the ``ConnectionError`` surfaces from
+    ``langchain_chroma`` rather than from ``invoke``. Callers in ``indexing``, ``search``
+    and ``retrieval`` all need it typed, and none of them should each invent a message.
+    """
+    if not names_connection_failure(error) and not isinstance(error, TimeoutError):
+        return None
+    return EmbeddingUnavailable(
+        explain_failure(error, model=config.EMBEDDING_MODEL,
+                        purpose="the embeddings model")
+    )
+
+
 def invoke(llm, prompt: str) -> str:
     """Call the backend once, raising ``EmptyCompletion`` on a blank answer."""
     try:
         text = extract_text(llm.invoke(prompt))
     except Exception as e:
-        raise LLMUnavailable(str(e)) from e
+        raise LLMUnavailable(
+            explain_failure(e, model=model_name(llm), purpose="the model",
+                            local=is_local(llm))
+        ) from e
     if not text.strip():
         raise EmptyCompletion(
             "The model returned an empty response. This usually means it used its "

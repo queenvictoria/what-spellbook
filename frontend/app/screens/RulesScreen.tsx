@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from "react"
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom"
-import { BookOpenIcon, Loader2 } from "lucide-react"
+import { BookOpenIcon, Loader2Icon, WandSparklesIcon } from "lucide-react"
 
 import { api, ApiError } from "@/api/client"
 import type { Answer, SearchResult, Spell } from "@/api/types"
 import { AskBox } from "@/components/AskBox"
 import { ClassContextCard } from "@/components/ClassContextCard"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { IndexHitsPanel } from "@/components/IndexHits"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
@@ -13,14 +14,13 @@ import { SpellCard } from "@/components/SpellCard"
 import { SrdCard } from "@/components/SrdCard"
 import { RulePathLink } from "@/components/RulePathLink"
 import { SrdTree } from "@/components/SrdTree"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { useDebouncedCallback } from "@/lib/useDebounced"
 import { TYPING_DEBOUNCE_MS } from "@/lib/timing"
 import { useSrdDocuments, useSrdSection, srdHref } from "@/lib/srd"
 import { useAnchorScroll } from "@/lib/ruleDrawer"
 import { useClassContext } from "@/lib/classContext"
-import { filterDocuments, firstMatch, matchList } from "@/lib/srdFilter"
+import { filterDocuments, matchList } from "@/lib/srdFilter"
 import type { SrdFilter } from "@/lib/srdFilter"
 
 /**
@@ -116,14 +116,14 @@ export function RulesScreen() {
   const navigate = useNavigate()
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [missing, setMissing] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // The conversation this screen is in. Held so a follow-up is read in context, and so
-  // the exchange can be found again on the Chats screen.
+  // the exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
   const [search, setSearch] = useState<SearchResult | null>(null)
-  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchError, setSearchError] = useState<unknown>(null)
   const [searching, setSearching] = useState(false)
   // Which request each lane is currently waiting for, as plain counters rather than booleans.
   //
@@ -210,7 +210,7 @@ export function RulesScreen() {
       .catch((e: unknown) => {
         if (cancelled) return
         if (e instanceof ApiError && e.status === 404) setMissing(e.message)
-        else setError(e instanceof ApiError ? e.message : String(e))
+        else setError(e)
       })
     return () => {
       cancelled = true
@@ -293,7 +293,7 @@ export function RulesScreen() {
     } catch (e) {
       if (run !== latestSearch.current) return
       setSearch(null)
-      setSearchError(e instanceof ApiError ? e.message : String(e))
+      setSearchError(e)
     } finally {
       if (run === latestSearch.current) setSearching(false)
     }
@@ -326,7 +326,7 @@ export function RulesScreen() {
       if (e instanceof ApiError && e.status === 404) {
         setMissing(e.message)
       } else {
-        setError(e instanceof ApiError ? e.message : String(e))
+        setError(e)
       }
     } finally {
       if (run === latestAsk.current) setLoading(false)
@@ -406,14 +406,6 @@ export function RulesScreen() {
     look(asked)
   }
 
-  /** Jump to the first heading the filter matched, or the whole file when one did. */
-  function openFirstMatch() {
-    if (!filtered) return
-    const found = firstMatch(filtered)
-    if (!found) return
-    openSrd(found.document, found.slug || null)
-  }
-
   // Which of the three readings have something to show. A pane with nothing in it is hidden
   // rather than rendered empty, because an empty column costs a third of the width to say
   // nothing - and the lanes resolve independently, so a blank pane is the normal state for
@@ -446,7 +438,8 @@ export function RulesScreen() {
           />
           <p className="text-xs text-parchment/45">
             Every word filters the rulebook by heading and searches the rulebook
-            and the spell index. To ask a question press Enter or the Ask button.
+            and the spell index. To ask a question press Enter or the Ask
+            button.
           </p>
           <div className="flex flex-wrap gap-1">
             {EXAMPLES.map((example) => (
@@ -481,6 +474,67 @@ export function RulesScreen() {
           reads as a failure rather than as a request still in flight. */}
       {(showFilter || showSearch || showAnswer) && (
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start">
+          {/* The question, asked as it always was. Given more width than the other two: it
+              is the only reading written in sentences, and the two beside it are lists. */}
+          {showAnswer && (
+            <div className="space-y-4 lg:min-w-0 lg:flex-[1.4]">
+              {error != null && <ErrorNotice error={error} onRetry={() => look()} />}
+
+              {missing && (
+                <Card className="border-radiant-500/40">
+                  <CardHeader>
+                    <CardTitle className="text-radiant-400">
+                      Not in the SRD
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-2 text-sm text-parchment/70">
+                    <p>{missing}</p>
+                    <p className="text-xs text-parchment/45">
+                      The 2024 SRD is a subset of the 2024 rulebook. Rules that
+                      are absent here are reported as absent rather than
+                      answered from memory, because a confidently wrong rule is
+                      worse than a gap.
+                    </p>
+                  </CardContent>
+                </Card>
+              )}
+
+              {(loading || answer) && (
+                <Card>
+                  <CardHeader className="flex-row items-center justify-between gap-2">
+                    <CardTitle className="text-sm">
+                      <WandSparklesIcon className="mr-1 inline h-3.5 w-3.5 align-[-0.15em] text-parchment/60" />
+                      {answer ? answer.question : "Asking the SRD…"}
+                      {loading && (
+                        <Loader2Icon className="ml-2 inline h-3.5 w-3.5 animate-spin align-[-0.15em] text-arcane-300" />
+                      )}
+                    </CardTitle>
+                    {answer && <SourceBadge source={answer.source} />}
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {answer && (
+                      <Markdown text={answer.answer} className="prose-spell" />
+                    )}
+                    {answer && answer.citations.length > 0 && (
+                      <div className="space-y-1 border-t border-void-800 pt-2">
+                        {answer.citations.map((path) => (
+                          <p key={path} className="truncate">
+                            <RulePathLink path={path} />
+                          </p>
+                        ))}
+                      </div>
+                    )}
+                    {answer?.from_cache && (
+                      <p className="text-xs text-parchment/60">
+                        Answered from cache.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
+
           {/* The filter's own reading, which is the only one that cannot be wrong: it lists
               where the words are, and it costs no request. `matches` counts headings that
               name the words, which is deliberately not the number of rows - the rows are
@@ -489,16 +543,9 @@ export function RulesScreen() {
             <Card className="lg:min-w-0 lg:flex-1">
               <CardHeader className="flex-row items-center justify-between gap-2">
                 <CardTitle className="text-sm">
+                  <BookOpenIcon className="mr-1 inline h-3.5 w-3.5 align-[-0.15em] text-parchment/60" />
                   {filterTitle(filtered)}
                 </CardTitle>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={openFirstMatch}
-                  className="shrink-0"
-                >
-                  Open first
-                </Button>
               </CardHeader>
               <CardContent className="space-y-2 text-xs text-parchment/55">
                 {filtered.unknown.length > 0 && (
@@ -583,72 +630,6 @@ export function RulesScreen() {
               error={searchError}
             />
           )}
-
-          {/* The question, asked as it always was. Given more width than the other two: it
-              is the only reading written in sentences, and the two beside it are lists. */}
-          {showAnswer && (
-            <div className="space-y-4 lg:min-w-0 lg:flex-[1.4]">
-              {error && (
-                <Card className="border-red-500/40">
-                  <CardContent className="pt-4 text-sm text-red-300">
-                    {error}
-                  </CardContent>
-                </Card>
-              )}
-
-              {missing && (
-                <Card className="border-radiant-500/40">
-                  <CardHeader>
-                    <CardTitle className="text-radiant-400">
-                      Not in the SRD
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-2 text-sm text-parchment/70">
-                    <p>{missing}</p>
-                    <p className="text-xs text-parchment/45">
-                      The 2024 SRD is a subset of the 2024 rulebook. Rules that
-                      are absent here are reported as absent rather than
-                      answered from memory, because a confidently wrong rule is
-                      worse than a gap.
-                    </p>
-                  </CardContent>
-                </Card>
-              )}
-
-              {(loading || answer) && (
-                <Card>
-                  <CardHeader className="flex-row items-center justify-between gap-2">
-                    <CardTitle className="text-sm">
-                      {answer ? answer.question : "Asking the SRD…"}
-                      {loading && (
-                        <Loader2 className="ml-2 inline h-3.5 w-3.5 animate-spin align-[-0.15em] text-arcane-300" />
-                      )}
-                    </CardTitle>
-                    {answer && <SourceBadge source={answer.source} />}
-                  </CardHeader>
-                  <CardContent className="space-y-3">
-                    {answer && (
-                      <Markdown text={answer.answer} className="prose-spell" />
-                    )}
-                    {answer && answer.citations.length > 0 && (
-                      <div className="space-y-1 border-t border-void-800 pt-2">
-                        {answer.citations.map((path) => (
-                          <p key={path} className="truncate">
-                            <RulePathLink path={path} />
-                          </p>
-                        ))}
-                      </div>
-                    )}
-                    {answer?.from_cache && (
-                      <p className="text-xs text-parchment/60">
-                        Answered from cache.
-                      </p>
-                    )}
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          )}
         </div>
       )}
 
@@ -679,17 +660,11 @@ export function RulesScreen() {
         <>
           {classLoading && (
             <p className="flex items-center gap-2 text-sm text-parchment/60">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Loader2Icon className="h-4 w-4 animate-spin" />
               Fetching the class rules…
             </p>
           )}
-          {classError && (
-            <Card className="border-red-500/40">
-              <CardContent className="pt-4 text-sm text-red-300">
-                {classError}
-              </CardContent>
-            </Card>
-          )}
+          {classError != null && <ErrorNotice error={classError} />}
           {classDocument && <ClassContextCard document={classDocument} />}
         </>
       )}
@@ -720,11 +695,11 @@ export function RulesScreen() {
             )}
             {srdLoading && (
               <p className="flex items-center gap-2 text-sm text-parchment/60">
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2Icon className="h-4 w-4 animate-spin" />
                 Reading the rulebook…
               </p>
             )}
-            {srdError && <p className="text-sm text-red-300">{srdError}</p>}
+            {srdError != null && <ErrorNotice error={srdError} compact />}
             {documents && (
               <div className="max-h-[32rem] overflow-y-auto pr-1">
                 <SrdTree
@@ -745,17 +720,11 @@ export function RulesScreen() {
           <div className="min-w-0 flex-1">
             {sectionLoading && (
               <p className="flex items-center gap-2 text-sm text-parchment/60">
-                <Loader2 className="h-4 w-4 animate-spin" />
+                <Loader2Icon className="h-4 w-4 animate-spin" />
                 Fetching the rule…
               </p>
             )}
-            {sectionError && (
-              <Card className="border-red-500/40">
-                <CardContent className="pt-4 text-sm text-red-300">
-                  {sectionError}
-                </CardContent>
-              </Card>
-            )}
+            {sectionError != null && <ErrorNotice error={sectionError} />}
             {section && <SrdCard section={section} documents={documents} />}
           </div>
         </CardContent>

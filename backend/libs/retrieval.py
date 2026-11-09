@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import logging
 
-from . import characters, config, spells
+from . import characters, config, llm, spells
 
 # --- RETRIEVAL ---
 def dedupe_by_spell(documents):
@@ -60,10 +60,27 @@ def retrieve(db, query: str, where=None, k: int = config.RETRIEVAL_K):
     Minimal test doubles implement only ``as_retriever()``, so a missing
     ``similarity_search`` (AttributeError) falls back to the retriever path, as does a
     store that rejects the ``filter`` keyword (TypeError).
+
+    A store that fails *while embedding* raises ``llm.EmbeddingUnavailable`` rather than
+    the raw transport error, because a similarity search is the one stage where the
+    embeddings server is required even though the index is already on disk. The caller
+    cannot tell an empty result from a dead server otherwise.
     """
     kwargs = {"k": k}
     if where:
         kwargs["filter"] = where
+    try:
+        return _search(db, query, kwargs)
+    except llm.EmbeddingUnavailable:
+        raise
+    except Exception as e:
+        failure = llm.embedding_failure(e)
+        if failure is not None:
+            raise failure from e
+        raise
+
+
+def _search(db, query: str, kwargs: dict):
     try:
         return db.similarity_search(query, **kwargs)
     except (AttributeError, TypeError):
@@ -285,7 +302,8 @@ def gather_srd_context(db, query: str, *, limit: int = SRD_CONTEXT_SECTIONS) -> 
 
     Returns ``[]`` rather than raising when the index holds no SRD rows, because a
     recommendation must still be produced without rules grounding - it is a degradation, not
-    a failure.
+    a failure. A dead *embeddings* server is different: it also kills the ranking lane, so
+    it is re-raised instead of being reported as "no rules found".
     """
     from . import search as search_module
 
@@ -295,6 +313,8 @@ def gather_srd_context(db, query: str, *, limit: int = SRD_CONTEXT_SECTIONS) -> 
         result = search_module.search(
             db, query, mode="vector", limit=limit, doc_type=spells.DOC_TYPE_SRD,
         )
+    except llm.EmbeddingUnavailable:
+        raise
     except Exception as e:
         logging.warning(f"Could not retrieve SRD context for the scenario ({e}).")
         return []

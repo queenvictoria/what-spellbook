@@ -1,191 +1,61 @@
-import { useEffect, useState } from "react"
-import { Link } from "react-router-dom"
-import { ArrowRight, ChevronDown, ChevronRight } from "lucide-react"
+import { useSearchParams } from "react-router-dom"
 
-import { api, ApiError } from "@/api/client"
-import type { Book, RunSummary } from "@/api/types"
-import { BookPanel } from "@/components/BookPanel"
-import { formatSeconds } from "@/lib/format"
+import { HistoryConversations } from "@/screens/HistoryConversations"
+import { HistoryScenarios } from "@/screens/HistoryScenarios"
 import { cn } from "@/lib/utils"
-import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { MessageCircleIcon, WaypointsIcon } from "lucide-react"
+
+/** The two things a stored run can be: a generated scenario, or an ask/chat thread. */
+const TABS = [
+  { value: "scenarios", label: "Scenarios", icon: WaypointsIcon },
+  { value: "conversations", label: "Conversations", icon: MessageCircleIcon },
+] as const
+
+type Tab = (typeof TABS)[number]["value"]
 
 /**
- * Every stored run, newest first.
+ * Everything the tool has stored, under one heading.
  *
- * Listed as runs rather than books: a book on its own is ambiguous, and the scenario is
- * what makes it meaningful. Re-opening returns the same shape the scenario screen
- * renders, so the reading experience is identical either way.
+ * Scenarios and conversations were separate top-level tabs, but they answer the same
+ * question - "what have I already done?" - and a reader looking for a past answer does
+ * not know in advance which of the two it was. They are subtabs here rather than a
+ * merged list because the two are read differently: a scenario is re-opened to rate it,
+ * a conversation to re-read an answer.
+ *
+ * The active subtab lives in the URL so it survives a reload and can be linked to.
  */
 export function HistoryScreen() {
-  const [runs, setRuns] = useState<RunSummary[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  // Which run is open lives here rather than inside each card, because the card's own
-  // width depends on it: an open run takes the full row, and a child cannot widen its
-  // parent. Only one is open at a time, which also keeps the listing scannable.
-  const [openId, setOpenId] = useState<string | null>(null)
-
-  useEffect(() => {
-    api
-      .history()
-      .then(setRuns)
-      .catch((e: unknown) =>
-        setError(e instanceof ApiError ? e.message : String(e)),
-      )
-  }, [])
-
-  if (error) {
-    return <p className="text-sm text-red-300">{error}</p>
-  }
-  if (runs === null) {
-    return <p className="text-sm text-parchment/60">Loading…</p>
-  }
-  if (runs.length === 0) {
-    return (
-      <p className="text-sm text-parchment/60">
-        Nothing has been run yet. Generate a scenario and it will appear here.
-      </p>
-    )
-  }
+  const [params, setParams] = useSearchParams()
+  const requested = params.get("tab")
+  const tab: Tab = TABS.some((item) => item.value === requested)
+    ? (requested as Tab)
+    : "scenarios"
 
   return (
-    <div className="space-y-3">
-      <h2 className="text-lg font-semibold text-parchment">Past scenarios</h2>
-      {/* Flex rather than a grid: an opened run needs to take the full width, and a
-          grid cell cannot span its own row without knowing the column count. */}
-      <div className="flex flex-wrap gap-3">
-        {runs.map((run) => (
-          <Card
-            key={run.id}
-            className={cn(
-              "w-full",
-              openId !== run.id && "sm:w-[calc(50%-0.375rem)]",
-            )}
-          >
-            <CardHeader className="flex-row items-start justify-between gap-3">
-              <CardTitle className="text-sm leading-6">
-                {run.scenario}
-              </CardTitle>
-              <Badge tone="muted">{run.book_count} books</Badge>
-            </CardHeader>
-            <CardContent className="space-y-2 text-xs text-parchment/55">
-              <div className="flex flex-wrap gap-1">
-                {run.book_names.map((name, i) => (
-                  <span key={i} className="text-parchment/70">
-                    {i > 0 && <span className="text-parchment/25"> · </span>}
-                    {name}
-                  </span>
-                ))}
-              </div>
-              <div className="flex items-center justify-between font-mono">
-                <span>{formatDate(run.created_at)}</span>
-                <span>
-                  {run.timings.total_seconds
-                    ? formatSeconds(run.timings.total_seconds)
-                    : "—"}
-                </span>
-              </div>
-              <ViewRun
-                run={run}
-                open={openId === run.id}
-                onToggle={() => setOpenId(openId === run.id ? null : run.id)}
-              />
-            </CardContent>
-          </Card>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-/**
- * Re-opens the stored run in place, so reading does not lose the listing.
- *
- * `open` is owned by the list because it drives the card's width; this component only
- * fetches the books and reports the toggle.
- *
- * The books are rendered with the same `BookPanel` the scenario screen uses, rather than
- * a read-only preview. A rating is the whole reason to come back to a past run - "how did
- * that approach actually go?" - and a history page that shows the stars but cannot set
- * them makes the user navigate away to record the answer. Reusing the panel also means
- * the two screens cannot drift apart in what they show.
- */
-function ViewRun({
-  run,
-  open,
-  onToggle,
-}: {
-  run: RunSummary
-  open: boolean
-  onToggle: () => void
-}) {
-  const [books, setBooks] = useState<Book[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-
-  async function toggle() {
-    if (open) {
-      onToggle()
-      return
-    }
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await api.run(run.id)
-      setBooks(result.books)
-      onToggle()
-    } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  return (
-    <div className="pt-1">
-      <div className="pt-1 flex gap-2 justify-between">
-        <Button variant="outline" size="sm" onClick={toggle} disabled={loading}>
-          {open ? (
-            <ChevronDown className="h-4 w-4" />
-          ) : (
-            <ChevronRight className="h-4 w-4" />
-          )}
-          {open ? "Hide books" : "Read books"}
-        </Button>
-        <Link
-          to={`/scenario?scenario=${encodeURIComponent(run.scenario)}&run=${encodeURIComponent(run.id)}`}
-          className="inline-flex items-center justify-center gap-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-arcane-400 disabled:pointer-events-none disabled:opacity-50 border border-void-700 bg-transparent hover:bg-void-800 h-8 px-3 text-xs"
-        >
-          Open in the scenario screen
-          <ArrowRight className="h-4 w-4" />
-        </Link>
-        {error && <p className="pt-1 text-red-300">{error}</p>}
-      </div>
-      {open && (
-        <div className="mt-3 space-y-3 border-t border-void-800 pt-3">
-          {books.map((book) => (
-            <BookPanel
-              key={book.index}
-              book={book}
-              scenario={run.scenario}
-              runId={run.id}
-            />
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-semibold text-parchment">History</h2>
+        <div className="flex gap-1">
+          {TABS.map((item) => (
+            <button
+              key={item.value}
+              onClick={() => setParams({ tab: item.value }, { replace: true })}
+              className={cn(
+                "rounded-md px-3 py-1.5 text-sm transition-colors",
+                "flex gap-1 items-center justify-center",
+                tab === item.value
+                  ? "bg-void-800 text-parchment"
+                  : "text-parchment/60 hover:text-parchment",
+              )}
+            >
+              <item.icon className="h-4 w-4" />
+              <span className="ml-2">{item.label}</span>
+            </button>
           ))}
         </div>
-      )}
+      </div>
+
+      {tab === "scenarios" ? <HistoryScenarios /> : <HistoryConversations />}
     </div>
   )
-}
-
-function formatDate(value: string | null) {
-  if (!value) return "unknown"
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  })
 }

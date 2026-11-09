@@ -2,6 +2,7 @@ import { useMemo, useState } from "react"
 import type { ReactNode } from "react"
 import { Search, X } from "lucide-react"
 
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { SpellCard } from "@/components/SpellCard"
 import {
   Drawer,
@@ -159,7 +160,7 @@ function SpellSearch() {
 function SpellBody({ name }: { name: string }) {
   const { spell, missing, error } = useSpell(name)
 
-  if (error) return <p className="text-sm text-red-300">{error}</p>
+  if (error) return <ErrorNotice error={error} compact />
 
   if (missing) {
     return (

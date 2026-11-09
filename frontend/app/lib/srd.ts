@@ -6,7 +6,7 @@
  */
 import { useEffect, useState } from 'react'
 
-import { api, ApiError } from '@/api/client'
+import { api } from '@/api/client'
 import type { SrdDocument, SrdHeading, SrdSection } from '@/api/types'
 
 /**
@@ -106,7 +106,7 @@ export function documentSections(document: SrdDocument): SrdHeading[] {
  */
 export function useSrdDocuments() {
   const [documents, setDocuments] = useState<SrdDocument[] | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
 
   useEffect(() => {
     let cancelled = false
@@ -116,7 +116,7 @@ export function useSrdDocuments() {
         if (!cancelled) setDocuments(found)
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : String(e))
+        if (!cancelled) setError(e)
       })
     return () => {
       cancelled = true
@@ -151,7 +151,7 @@ export function useSrdSection(document: string | null, slug: string | null) {
         setResult({
           key: `${document}:${slug ?? ''}`,
           kind: 'error',
-          message: e instanceof ApiError ? e.message : String(e),
+          error: e,
         })
       })
     return () => {
@@ -162,11 +162,11 @@ export function useSrdSection(document: string | null, slug: string | null) {
   const current = result?.key === key ? result : null
   return {
     section: current?.kind === 'ok' ? current.section : null,
-    error: current?.kind === 'error' ? current.message : null,
+    error: current?.kind === 'error' ? current.error : null,
     loading: key !== null && current === null,
   }
 }
 
 type Result =
   | { key: string; kind: 'ok'; section: SrdSection }
-  | { key: string; kind: 'error'; message: string }
+  | { key: string; kind: 'error'; error: unknown }

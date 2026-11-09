@@ -1,7 +1,8 @@
 import { useRef } from "react"
-import { Loader2, Search } from "lucide-react"
+import { GraphStarIcon, Loader2Icon } from "lucide-react"
 
 import type { SearchHit, SearchResult } from "@/api/types"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { MatchDial } from "@/components/MatchDial"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { shouldDeferToBrowser, useOpenSpell } from "@/lib/spellDrawer"
@@ -66,8 +67,8 @@ export function IndexHitsCard({ result }: { result: SearchResult }) {
       )}
 
       <p className="text-[0.7rem] text-parchment/40">
-        A similarity search over chunk bodies, not the recommender. It can name a
-        spell this character could never prepare, on purpose.
+        A similarity search over chunk bodies, not the recommender. It can name
+        a spell this character could never prepare, on purpose.
       </p>
     </div>
   )
@@ -82,7 +83,7 @@ export function IndexHitsPanel({
 }: {
   result: SearchResult | null
   searching: boolean
-  error: string | null
+  error: unknown
   /** Layout classes for the caller's own column or drawer width. */
   className?: string
 }) {
@@ -90,15 +91,15 @@ export function IndexHitsPanel({
     <Card className={className}>
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-sm">
-          <Search className="h-4 w-4" />
+          <GraphStarIcon className="h-4 w-4" />
           In the index
           {searching && (
-            <Loader2 className="h-3.5 w-3.5 animate-spin text-arcane-300" />
+            <Loader2Icon className="h-3.5 w-3.5 animate-spin text-arcane-300" />
           )}
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
-        {error && <p className="text-sm text-red-300">{error}</p>}
+        {error != null && <ErrorNotice error={error} compact />}
         {result && <IndexHitsCard result={result} />}
       </CardContent>
     </Card>
@@ -161,7 +162,11 @@ function IndexHitRow({ hit }: { hit: SearchHit }) {
           event.preventDefault()
           if (isRule) {
             if (hit.document)
-              openSrd({ kind: "srd", document: hit.document, slug: hit.slug || null })
+              openSrd({
+                kind: "srd",
+                document: hit.document,
+                slug: hit.slug || null,
+              })
           } else {
             openSpell(hit.name)
           }

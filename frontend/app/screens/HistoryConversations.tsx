@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react"
 import { ChevronDown, ChevronRight, MessageSquare } from "lucide-react"
 
-import { api, ApiError } from "@/api/client"
+import { api } from "@/api/client"
 import type { Conversation, ConversationKind, ConversationSummary } from "@/api/types"
 import { AttachmentChips } from "@/components/AttachmentChips"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
 import { RulePathLink } from "@/components/RulePathLink"
@@ -28,7 +29,7 @@ const KINDS: { value: ConversationKind; label: string }[] = [
  * the whole exchange, with each answer's provenance, so a past answer can be re-read
  * rather than asked again.
  */
-export function ChatsScreen() {
+export function HistoryConversations() {
   // The listing is fetched into state keyed by the filter it was fetched for, and the
   // render reads it only when the key still matches. That keeps the effect free of
   // synchronous setState - which would cascade a second render on every filter change -
@@ -37,7 +38,7 @@ export function ChatsScreen() {
     kind: ConversationKind | null
     threads: ConversationSummary[]
   } | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [kind, setKind] = useState<ConversationKind | null>(null)
   // Which thread is open lives here rather than inside each card, because the card's own
   // width depends on it: an open thread takes the full row, and a child cannot widen its
@@ -52,7 +53,7 @@ export function ChatsScreen() {
         if (!cancelled) setLoaded({ kind, threads })
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof ApiError ? e.message : String(e))
+        if (!cancelled) setError(e)
       })
     return () => {
       cancelled = true
@@ -62,27 +63,24 @@ export function ChatsScreen() {
   const threads = loaded && loaded.kind === kind ? loaded.threads : null
 
   if (error) {
-    return <p className="text-sm text-red-300">{error}</p>
+    return <ErrorNotice error={error} />
   }
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-semibold text-parchment">Conversations</h2>
-        <div className="flex flex-wrap gap-1">
-          <FilterButton active={kind === null} onClick={() => setKind(null)}>
-            All
+      <div className="flex flex-wrap gap-1">
+        <FilterButton active={kind === null} onClick={() => setKind(null)}>
+          All
+        </FilterButton>
+        {KINDS.map((item) => (
+          <FilterButton
+            key={item.value}
+            active={kind === item.value}
+            onClick={() => setKind(item.value)}
+          >
+            {item.label}
           </FilterButton>
-          {KINDS.map((item) => (
-            <FilterButton
-              key={item.value}
-              active={kind === item.value}
-              onClick={() => setKind(item.value)}
-            >
-              {item.label}
-            </FilterButton>
-          ))}
-        </div>
+        ))}
       </div>
 
       {threads === null && (
@@ -147,7 +145,7 @@ function ViewThread({
   onToggle: () => void
 }) {
   const [conversation, setConversation] = useState<Conversation | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(false)
 
   async function toggle() {
@@ -161,7 +159,7 @@ function ViewThread({
       setConversation(await api.conversation(thread.id))
       onToggle()
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e)
     } finally {
       setLoading(false)
     }
@@ -178,7 +176,7 @@ function ViewThread({
           )}
           {open ? "Hide turns" : "Read conversation"}
         </Button>
-        {error && <p className="pt-1 text-red-300">{error}</p>}
+        {error != null && <ErrorNotice error={error} compact className="mt-1" />}
       </div>
       {open && conversation && (
         <div className="mt-3 space-y-3 border-t border-void-800 pt-3">

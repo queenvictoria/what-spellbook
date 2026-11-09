@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useRef, useState } from "react"
 
-import { api, ApiError } from "@/api/client"
+import { api } from "@/api/client"
 import type { Answer, Character, Health } from "@/api/types"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { Markdown } from "@/components/Markdown"
 import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
 import { SelectionWatcher } from "@/components/SelectionWatcher"
@@ -33,14 +34,16 @@ export function CharacterScreen() {
   const [character, setCharacter] = useState<Character | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
   const [keys, setKeys] = useState<string[]>([])
-  const [error, setError] = useState<string | null>(null)
+  // The failure itself, not its message: the notice decides how to present it, and a
+  // retry needs the original error to know whether retrying is even sensible.
+  const [error, setError] = useState<unknown>(null)
 
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
-  const [askError, setAskError] = useState<string | null>(null)
+  const [askError, setAskError] = useState<unknown>(null)
   // The conversation this screen is in. Held so a follow-up is read in context, and so
-  // the exchange can be found again on the Chats screen.
+  // the exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
 
   // The sheet's values, and the only place a selection may come from. Scoped to the values
@@ -48,17 +51,25 @@ export function CharacterScreen() {
   // raise the drawer, and so the ask box below is outside it.
   const sheet = useRef<HTMLDListElement>(null)
 
-  useEffect(() => {
+  const load = useCallback(() => {
     Promise.all([api.character(), api.health(), api.sheetKeys()])
       .then(([sheet, status, sheetKeys]) => {
         setCharacter(sheet)
         setHealth(status)
         setKeys(sheetKeys)
       })
-      .catch((e: unknown) =>
-        setError(e instanceof ApiError ? e.message : String(e)),
-      )
+      .catch(setError)
   }, [])
+
+  useEffect(load, [load])
+
+  // Clearing the failure is the retry's own job rather than the loader's: a `setError(null)`
+  // inside the effect body is a synchronous setState during render's commit, which React
+  // warns about and which would blank the notice for a frame before the request even starts.
+  function retry() {
+    setError(null)
+    load()
+  }
 
   async function ask(text = question) {
     if (!text.trim()) return
@@ -73,13 +84,13 @@ export function CharacterScreen() {
       setAnswer(result)
       setThreadId(result.thread_id)
     } catch (e) {
-      setAskError(e instanceof ApiError ? e.message : String(e))
+      setAskError(e)
     } finally {
       setAsking(false)
     }
   }
 
-  if (error) return <p className="text-sm text-red-300">{error}</p>
+  if (error != null) return <ErrorNotice error={error} onRetry={retry} />
   if (!character) return <p className="text-sm text-parchment/60">Loading…</p>
 
   return (
@@ -133,7 +144,7 @@ export function CharacterScreen() {
                 ) : (
                   <WandSparkles className="h-4 w-4" />
                 )}
-                {asking ? "…" : "Ask"}
+                {asking ? "Asking" : "Ask"}
               </Button>
             </div>
 
@@ -154,7 +165,9 @@ export function CharacterScreen() {
               </div>
             )}
 
-            {askError && <p className="text-xs text-red-300">{askError}</p>}
+            {askError != null && (
+              <ErrorNotice error={askError} compact onRetry={() => ask()} />
+            )}
 
             {answer && (
               <div className="space-y-2 border-t border-void-800 pt-3">

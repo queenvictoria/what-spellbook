@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/drawer"
 import { AskBox } from "@/components/AskBox"
 import { AttachmentChips } from "@/components/AttachmentChips"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { IndexHitsPanel } from "@/components/IndexHits"
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
@@ -66,12 +67,12 @@ export function RulesContextDrawerProvider({
   const [stage, setStage] = useState(0)
   const [elapsed, setElapsed] = useState(0)
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [search, setSearch] = useState<SearchResult | null>(null)
   const [searching, setSearching] = useState(false)
-  const [searchError, setSearchError] = useState<string | null>(null)
+  const [searchError, setSearchError] = useState<unknown>(null)
   // The selection conversation. Held so a follow-up is read in context, and so the
-  // exchange can be found again on the Chats screen.
+  // exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
   const started = useRef(0)
   // The text the current attachments were derived from. Without it, editing the question and
@@ -143,7 +144,7 @@ export function RulesContextDrawerProvider({
     } catch (err) {
       if (run !== latestSearch.current) return
       setSearch(null)
-      setSearchError(err instanceof Error ? err.message : String(err))
+      setSearchError(err)
     } finally {
       if (run === latestSearch.current) setSearching(false)
     }
@@ -237,11 +238,7 @@ export function RulesContextDrawerProvider({
         setThreadId(result.thread_id)
       } catch (err) {
         if (run !== latestAsk.current) return
-        setError(
-          err instanceof Error
-            ? err.message
-            : "Could not reach the rules lookup.",
-        )
+        setError(err)
       } finally {
         // A superseded run must not clear the newer one's spinner.
         if (run === latestAsk.current) {
@@ -414,7 +411,7 @@ function RulesContextDrawer({
             </div>
           )}
 
-          {error && <p className="text-sm text-red-400">{error}</p>}
+          {error != null && <ErrorNotice error={error} compact onRetry={askSelection} />}
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4">

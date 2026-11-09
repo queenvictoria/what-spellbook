@@ -3,6 +3,7 @@ import type { ReactNode, RefObject } from "react"
 import { X } from "lucide-react"
 
 import { ClassContextCard } from "@/components/ClassContextCard"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { SrdCard } from "@/components/SrdCard"
 import { SrdTree } from "@/components/SrdTree"
 import {
@@ -131,12 +132,7 @@ function ClassBody({ target }: { target: RuleTarget }) {
     <div className="space-y-4">
       {loading && <p className="text-sm text-parchment/60">Fetching the rules…</p>}
 
-      {error && (
-        <div className="space-y-2 text-sm">
-          <p className="text-radiant-400">No such class context file</p>
-          <p className="text-parchment/60">{error}</p>
-        </div>
-      )}
+      {error != null && <ErrorNotice error={error} compact />}
 
       {document && <ClassContextCard document={document} />}
     </div>
@@ -180,12 +176,7 @@ function SrdBody({
         <p className="text-sm text-parchment/60">Fetching the rule…</p>
       )}
 
-      {error && (
-        <div className="space-y-2 text-sm">
-          <p className="text-radiant-400">No such rule</p>
-          <p className="text-parchment/60">{error}</p>
-        </div>
-      )}
+      {error != null && <ErrorNotice error={error} compact />}
 
       {section && <SrdCard section={section} documents={documents} />}
 

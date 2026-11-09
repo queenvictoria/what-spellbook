@@ -129,6 +129,29 @@ def test_llm_failure_is_reported_not_raised(shell, caplog, capsys):
     assert "backend down" in capsys.readouterr().out
 
 
+def test_a_dead_ollama_is_reported_with_the_command_that_fixes_it(shell, capsys):
+    """The terminal and the browser must say the same thing about the same failure.
+
+    The message is composed once, in ``llm.explain_failure``, so the REPL cannot drift into
+    a second wording - and the wording is the point: "connection refused" tells the user the
+    model is down but not that the fix is one command.
+    """
+
+    # Named like the real client: `is_local` decides the advice from the type name, so a
+    # stub called `DeadOllama` would be reported as a remote provider.
+    class OllamaLLM:
+        model = "qwen3.5:4b"
+
+        def invoke(self, prompt):
+            raise ConnectionError("Failed to connect to Ollama.")
+
+    shell.llm = OllamaLLM()
+    shell.onecmd("/scenario anything")
+    printed = capsys.readouterr().out
+    assert "ollama serve" in printed
+    assert "qwen3.5:4b" in printed
+
+
 def test_llm_failure_leaves_the_previous_answer_intact(shell, capsys):
     """A failed refine must not wipe the books already on screen."""
 

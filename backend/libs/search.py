@@ -35,7 +35,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass, field
 
-from . import spells
+from . import llm, spells
 
 MODES = ("vector", "text", "hybrid")
 DEFAULT_LIMIT = 20
@@ -435,7 +435,23 @@ def _vector_chunks(db, query: str, where: dict | None, k: int):
     Mirrors ``retrieval.retrieve``: a minimal test double implements only
     ``as_retriever()``, so a missing ``similarity_search_with_score`` falls back to the
     retriever path and the hits are returned unscored rather than not at all.
+
+    A transport failure is reported as ``llm.EmbeddingUnavailable``: the query cannot be
+    embedded, so the search cannot run and an empty result would be indistinguishable from
+    a genuine miss.
     """
+    try:
+        return _scored(db, query, where, k)
+    except llm.EmbeddingUnavailable:
+        raise
+    except Exception as e:
+        failure = llm.embedding_failure(e)
+        if failure is not None:
+            raise failure from e
+        raise
+
+
+def _scored(db, query: str, where: dict | None, k: int):
     try:
         results = db.similarity_search_with_score(query, k=k, filter=where)
     except (AttributeError, TypeError):

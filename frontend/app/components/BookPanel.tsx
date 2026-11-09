@@ -1,7 +1,15 @@
 import { useRef, useState } from "react"
-import { ChevronDown, ChevronRight, Star, MessageSquare } from "lucide-react"
+import {
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Star,
+  MessageSquare,
+  WandSparkles,
+} from "lucide-react"
 
-import { api, ApiError } from "@/api/client"
+import { api } from "@/api/client"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
 import { SelectionWatcher } from "@/components/SelectionWatcher"
 import type { Answer, Book } from "@/api/types"
@@ -41,13 +49,13 @@ export function BookPanel({
   const [expanded, setExpanded] = useState(true)
   const [rating, setRating] = useState(book.rating?.score ?? null)
   const [saving, setSaving] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
 
   const [question, setQuestion] = useState("")
   const [answer, setAnswer] = useState<Answer | null>(null)
-  const [asking, setAsking] = useState(false)
+  const [loading, setLoading] = useState(false)
   // The refinement conversation for this book. Held so a follow-up is read in context,
-  // and so the exchange can be found again on the Chats screen.
+  // and so the exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
 
   // The prose the contextual menu watches. Selection is scoped to this element, so a
@@ -73,7 +81,7 @@ export function BookPanel({
         book: String(book.index),
       })
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e)
       setRating(book.rating?.score ?? null)
     } finally {
       setSaving(false)
@@ -82,22 +90,30 @@ export function BookPanel({
 
   async function ask() {
     if (!question.trim()) return
-    setAsking(true)
+    setLoading(true)
     setError(null)
     try {
-      const result = await api.ask(scenario, question, undefined, threadId ?? undefined)
+      const result = await api.ask(
+        scenario,
+        question,
+        undefined,
+        threadId ?? undefined,
+      )
       setAnswer(result)
       setThreadId(result.thread_id)
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e)
     } finally {
-      setAsking(false)
+      setLoading(false)
     }
   }
 
   return (
     <Card>
-      <CardHeader className="flex-row items-start justify-between gap-3">
+      <CardHeader
+        id={`${runId}-book-${book.index}`}
+        className="flex-row items-start justify-between gap-3 scroll-m-14"
+      >
         <button
           className="flex items-start gap-2 text-left"
           onClick={() => setExpanded((value) => !value)}
@@ -190,13 +206,31 @@ export function BookPanel({
           <div className="border-t border-void-800 pt-3 space-y-3">
             <div className="flex gap-2">
               <Input
+                className="flex-1"
                 value={question}
                 placeholder="Ask about this scenario, e.g. what if it has fire resistance?"
                 onChange={(e) => setQuestion(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && ask()}
               />
-              <Button variant="secondary" onClick={ask} disabled={asking}>
-                {asking ? "…" : "Ask"}
+              <Button
+                variant="secondary"
+                onClick={ask}
+                disabled={loading}
+                className={cn(
+                  question
+                    ? "bg-verdant-500 hover:bg-verdant-300"
+                    : "bg-verdant-500/50 ",
+                  "text-void-900 rounded-full",
+                )}
+              >
+                {loading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <WandSparkles className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline">
+                  {loading ? "…" : "Ask"}
+                </span>
               </Button>
             </div>
             {answer && (
@@ -209,13 +243,13 @@ export function BookPanel({
             <div className="flex items-center gap-2 text-sm text-parchment/60">
               <MessageSquare className="h-4 w-4" />
               <span>
-                Or select text in the book above — the index search opens on
-                its own, and you can ask about it from there
+                Or select text in the book above — the index search opens on its
+                own, and you can ask about it from there
               </span>
             </div>
           </div>
 
-          {error && <p className="text-xs text-red-300">{error}</p>}
+          {error != null && <ErrorNotice error={error} compact onRetry={ask} />}
 
           <OutcomeRow book={book} runId={runId} />
         </CardContent>

@@ -41,11 +41,7 @@ export function useSpell(name: string | null) {
         if (e instanceof ApiError && e.status === 404) {
           setResult({ name, kind: 'missing', message: e.message })
         } else {
-          setResult({
-            name,
-            kind: 'error',
-            message: e instanceof ApiError ? e.message : String(e),
-          })
+          setResult({ name, kind: 'error', error: e })
         }
       })
     return () => {
@@ -57,7 +53,7 @@ export function useSpell(name: string | null) {
   return {
     spell: current?.kind === 'ok' ? current.spell : null,
     missing: current?.kind === 'missing' ? current.message : null,
-    error: current?.kind === 'error' ? current.message : null,
+    error: current?.kind === 'error' ? current.error : null,
     loading: name !== null && current === null,
   }
 }
@@ -65,4 +61,4 @@ export function useSpell(name: string | null) {
 type Result =
   | { name: string; kind: 'ok'; spell: Spell }
   | { name: string; kind: 'missing'; message: string }
-  | { name: string; kind: 'error'; message: string }
+  | { name: string; kind: 'error'; error: unknown }

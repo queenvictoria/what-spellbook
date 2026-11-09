@@ -41,11 +41,11 @@ export interface RulesContextValue {
   explore: (text: string, context?: string, documents?: string[]) => void
   loading: boolean
   answer: Answer | null
-  error: string | null
+  error: unknown
   /** The vector search the selection produced. Independent of the answer's own state. */
   search: SearchResult | null
   searching: boolean
-  searchError: string | null
+  searchError: unknown
   /** The documents the next question will carry, by name. */
   attachments: string[]
   removeAttachment: (name: string) => void

@@ -1,4 +1,4 @@
-# What Spellbook - front end
+# What Loadout - front end
 
 The browser UI for the spell recommender. React + Vite + TypeScript + Tailwind v4 with
 shadcn-style components.
@@ -29,11 +29,11 @@ API_PORT=8100 FRONTEND_PORT=5273 uvicorn backend.api.main:get_app --factory --po
 
 ## Scripts
 
-| Command | Does |
-| --- | --- |
-| `npm run dev` | Dev server with HMR |
+| Command         | Does                            |
+| --------------- | ------------------------------- |
+| `npm run dev`   | Dev server with HMR             |
 | `npm run build` | Typecheck (`tsc -b`) then build |
-| `npm run lint` | ESLint |
+| `npm run lint`  | ESLint                          |
 
 ## Layout
 

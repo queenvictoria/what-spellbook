@@ -135,6 +135,18 @@ class SpellbookShell(cmd.Cmd):
             if phase in timing.PHASE_LABELS
         }
 
+    def _report_model_failure(self, error, *, empty_hint: str | None = None):
+        """Print a model failure the way the API reports it.
+
+        The message comes from ``llm.explain_failure``, which names the address, the command
+        and the model - so the terminal and the browser say the same thing about the same
+        failure. Composing a second wording here is how the two surfaces start disagreeing.
+        """
+        logging.error(f"LLM request failed: {error}")
+        print(str(error))
+        if empty_hint:
+            print(empty_hint)
+
     def _log_timing_summary(self):
         """Log how long this run took, and the typical profile across all runs."""
         measured = self.progress.report()
@@ -207,20 +219,17 @@ class SpellbookShell(cmd.Cmd):
         except service.NoEligibleSpells as e:
             print(str(e))
             return
-        except llm.EmptyCompletion:
-            logging.error(
-                "The model returned an empty response. This usually means it used its "
-                "entire token budget on internal reasoning, or the prompt exceeded the "
-                "model's context window."
-            )
-            print(
-                "The model returned an empty response. Try again, shorten the scenario, "
-                "or use a larger model (OPENROUTER_API_KEY selects the OpenRouter backend)."
+        except llm.EmptyCompletion as e:
+            self._report_model_failure(
+                e,
+                empty_hint=(
+                    "Try again, shorten the scenario, or use a larger model "
+                    "(OPENROUTER_API_KEY selects the OpenRouter backend)."
+                ),
             )
             return
         except llm.LLMUnavailable as e:
-            logging.error(f"LLM request failed: {e}")
-            print(f"Request to the model failed: {e}")
+            self._report_model_failure(e)
             return
 
         self._log_timing_summary()
@@ -234,12 +243,11 @@ class SpellbookShell(cmd.Cmd):
         except ValueError as e:
             logging.error(str(e))
             return
-        except llm.EmptyCompletion:
-            logging.error("The model returned an empty response.")
+        except llm.EmptyCompletion as e:
+            self._report_model_failure(e)
             return
         except llm.LLMUnavailable as e:
-            logging.error(f"LLM request failed: {e}")
-            print(f"Request to the model failed: {e}")
+            self._report_model_failure(e)
             return
 
         self.last = generation
@@ -463,12 +471,11 @@ class SpellbookShell(cmd.Cmd):
         except service.CharacterNotLoaded as e:
             logging.error(str(e))
             return
-        except llm.EmptyCompletion:
-            logging.error("The model returned an empty response.")
+        except llm.EmptyCompletion as e:
+            self._report_model_failure(e)
             return
         except llm.LLMUnavailable as e:
-            logging.error(f"LLM request failed: {e}")
-            print(f"Request to the model failed: {e}")
+            self._report_model_failure(e)
             return
 
         self._show_answer(answer)
@@ -489,12 +496,11 @@ class SpellbookShell(cmd.Cmd):
             logging.error(str(e))
             print(str(e))
             return
-        except llm.EmptyCompletion:
-            logging.error("The model returned an empty response.")
+        except llm.EmptyCompletion as e:
+            self._report_model_failure(e)
             return
         except llm.LLMUnavailable as e:
-            logging.error(f"LLM request failed: {e}")
-            print(f"Request to the model failed: {e}")
+            self._report_model_failure(e)
             return
 
         self._show_answer(answer)

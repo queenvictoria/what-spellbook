@@ -17,10 +17,16 @@ Error                        Status  Meaning
 ``NoEligibleSpells``         422     The character's rules allow no book picks
 ``llm.EmptyCompletion``      502     The model returned nothing
 ``llm.LLMUnavailable``       503     The model could not be reached
+``llm.EmbeddingUnavailable`` 503     The embedding server could not be reached
 ===========================  ======  ============================================
 
 The distinction that matters most: 4xx means "your request cannot work", 5xx means "the
 server could not do it just now". Retrying a 422 is pointless; retrying a 502 is not.
+
+Every model failure carries a message written for the person who has to fix it - see
+``llm.explain_failure``. The route handlers do not compose those messages; they hand the
+typed error to ``_model_failure`` and let the library's wording through, so the CLI and
+the API cannot drift into telling the user two different things.
 
 Session model: one index load per process, one service per character. ``SpellbookService``
 is stateless between calls beyond the loaded sheet, so it is created once at startup and
@@ -54,6 +60,31 @@ from . import schemas
 
 def _error(status: int, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail=message)
+
+
+def _model_failure(error) -> HTTPException:
+    """Map a model or embedding failure to the status its caller should act on.
+
+    Two codes, because they mean different things to a client:
+
+    * 502 - the model answered, but with nothing (a thinking model spent its budget on
+      hidden reasoning). Retrying or a smaller scenario may work; the server is reachable.
+    * 503 - the model could not be reached at all. Ollama is down, or a remote provider
+      refused the key. Retrying is pointless until someone fixes the backend.
+
+    Embeddings go to the same Ollama, so ``EmbeddingUnavailable`` is a 503 too, and the
+    message explains that the *local stack* is down rather than that the model answered
+    badly - the difference is what tells a user to run `ollama serve`.
+
+    Anything else is re-raised rather than dressed up as a 500: the routes catch exactly
+    these two types, so a third arriving here means a handler was widened without this
+    being taught about it, and a traceback in the log is more use than a plausible status.
+    """
+    if isinstance(error, llm.EmptyCompletion):
+        return _error(502, str(error))
+    if isinstance(error, llm.LLMUnavailable):
+        return _error(503, str(error))
+    raise error
 
 
 def _run_id(directory) -> str:
@@ -207,10 +238,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             raise _error(422, str(e))
         except service.CharacterNotLoaded as e:
             raise _error(409, str(e))
-        except llm.EmptyCompletion as e:
-            raise _error(502, f"The model returned an empty response: {e}")
-        except llm.LLMUnavailable as e:
-            raise _error(503, f"The model could not be reached: {e}")
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
         return schemas.GenerationSchema.from_generation(generation)
@@ -232,10 +261,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             return schemas.GenerationSchema.from_generation(
                 svc.refine(request.question, previous, thread_id=request.thread_id)
             )
-        except llm.EmptyCompletion as e:
-            raise _error(502, f"The model returned an empty response: {e}")
-        except llm.LLMUnavailable as e:
-            raise _error(503, f"The model could not be reached: {e}")
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
 
@@ -404,10 +431,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 svc.ask_character(question, thread_id=thread_id))
         except service.CharacterNotLoaded as e:
             raise _error(409, str(e))
-        except llm.EmptyCompletion as e:
-            raise _error(502, f"The model returned an empty response: {e}")
-        except llm.LLMUnavailable as e:
-            raise _error(503, f"The model could not be reached: {e}")
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
 
@@ -430,10 +455,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 svc.ask_rules(question, thread_id=thread_id))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
-        except llm.EmptyCompletion as e:
-            raise _error(502, f"The model returned an empty response: {e}")
-        except llm.LLMUnavailable as e:
-            raise _error(503, f"The model could not be reached: {e}")
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
 
@@ -479,10 +502,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                                          attachments=document, thread_id=thread_id))
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
-        except llm.EmptyCompletion as e:
-            raise _error(502, f"The model returned an empty response: {e}")
-        except llm.LLMUnavailable as e:
-            raise _error(503, f"The model could not be reached: {e}")
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
 
@@ -645,6 +666,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             )
         except ValueError as e:
             raise _error(400, str(e))
+        except (llm.EmptyCompletion, llm.LLMUnavailable) as e:
+            raise _model_failure(e)
         return schemas.SearchResultSchema.from_result(result)
 
     @app.get("/api/search/facets", response_model=schemas.SearchFacetsResponse,

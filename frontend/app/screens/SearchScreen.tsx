@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react"
 import { Search as SearchIcon, SlidersHorizontal } from "lucide-react"
 
-import { api, ApiError } from "@/api/client"
+import { api } from "@/api/client"
 import type { SearchFacets, SearchParams, SearchResult } from "@/api/types"
+import { ErrorNotice } from "@/components/ErrorNotice"
 import { SearchResults } from "@/components/SearchResults"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -81,7 +82,7 @@ export function SearchScreen() {
 
   const [facets, setFacets] = useState<SearchFacets | null>(null)
   const [result, setResult] = useState<SearchResult | null>(null)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<unknown>(null)
   const [loading, setLoading] = useState(false)
 
   useEffect(() => {
@@ -121,7 +122,7 @@ export function SearchScreen() {
       setResult(await api.search({ ...params, ...overrides }))
     } catch (e) {
       setResult(null)
-      setError(e instanceof ApiError ? e.message : String(e))
+      setError(e)
     } finally {
       setLoading(false)
     }
@@ -271,11 +272,7 @@ export function SearchScreen() {
         </CardContent>
       </Card>
 
-      {error && (
-        <Card className="border-red-500/40">
-          <CardContent className="pt-4 text-sm text-red-300">{error}</CardContent>
-        </Card>
-      )}
+      {error != null && <ErrorNotice error={error} onRetry={() => run()} />}
 
       {/* The same results list the Rules tab's ask box shows. Kept bespoke here only in the
           empty-state wording, because this tab can be browsed with no query at all and
