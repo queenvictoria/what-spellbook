@@ -43,10 +43,15 @@ const EXAMPLES = [
  * opposite — it names `spell` explicitly, because a rule is not a legal pick.
  */
 const DOC_TYPES = [
-  { value: "all", label: "Everything", hint: "Spells, magic items and the vendored SRD." },
+  { value: "all", label: "Everything", hint: "Spells, magic items and every rules source." },
   { value: "spell", label: "Spells", hint: "The spell corpus only — what the recommender draws from." },
   { value: "item", label: "Items", hint: "The 22 magic items that share the corpus directory." },
   { value: "srd", label: "SRD", hint: "The vendored 2024 rulebook, one row per section." },
+  {
+    value: "ionas-politis",
+    label: "Rulebook",
+    hint: "The optional DnD Character Sheet Helper rulebook — 2024 class and subclass rules the SRD does not carry. Present only when its folder is installed.",
+  },
 ] as const
 
 /**

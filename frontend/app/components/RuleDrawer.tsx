@@ -1,7 +1,9 @@
-import { useRef, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { ReactNode, RefObject } from "react"
 import { X } from "lucide-react"
 
+import { api } from "@/api/client"
+import type { IonasSection } from "@/api/types"
 import { ClassContextCard } from "@/components/ClassContextCard"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { SrdCard } from "@/components/SrdCard"
@@ -77,7 +79,9 @@ function RuleDrawer({
         <DrawerDescription className="sr-only">
           {target?.kind === "class"
             ? "Our own class rules, read from the context files."
-            : "A rule quoted from the vendored 2024 SRD."}
+            : target?.kind === "rulebook"
+              ? "A rule read from the optional third-party rulebook."
+              : "A rule quoted from the vendored 2024 SRD."}
         </DrawerDescription>
 
         <div ref={scroller} className="flex-1 overflow-y-auto p-4">
@@ -101,9 +105,9 @@ function RuleDrawer({
 /**
  * The open document, whichever kind it is.
  *
- * The two kinds are fetched by different hooks and rendered by different cards, so the
- * branch is here rather than inside either card - a card that fetched its own text would
- * have to know which endpoint to ask, and the two would drift.
+ * The kinds are fetched by different hooks and rendered by different cards, so the branch is
+ * here rather than inside any card - a card that fetched its own text would have to know
+ * which endpoint to ask, and the kinds would drift.
  */
 function RuleBody({
   target,
@@ -114,6 +118,9 @@ function RuleBody({
 }) {
   if (target.kind === "class") {
     return <ClassBody target={target} />
+  }
+  if (target.kind === "rulebook") {
+    return <RulebookBody target={target} />
   }
   return <SrdBody target={target} scroller={scroller} />
 }
@@ -135,6 +142,52 @@ function ClassBody({ target }: { target: RuleTarget }) {
       {error != null && <ErrorNotice error={error} compact />}
 
       {document && <ClassContextCard document={document} />}
+    </div>
+  )
+}
+
+/**
+ * One rule from the optional third-party rulebook, read from the drawer.
+ *
+ * The card is the shared `ClassContextCard`, and the badge it shows is deliberately **not**
+ * the SRD's quotation badge: this text is a scan of the 2024 books rather than the SRD, so
+ * showing it as the rulebook would let a transcription pass for the authority. `document` is
+ * the rule's *name*, because that is what the endpoint addresses it by.
+ */
+function RulebookBody({ target }: { target: RuleTarget }) {
+  const [found, setFound] = useState<{
+    key: string
+    kind: 'ok' | 'error'
+    document?: IonasSection
+    error?: unknown
+  } | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api
+      .ionasRule(target.document)
+      .then((rule) => {
+        if (!cancelled) setFound({ key: target.document, kind: 'ok', document: rule })
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setFound({ key: target.document, kind: 'error', error: e })
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [target.document])
+
+  const current = found?.key === target.document ? found : null
+
+  return (
+    <div className="space-y-4">
+      {!current && <p className="text-sm text-parchment/60">Fetching the rule…</p>}
+
+      {current?.kind === 'error' && <ErrorNotice error={current.error} compact />}
+
+      {current?.kind === 'ok' && current.document && (
+        <ClassContextCard document={current.document} />
+      )}
     </div>
   )
 }

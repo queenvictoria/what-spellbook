@@ -494,6 +494,42 @@ Light to level 3 and lets Searing Vengeance rescue an ally.
 vendored: this project's spell corpus and class rules already live in `data/` and
 `context/`, and duplicating them creates two sources of truth that drift.
 
+### Third-party content is fetched, not committed and not a submodule
+
+`context/DnD-Character-Sheet-Helper/` is a checkout of someone else's repository. It is
+gitignored and reproduced by `scripts/fetch-context.sh`, which downloads a **pinned commit**
+and verifies a **SHA-256** of the tarball. Three decisions are worth keeping:
+
+- **A submodule is the obvious answer and the wrong one here.** It stores a commit pointer
+  and nothing else, so a clone without `--recurse-submodules` yields an empty directory with
+  no indication anything is missing. The pin lives in the fetch script instead: same
+  reproducibility, no extra git commands, and a bad fetch reports itself.
+- **The download is byte-stable, so a checksum is meaningful.** Verified by fetching the
+  same commit twice: identical SHA-256. A tag alone would not do - tags move, and `2.0.5-beta`
+  was the checked-out tag while the pin is the commit behind it.
+- **GPL-3.0 upstream, so it is not vendored into this repo.** Its `LICENSE` says GPL-3.0
+  while its `package.json` claims ISC. Fetching keeps the content out of the tree and out of
+  any redistribution this project does.
+
+**Ignoring it is load-bearing, not tidiness.** The directory contains its own `.git`, so an
+untracked checkout becomes a **gitlink** the moment anyone runs `git add -A`:
+
+```
+warning: adding embedded git repository: context/DnD-Character-Sheet-Helper
+```
+
+A gitlink commits a commit SHA and no content. A fresh clone then gets an empty directory,
+and `git ls-files -s` shows mode `160000` where every other context file is `100644` - the
+hazard is invisible in the working tree and only appears for the next person.
+
+**Ignore the whole directory, and keep the provenance file beside it.** The tempting form is
+a `*` rule plus a `!` negation to un-ignore `PROVENANCE.md` inside. It does not work: git
+will not descend into an ignored directory, so the negation never applies to the directory
+itself and `git add -A` still stages the gitlink. Verified both ways - `context/…/*` with a
+negation stages `160000 context/DnD-Character-Sheet-Helper`, while `context/…/` alone does
+not. So the provenance is a *sibling* (`context/DnD-Character-Sheet-Helper.PROVENANCE.md`),
+which is why it is not at the path the SRD's is.
+
 ### The SRD is not the whole 2024 rulebook
 
 It has no subclasses, few feats, and neither two-weapon fighting nor flanking. A rule
@@ -501,6 +537,53 @@ question can therefore have no answer, and refusing is the honest outcome - that
 `RulesUnavailable` and an HTTP 404 report. **Do not** "improve" the matcher by lowering the
 heading requirement: a plausible-looking wrong paragraph is worse than admitting the SRD
 does not contain the rule, because the user cannot tell the difference.
+
+### A second rulebook that may not exist
+
+`context/DnD-Character-Sheet-Helper/` is read as an **optional** second 2024 source
+(`backend/libs/ionas.py`). Optional is the contract, not a courtesy: one `is_dir` check,
+`[]` when absent, and every caller degrades to the SRD. It exists because the SRD ships
+exactly **one subclass per class** — Fiend Patron for a Warlock, Evoker for a Wizard — so a
+Celestial Warlock's *Healing Light* or a Diviner's *Portent* has no SRD answer at all.
+
+Five things were learned wiring it in, and each changed the design:
+
+- **An optional source must not be allowed to bump `INDEX_VERSION`.** The instinct is to
+  bump when the corpus changes, but a new *row type* is not a changed *shape* — `doc_type`
+  already exists and filters keep working — so a bump forces every user a full re-embed for
+  a folder most do not have. That is the same "invalidates the user's data for nothing"
+  mistake the cache-schema notes already describe. What actually needs guarding is that an
+  *installed* source is absent from the index, and that is checked precisely, by
+  `indexing.sources_match` against a `sources` key the index records.
+- **That check has to treat a missing key as "built without it".** An index written before
+  the field existed has no `sources` at all, so a naive `==` reads it as stale for
+  *every* user — including the ones whose index is already correct. A regression test pins
+  this, because the symptom is a slow surprise rather than a failure.
+- **The repair table must be split from the repair rule, and the split is not tidiness.**
+  Hyphen breaks are repairable by rule against a dictionary of the vendored SRD: join when
+  the joined word is one the SRD writes and neither half is. Glued *spaces* cannot be —
+  the same test is true of real English ("a ward" joins to "award" while "a Long Rest"
+  must not join at all), so the ambiguous fragments are listed by hand and each was read
+  in its own sentence before being added. A rule that joined any short fragment to the
+  next word silently rewrites prose.
+- **A rule is not split, and a repeated feature is not repeated.** The SRD lane chunks a
+  long chapter so one embedding cannot match everything weakly; a rulebook section is
+  already one rule, and cutting an invocation in half separates it from its own
+  prerequisite line. Symmetrically, the source lists `Eldritch Invocations` at twenty
+  levels with identical text — it is one rule, so levels are *recorded* rather than the
+  section emitted twenty times.
+- **A rule is addressed by name, not by path.** A class context file is the unit a reader
+  opens, so a path is enough. A rulebook JSON holds many rules — `warlock-subclasses.json`
+  holds six subclass features — so a path names no single rule. That is why the drawer
+  opens these by name and why `ruleInPath` deliberately does *not* turn their path into a
+  link: a link that cannot resolve looks like a missing rule.
+
+**Two defects in the source are deliberately not repaired.** Its upstream names are
+sometimes wrong (the `repelling-blast` key holds *Repelling Blade*, where the SRD says
+*Repelling Blast*; eight spell files are stray copies whose `name` names a different spell
+than the file does), and correcting them would be this project inventing rules text. Where
+the two sources overlap the SRD is the authority; this one is consulted for what the SRD
+lacks. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the verification.
 
 ### Browsing the SRD: a section knows where it sits
 

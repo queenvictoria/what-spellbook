@@ -46,6 +46,7 @@ from backend.libs import (
     characters,
     config,
     indexing,
+    ionas,
     llm,
     rules,
     search,
@@ -617,8 +618,9 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                    spells_only: bool = Query(default=True),
                    doc_type: str | None = Query(
                        default=None,
-                       description=("all, spell, item or srd. An explicit value wins over "
-                                    "spells_only; omit it to leave the choice to spells_only"),
+                       description=("all, spell, item, srd or ionas-politis. An explicit "
+                                    "value wins over spells_only; omit it to leave the "
+                                    "choice to spells_only"),
                    ),
                    all_terms: bool = Query(default=True,
                                            description="Text mode: require every word, not just one")):
@@ -645,14 +647,14 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         one comma-joined value and Chroma's ``$contains`` does not match inside it - see
         ``search._class_clause``.
 
-        ``doc_type`` narrows to one kind of indexed text: ``all``, ``spell``, ``item`` or
-        ``srd``. **An explicit value wins outright**, so ``doc_type=all`` returns the whole
-        collection including the rulebook and the magic items - which is what a caller
-        asking about a *rule* needs. Omitting it leaves the choice to ``spells_only``, whose
-        default gives the recommender's view. The two are not combined: ``doc_type=all`` with
-        the default ``spells_only=true`` used to resolve to spells only, so the value that
-        reads as "everything" returned the narrowest set and silently defeated a rules
-        search.
+        ``doc_type`` narrows to one kind of indexed text: ``all``, ``spell``, ``item``,
+        ``srd`` or ``ionas-politis``. **An explicit value wins outright**, so ``doc_type=all``
+        returns the whole collection including the rulebooks and the magic items - which is
+        what a caller asking about a *rule* needs. Omitting it leaves the choice to
+        ``spells_only``, whose default gives the recommender's view. The two are not
+        combined: ``doc_type=all`` with the default ``spells_only=true`` used to resolve to
+        spells only, so the value that reads as "everything" returned the narrowest set and
+        silently defeated a rules search.
 
         A 400 means the request cannot work (an unknown mode, an inverted level range, a
         vector search with nothing to embed); an empty result is a normal answer.
@@ -780,6 +782,45 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             )
         except rules.RulesUnavailable as e:
             raise _error(404, str(e))
+
+    # --- the optional second rulebook ---
+
+    @app.get("/api/ionas", response_model=list[schemas.IonasFileSchema], tags=["rules"])
+    def ionas_files():
+        """Every file of the optional rulebook, or an empty list when it is not installed.
+
+        **Empty is a normal answer, not an error.** This source is a third-party plugin's
+        JSON that most checkouts will not have, so a 404 would make "you do not have this"
+        look like a fault and force every client to treat an expected absence as a failure.
+        The client renders nothing for an empty list.
+
+        Derived from the directory rather than listed in code, for the same reason the class
+        context list is: a file added to the source appears here without an edit.
+        """
+        return [
+            schemas.IonasFileSchema(**found)
+            for found in ionas.files()
+        ]
+
+    @app.get("/api/ionas/{name}", response_model=schemas.IonasSectionSchema, tags=["rules"])
+    def ionas_rule(name: str):
+        """One rule from the optional rulebook, quoted, by name.
+
+        Deterministic, like ``/api/spell``: the text is read from the JSON and repaired for
+        the scan's artifacts, but never paraphrased. A 404 means no rule of that name is in
+        the installed source, which is a real miss - including when the source is not there
+        at all, since the list above is derived from the same directory.
+        """
+        if not ionas.available():
+            raise _error(
+                404,
+                "The optional rulebook source is not installed. It is read from "
+                f"'{config.IONAS_DIR}' when present.",
+            )
+        found = ionas.lookup(name)
+        if found is None:
+            raise _error(404, f"No rule named '{name}' in the optional rulebook source.")
+        return schemas.IonasSectionSchema(**found)
 
     return app
 

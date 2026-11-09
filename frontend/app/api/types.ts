@@ -313,6 +313,39 @@ export interface ClassContext {
   source: string
 }
 
+/**
+ * One file of the optional rulebook source, without its text.
+ *
+ * Mirrors `IonasFileSchema`. `/api/ionas` returns an empty list when the source is not
+ * installed, which is the normal state of a checkout that does not have it — so a caller
+ * shows nothing rather than an error, and the feature simply is not there.
+ */
+export interface IonasFile {
+  name: string
+  title: string
+  path: string
+  kind: string
+  sections: number
+}
+
+/**
+ * One rule from the optional rulebook source, quoted.
+ *
+ * Mirrors `IonasSectionSchema`. `source` is always `ionas-politis`: a third-party scan of
+ * the 2024 books, not the SRD, so the card shows a different badge. It fills a real gap —
+ * non-SRD subclasses like the Celestial Patron and the Diviner — and is lower quality than
+ * the SRD where the two overlap.
+ */
+export interface IonasSection {
+  name: string
+  title: string
+  slug: string
+  path: string
+  text: string
+  kind: string
+  source: string
+}
+
 export interface Character {
   name: string
   sheet: Record<string, unknown>
@@ -345,12 +378,14 @@ export interface SearchHit {
   filename: string
   text: string
   /**
-   * Which kind of indexed text this is: `spell`, `item` or `srd`.
+   * Which kind of indexed text this is: `spell`, `item`, `srd` or `ionas-politis`.
    *
-   * Needed to tell a rule from a spell, because an SRD row has no school and a level of 0 —
-   * inferring the type from those would call every rule a cantrip.
+   * Needed to tell a rule from a spell, because a rule row has no school and a level of 0 —
+   * inferring the type from those would call every rule a cantrip. The two rule types are
+   * distinguished because they are not equally authoritative: the SRD is the 2024 authority,
+   * while `ionas-politis` is a third-party scan of the books.
    */
-  doc_type: 'spell' | 'item' | 'srd'
+  doc_type: 'spell' | 'item' | 'srd' | 'ionas-politis'
   /** For an SRD row, the document and heading it came from, so the hit can be opened. */
   document: string | null
   slug: string | null
@@ -422,7 +457,7 @@ export interface SearchResult {
     ritual: boolean | null
     spells_only: boolean
     /** `null` when the caller named no type, in which case `spells_only` decided. */
-    doc_type: 'all' | 'spell' | 'item' | 'srd' | null
+    doc_type: 'all' | 'spell' | 'item' | 'srd' | 'ionas-politis' | null
   }
   /** Set when the result needs explaining: an unsatisfiable filter, an AND that found
    * nothing, or a candidate cap that truncated the ranking. */
@@ -443,7 +478,8 @@ export interface SearchParams {
   spells_only?: boolean
   all_terms?: boolean
   /**
-   * Which kind of indexed text to search: `all`, `spell`, `item` or `srd`.
+   * Which kind of indexed text to search: `all`, `spell`, `item`, `srd` or
+   * `ionas-politis`.
    *
    * **An explicit value wins outright.** `all` means the whole collection — the rulebook
    * included — even though `spells_only` defaults true; omitting the field leaves the choice
@@ -451,7 +487,7 @@ export interface SearchParams {
    * `spells_only` used to resolve to spells only: the value that reads as "search
    * everything" returned the narrowest set, so a rules search could never find a rule.
    */
-  doc_type?: 'all' | 'spell' | 'item' | 'srd'
+  doc_type?: 'all' | 'spell' | 'item' | 'srd' | 'ionas-politis'
 }
 
 /** A stage of a run, in the order the CLI reports them. */

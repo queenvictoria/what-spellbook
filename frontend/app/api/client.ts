@@ -9,6 +9,8 @@ import type {
   ConversationSummary,
   Generation,
   Health,
+  IonasFile,
+  IonasSection,
   RunBooks,
   RunSummary,
   SearchFacetsResponse,
@@ -225,6 +227,24 @@ export const api = {
         .map(encodeURIComponent)
         .join('/')}`,
     ),
+
+  /**
+   * Every file of the optional rulebook source, without text.
+   *
+   * An **empty list means the source is not installed**, which is a normal answer rather
+   * than a failure — the folder is optional, and a checkout without it loses no feature. The
+   * caller renders nothing for an empty list; there is nothing to report and nothing to fix.
+   */
+  ionasFiles: () => request<IonasFile[]>('/api/ionas'),
+
+  /**
+   * One rule from the optional rulebook, by name.
+   *
+   * `source` is always `ionas-politis`. This is a third-party scan of the 2024 books, not
+   * the SRD, so the card must not wear the SRD's quotation badge.
+   */
+  ionasRule: (name: string) =>
+    request<IonasSection>(`/api/ionas/${encodeURIComponent(name)}`),
 
   history: (character?: string) =>
     request<RunSummary[]>(`/api/history${query({ character })}`),

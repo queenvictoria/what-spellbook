@@ -10,16 +10,20 @@ import type { RefObject } from 'react'
 /** A document, and optionally one heading inside it. */
 export interface RuleTarget {
   /**
-   * Which kind of document this is, because the two are fetched differently and are not
+   * Which kind of document this is, because the kinds are fetched differently and are not
    * equally authoritative.
    *
    * `srd` is the vendored 2024 rulebook, quoted. `class` is our own summary of a class,
-   * written to be read by a model - it is not the rulebook, and the card says so. One
-   * target type with a discriminator rather than two contexts, because a reader following
-   * a link does not care which kind it is: the panel is the same panel.
+   * written to be read by a model - it is not the rulebook, and the card says so. `rulebook`
+   * is the optional third-party source, which is a transcription rather than the SRD.
+   * One target type with a discriminator rather than three contexts, because a reader
+   * following a link does not care which kind it is: the panel is the same panel.
    */
-  kind: 'srd' | 'class'
-  /** The SRD file stem (`classes`), or the repo-relative class context path. */
+  kind: 'srd' | 'class' | 'rulebook'
+  /**
+   * The SRD file stem (`classes`), the repo-relative class context path
+   * (`context/classes/warlock/base.md`), or the rule's name for `rulebook`.
+   */
   document: string
   slug: string | null
   /**
@@ -120,5 +124,11 @@ export function ruleInPath(path: string | null | undefined): RuleTarget | null {
     return { kind: 'class', document: trimmed, slug: null }
   }
 
+  // The optional rulebook is deliberately *not* handled here, unlike the class context.
+  // A class context file *is* the unit a reader opens, so a path is enough. A rulebook
+  // file is not: `warlock-subclasses.json` holds six subclass features, so a path names
+  // no single rule and the drawer would have nothing to open. Those hits carry a rule
+  // *name* instead and open by name, which is why this stays plain text rather than
+  // becoming a link that cannot resolve.
   return null
 }

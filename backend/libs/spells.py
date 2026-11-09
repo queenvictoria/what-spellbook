@@ -56,8 +56,18 @@ _MAGIC_ITEM_MARKER = "/magic-items/"
 DOC_TYPE_SPELL = "spell"
 DOC_TYPE_ITEM = "item"
 DOC_TYPE_SRD = "srd"
+# The optional second rulebook (``backend/libs/ionas.py``). A separate type from ``srd``
+# even though both are rules, because they are not equally authoritative: the SRD is the
+# 2024 authority and is quoted, this is a scan of the books from a third-party plugin. A
+# reader has to be able to tell them apart, so a filter - and a badge - can name either.
+DOC_TYPE_IONAS = "ionas-politis"
 
-DOC_TYPES = (DOC_TYPE_SPELL, DOC_TYPE_ITEM, DOC_TYPE_SRD)
+DOC_TYPES = (DOC_TYPE_SPELL, DOC_TYPE_ITEM, DOC_TYPE_SRD, DOC_TYPE_IONAS)
+
+# Every doc type that is *rules text* rather than a legal pick. The recommender's filters
+# name ``spell`` explicitly, so this exists for the surfaces that want "the rulebook" as a
+# whole - and it is a tuple rather than a hard-coded pair so a new source joins by existing.
+RULE_DOC_TYPES = (DOC_TYPE_SRD, DOC_TYPE_IONAS)
 
 _CASTING_TIME = re.compile(r"\*\*Casting Time:\*\*")
 _CASTING_TIME_VALUE = re.compile(r"\*\*Casting Time:\*\*\s*([^\n]*)", re.IGNORECASE)

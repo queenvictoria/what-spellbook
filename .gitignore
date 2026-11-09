@@ -12,3 +12,15 @@ __pycache__/
 # with a leading slash so the front end, which has to commit its lockfile, still can.
 /node_modules/
 /package-lock.json
+
+# A fetched third-party plugin checkout (see DnD-Character-Sheet-Helper.PROVENANCE.md,
+# which sits outside this directory for the reason below). Ignored rather than committed
+# so the repo does not redistribute it, and ignored rather than left untracked so
+# `git add -A` cannot turn the nested `.git` into a gitlink - which commits a commit
+# pointer and no content, leaving a fresh clone with an empty directory.
+#
+# The whole directory, and not `/*` with a `!` negation for the provenance file: git will
+# not descend into an ignored directory, so a negation *inside* it does not apply to the
+# directory itself and `git add -A` still stages the gitlink. Verified both ways.
+context/DnD-Character-Sheet-Helper/
+context/DnD-Character-Sheet-Helper

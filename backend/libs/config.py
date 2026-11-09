@@ -33,7 +33,19 @@ DB_DIR = "./data/chroma_db"
 # 4 added ``doc_type`` and the vendored SRD rows. Both are required: the eligibility
 # filters now key on ``doc_type``, so an index written at 3 has no such field and every
 # filter would silently match nothing - the exact failure the version guard exists for.
+#
+# Deliberately *not* bumped for the optional ``ionas-politis`` rows. A new row is not a
+# changed shape - ``doc_type`` already exists and filters keep working - so a bump would
+# force every user a full re-embed for a source most do not have, which is the same
+# "invalidates the user's data for nothing" mistake the cache schema notes describe. What
+# actually needs guarding is that an *installed* source is missing from the index, and that
+# is checked precisely, by ``indexing.sources_match`` against the index's own record.
 INDEX_VERSION = 4
+
+# The optional second rulebook - the DnD Character Sheet Helper JSON, read in place and
+# skipped when absent. Point ``IONAS_DIR`` at a checkout elsewhere to override. See
+# ``backend/libs/ionas.py`` for why it is optional and what it is worth.
+IONAS_DIR = "context/DnD-Character-Sheet-Helper/rulebook"
 
 # How many candidate spells to hand the model, and how many get full text. k is per
 # filtered query lane; dedupe collapses the many chunks each spell is split into.
@@ -258,3 +270,4 @@ DB_DIR_PATH = resolve(DB_DIR)
 CACHE_DIR_PATH = resolve(CACHE_DIR)
 CONTEXT_DIR_PATH = resolve(CONTEXT_DIR)
 CHARACTERS_DIR_PATH = resolve(CHARACTERS_DIR)
+IONAS_DIR_PATH = resolve(IONAS_DIR)

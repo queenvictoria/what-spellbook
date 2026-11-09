@@ -1209,3 +1209,64 @@ def test_an_unknown_class_context_file_is_a_404(api):
     response = api.get("/api/class-context/warlock/nope.md")
     assert response.status_code == 404
     assert "nope.md" in response.json()["detail"]
+
+
+# --- the optional second rulebook ---------------------------------------------
+
+
+def test_the_optional_rulebook_lists_what_it_has(api):
+    """The third-party source is a *separate* endpoint and schema, not more SRD documents.
+
+    It is not equally authoritative - the SRD is the 2024 rulebook and is quoted, this is a
+    transcription of it from another project - so serving it as SRD text would let a scan
+    wear the quotation badge.
+    """
+    response = api.get("/api/ionas")
+    assert response.status_code == 200
+    files = response.json()
+    assert files, "the source is installed, so it must list something"
+    first = files[0]
+    assert set(first) == {"name", "title", "path", "kind", "sections"}
+
+
+def test_an_installed_rulebook_source_can_be_read_by_name(api):
+    """Addressed by *name*, not by path: a rulebook JSON holds many rules, so a path would
+    name no single one."""
+    body = api.get("/api/ionas/Healing Light").json()
+    assert body["name"] == "Healing Light"
+    assert body["source"] == "ionas-politis"
+    # Not the SRD's badge, and not the class context's either: a third source.
+    assert body["source"] != "vendored-srd-5.2.1"
+    assert body["source"] != "class-context"
+    assert "Celestial" in body["title"]
+
+
+def test_an_unknown_rule_in_the_optional_source_is_a_404(api):
+    response = api.get("/api/ionas/No Such Rule Exists")
+    assert response.status_code == 404
+    assert "No Such Rule Exists" in response.json()["detail"]
+
+
+def test_the_source_endpoints_report_absence_rather_than_failing(api, tmp_path, monkeypatch):
+    """An absent optional source is a normal answer, not a fault.
+
+    Propagating the route to the library's configured path is what makes this testable at
+    all - and ``[]`` rather than a 404 is what stops every client having to treat an
+    expected absence as an error. One rule read by name is a 404, because *that* is a real
+    miss: the caller named something and it is not there.
+    """
+    from backend.libs import config, ionas
+
+    monkeypatch.setattr(config, "IONAS_DIR", str(tmp_path / "not-installed"))
+    ionas.clear_cache()
+    try:
+        response = api.get("/api/ionas")
+        assert response.status_code == 200
+        assert response.json() == []
+
+        missing = api.get("/api/ionas/Healing Light")
+        assert missing.status_code == 404
+        assert "not installed" in missing.json()["detail"]
+    finally:
+        ionas.clear_cache()
+

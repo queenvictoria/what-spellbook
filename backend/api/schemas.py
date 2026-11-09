@@ -365,10 +365,11 @@ class SearchHitSchema(BaseModel):
     is_spell: bool = True
     filename: str
     text: str
-    # Which kind of indexed text this is: "spell", "item" or "srd". A client needs it to
-    # tell a rule from a spell, because an SRD row has no school and a level of 0.
+    # Which kind of indexed text this is: "spell", "item", "srd" or "ionas-politis". A
+    # client needs it to tell a rule from a spell, because a rule row has no school and a
+    # level of 0.
     doc_type: str = "spell"
-    # For an SRD row, the document and heading it came from, so the hit can be opened as a
+    # For a rule row, the document and heading it came from, so the hit can be opened as a
     # rule rather than shown as an orphaned paragraph.
     document: str | None = None
     slug: str | None = None
@@ -601,3 +602,36 @@ class ClassContextFileSchema(BaseModel):
     name: str
     title: str
     path: str
+
+
+class IonasFileSchema(BaseModel):
+    """One file of the optional rulebook, as a table of contents entry.
+
+    The source is a third-party plugin's JSON, and it is **optional**: an empty list from
+    the endpoint means it is not installed, which is a normal answer rather than an error.
+    The client renders nothing for it, so a machine without the folder loses no feature.
+    """
+
+    name: str
+    title: str
+    path: str
+    kind: str
+    sections: int
+
+
+class IonasSectionSchema(BaseModel):
+    """One rule from the optional rulebook, quoted.
+
+    The fields mirror ``SrdSectionSchema`` where they overlap, and it is a separate schema
+    for the same reason ``ClassContextSchema`` is: this text is not the SRD. It is a scan of
+    the 2024 books from a third-party source, so it must not be able to wear the SRD's
+    quotation badge. ``source`` is always ``ionas-politis``.
+    """
+
+    name: str
+    title: str
+    slug: str
+    path: str
+    text: str
+    kind: str = "rule"
+    source: str = "ionas-politis"

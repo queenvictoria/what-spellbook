@@ -130,8 +130,9 @@ export function IndexHitsPanel({
 function IndexHitRow({ hit }: { hit: SearchHit }) {
   const openSrd = useOpenRule()
   const openSpell = useOpenSpell()
-  const isRule = hit.doc_type === "srd"
-  const href = isRule
+  const isSrd = hit.doc_type === "srd"
+  const isRulebook = hit.doc_type === "ionas-politis"
+  const href = isSrd
     ? hit.document
       ? srdHref(hit.document, hit.slug || null)
       : "/rules"
@@ -160,24 +161,30 @@ function IndexHitRow({ hit }: { hit: SearchHit }) {
           }
           if (shouldDeferToBrowser(event)) return
           event.preventDefault()
-          if (isRule) {
+          if (isSrd) {
             if (hit.document)
               openSrd({
                 kind: "srd",
                 document: hit.document,
                 slug: hit.slug || null,
               })
+          } else if (isRulebook) {
+            // Addressed by *name*, not by file: a rulebook JSON holds many rules, so the
+            // path names no single one. That is why this kind carries no path link.
+            openSrd({ kind: "rulebook", document: hit.name, slug: null })
           } else {
             openSpell(hit.name)
           }
         }}
         className="flex items-center gap-2 rounded px-1 py-0.5 hover:bg-void-800"
         title={
-          isRule
+          isSrd
             ? hit.document
               ? `context/srd/${hit.document}.md`
               : undefined
-            : `Look up ${hit.name} in the rules`
+            : isRulebook
+              ? `${hit.name} — from the optional rulebook`
+              : `Look up ${hit.name} in the rules`
         }
       >
         <span className="min-w-0 flex-1">
@@ -202,14 +209,16 @@ function IndexHitRow({ hit }: { hit: SearchHit }) {
 /**
  * What identifies one row, for React's reconciliation.
  *
- * A rule is identified by its document and heading and a spell by its file, because the two
- * kinds share the collection and a name alone is not unique across them - the SRD has a
- * heading called "Fireball" and the corpus has a spell of the same name.
+ * A rule is identified by its source and section and a spell by its file, because the kinds
+ * share the collection and a name alone is not unique across them - the SRD has a heading
+ * called "Fireball" and the corpus has a spell of the same name.
  */
 function hitKey(hit: SearchHit): string {
   return hit.doc_type === "srd"
     ? `srd:${hit.document}:${hit.slug}`
-    : `${hit.doc_type}:${hit.filename || hit.name}`
+    : hit.doc_type === "ionas-politis"
+      ? `ionas:${hit.slug || hit.name}`
+      : `${hit.doc_type}:${hit.filename || hit.name}`
 }
 
 /**

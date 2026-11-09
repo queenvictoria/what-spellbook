@@ -15,6 +15,7 @@ const DOC_TYPE_NOUNS: Record<string, string> = {
   spell: "spell",
   item: "item",
   srd: "rule",
+  "ionas-politis": "rule",
 }
 
 /**
@@ -125,9 +126,9 @@ function SearchHitRow({
   open: boolean
   onToggle: () => void
 }) {
-  const isRule = hit.doc_type === "srd"
+  const isSrd = hit.doc_type === "srd"
+  const isRule = isSrd || hit.doc_type === "ionas-politis"
   const { spell, missing, error } = useSpell(open && !isRule ? hit.name : null)
-
   return (
     <Card>
       <CardHeader className="flex-row items-start justify-between gap-3">
@@ -171,7 +172,7 @@ function SearchHitRow({
         )}
         {open ? (
           <>
-            {isRule && hit.document && hit.slug && (
+            {isSrd && hit.document && hit.slug && (
               <RulePathLink path={`context/srd/${hit.document}.md`} />
             )}
             {spell && <SpellCard spell={spell} />}

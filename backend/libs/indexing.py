@@ -23,7 +23,7 @@ from langchain_chroma import Chroma
 from langchain_core.documents import Document
 from langchain_text_splitters import MarkdownHeaderTextSplitter, RecursiveCharacterTextSplitter
 
-from . import config, llm, rules, spells, srd
+from . import config, ionas, llm, rules, spells, srd
 
 # The embeddings client is built lazily so importing this module never talks to Ollama.
 _embeddings = None
@@ -33,6 +33,12 @@ _embeddings = None
 # spells beside it.
 SRD_CHUNK_SIZE = 1200
 SRD_CHUNK_OVERLAP = 150
+
+# The two values the index records for ``sources``. Named rather than inline because the
+# absent case is also the fallback for an index written before the field existed, and the
+# two spellings have to agree or that fallback silently forces a rebuild.
+SOURCES_WITH_IONAS = "ionas"
+SOURCES_WITHOUT_IONAS = "srd-only"
 
 
 def get_embeddings():
@@ -109,7 +115,8 @@ def reset_db(db_dir: str) -> None:
         shutil.rmtree(path)
 
 
-def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None):
+def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None,
+                ionas_path: Path | None = None):
     """Read every spell markdown file, chunk it, and persist a fresh Chroma index.
 
     The vendored SRD is indexed into the same collection, one row per section. It is
@@ -163,6 +170,7 @@ def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None):
         final_docs.extend(chunks)
 
     final_docs.extend(_srd_documents(srd_path))
+    final_docs.extend(_ionas_documents(ionas_path))
 
     # ``Chroma.from_documents`` *adds* to an existing collection rather than replacing it,
     # so building over a live index would double every row. ``ensure_db`` resets first, but
@@ -187,7 +195,8 @@ def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None):
     db = Chroma(
         embedding_function=_Precomputed(embeddings, vectors),
         persist_directory=str(config.resolve(db_dir)),
-        collection_metadata={"index_version": config.INDEX_VERSION, "hnsw:space": "l2"},
+        collection_metadata={"index_version": config.INDEX_VERSION, "hnsw:space": "l2",
+                             "sources": available_sources(ionas_path)},
     )
     db.add_texts(
         texts,
@@ -258,6 +267,77 @@ def _srd_documents(srd_path: Path | None = None) -> list[Document]:
     return documents
 
 
+def _ionas_documents(ionas_path: Path | None = None) -> list[Document]:
+    """The optional second rulebook as indexable chunks, one row per rule.
+
+    Distinguishing features from the SRD lane, all deliberate:
+
+    * **Absence is normal.** No directory means no rows and no warning above ``debug``,
+      because the source is optional by contract - a checkout without it is the common case,
+      and a warning on every launch would train the reader to ignore warnings.
+    * **A rule is never split.** The SRD lane chunks a long chapter so one embedding does not
+      match everything weakly; here each section is already one rule, and cutting an
+      invocation in half would separate it from its own prerequisite line. The whole section
+      goes in as one row.
+    * **``spell_name`` holds the rule's own name.** That is what the search reports and what
+      a reader clicks, and it is what makes a hit openable rather than an orphaned paragraph.
+    """
+    if not ionas.available(ionas_path):
+        logging.debug(
+            f"Optional rulebook source not installed at {ionas.directory(ionas_path)}; "
+            "indexing the SRD and the spell corpus only."
+        )
+        return []
+
+    documents: list[Document] = []
+    for section in ionas.sections(ionas_path):
+        metadata = spells.build_srd_metadata(
+            document=section.path, title=section.title, heading=section.name,
+            slug=section.slug, path=section.path, level=0,
+        )
+        # The source tag is the whole point: these rows are rules, but they are not the
+        # SRD, and every filter and badge downstream distinguishes on this field.
+        metadata["doc_type"] = spells.DOC_TYPE_IONAS
+        metadata["source"] = section.path
+        metadata["rule_kind"] = section.kind
+        metadata["levels"] = ",".join(str(lv) for lv in section.levels)
+        # The title is repeated in the body so a hit says which subclass or class it belongs
+        # to - "Healing Light" alone does not say "Celestial Patron".
+        text = f"{section.title}\n\n{section.text}"
+        documents.append(Document(page_content=text, metadata=metadata))
+
+    logging.info(f"Indexed {len(documents)} rule(s) from the optional rulebook source.")
+    return documents
+
+
+def available_sources(ionas_path: Path | None = None) -> str:
+    """A stable token naming which optional sources are installed.
+
+    Stored in the index's collection metadata so ``sources_match`` can tell an index built
+    *with* the optional source from one built without it. Without this, installing the
+    source would leave every query silently reading an index that has none of its rules -
+    and the only symptom would be a search that returns too little.
+    """
+    return SOURCES_WITH_IONAS if ionas.available(ionas_path) else SOURCES_WITHOUT_IONAS
+
+
+def sources_match(db_dir=None, ionas_path: Path | None = None) -> bool:
+    """Whether the persisted index was built from the sources currently installed.
+
+    ``INDEX_VERSION`` guards the *shape* of the metadata and is not bumped for an optional
+    source, because a new row type is not a changed shape and bumping would force every
+    user a full re-embed. This guards the thing a version cannot: whether the rows an
+    installed source would contribute are actually in the index.
+
+    An index written before this check existed has no ``sources`` key, and that is read as
+    the value an index built *without* the optional source would carry. The consequence is
+    the one that matters: a user who does not have the source keeps their index and is not
+    made to re-embed 3,700 chunks for a folder they never installed.
+    """
+    recorded = index_metadata(db_dir).get("sources", SOURCES_WITHOUT_IONAS)
+    return recorded == available_sources(ionas_path)
+
+
 class IndexUnavailable(RuntimeError):
     """Raised when the index cannot be built or loaded.
 
@@ -266,12 +346,18 @@ class IndexUnavailable(RuntimeError):
     """
 
 
-def ensure_db(docs_path=None, db_dir=None):
+def ensure_db(docs_path=None, db_dir=None, ionas_path: Path | None = None):
     """Return the vector index, rebuilding from source only when it is unusable.
 
     If the spell source directory is missing the persisted index is loaded as-is.
     A rebuild happens only when there are enough source files AND the index is absent
     or unreadable, so a merely-existing directory is never wiped.
+
+    The optional rulebook source joins the rebuild decision: installing it changes
+    ``available_sources``, which makes an index built without it stale for a reason
+    ``INDEX_VERSION`` cannot see - the row *shape* is unchanged, only the rows are missing.
+    Checking it here is what makes "add the folder and restart" work without a manual
+    rebuild, and it costs one metadata read.
 
     This runs from the caller rather than at import time: importing this module must
     never scan, embed, or delete anything.
@@ -285,10 +371,18 @@ def ensure_db(docs_path=None, db_dir=None):
         )
 
     md_files = list(docs_path.rglob("*.md"))
-    if len(md_files) > 10 and not db_is_valid(db_dir):
+    stale = not db_is_valid(db_dir)
+    if not stale and not sources_match(db_dir, ionas_path):
+        logging.info(
+            "The optional rulebook source differs from the one this index was built "
+            "with; rebuilding so its rules are searchable."
+        )
+        stale = True
+
+    if len(md_files) > 10 and stale:
         logging.warning("Database reset triggered. Wiping corrupt/missing/unreadable index...")
         # ``build_index`` resets the directory itself, so the wipe is not repeated here.
-        return build_index(docs_path, db_dir)
+        return build_index(docs_path, db_dir, ionas_path=ionas_path)
 
     logging.debug("Loading existing vector index from DB_DIR...")
     return Chroma(persist_directory=str(config.resolve(db_dir)), embedding_function=get_embeddings())

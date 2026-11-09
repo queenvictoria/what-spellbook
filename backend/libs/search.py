@@ -45,7 +45,7 @@ MAX_LIMIT = 100
 # exists to show what is in the index, and hiding two thirds of it by default would make
 # "why is this spell missing" unanswerable. The recommender is the opposite: it names
 # ``spell`` explicitly, because a rule is not a legal pick.
-DOC_TYPES = ("all", spells.DOC_TYPE_SPELL, spells.DOC_TYPE_ITEM, spells.DOC_TYPE_SRD)
+DOC_TYPES = ("all",) + spells.DOC_TYPES
 
 # The index stores several chunks per spell, so a raw k of ``limit`` yields roughly
 # ``limit / 2.35`` distinct spells. Vector mode asks for a wider pool than it returns so
@@ -101,7 +101,7 @@ class Hit:
     def level_label(self) -> str:
         # A rule is not a spell, so it has no level to report. Its ``level`` is 0 as a
         # placeholder, and calling that "Cantrip" would be a lie a client could not detect.
-        if self.doc_type == spells.DOC_TYPE_SRD:
+        if self.doc_type in spells.RULE_DOC_TYPES:
             return "Rule"
         return level_label(self.level)
 
@@ -212,7 +212,7 @@ def _distinct_spells(rows) -> list[dict]:
 def _document_key(row: dict) -> tuple[str, str]:
     """What identifies one indexed document, for collapsing chunks into rows."""
     doc_type = str(row.get("doc_type") or spells.DOC_TYPE_SPELL)
-    if doc_type == spells.DOC_TYPE_SRD:
+    if doc_type in spells.RULE_DOC_TYPES:
         return (doc_type, f"{row.get('document') or ''}#{row.get('slug') or ''}")
     return (doc_type, str(row.get("spell_name") or row.get("filename") or ""))
 
@@ -590,7 +590,7 @@ def facets(db) -> Facets:
     schools: Counter[str] = Counter(
         str(row.get("school")) for row in distinct if row.get("school")
     )
-    # SRD rows carry level 0 as a placeholder, so they are excluded here rather than
+    # Rulebook rows carry level 0 as a placeholder, so they are excluded here rather than
     # reported as 1280 cantrips. The filter is on the row itself, not on a leaked loop
     # variable - a comprehension's ``if`` clause runs in the enclosing scope, so referring
     # to ``row`` there would silently test whichever row the loop above finished on.
@@ -598,7 +598,7 @@ def facets(db) -> Facets:
         level for level, doc_type in (
             (_as_level(row.get("level")), row.get("doc_type")) for row in distinct
         )
-        if level is not None and doc_type != spells.DOC_TYPE_SRD
+        if level is not None and doc_type not in spells.RULE_DOC_TYPES
     )
     doc_types: Counter[str] = Counter(
         str(row.get("doc_type") or spells.DOC_TYPE_SPELL) for row in distinct

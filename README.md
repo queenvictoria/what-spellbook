@@ -24,7 +24,10 @@ frontend/         the npm project
   app/              the React source
 context/          rules text injected into the model prompt
   srd/              the vendored 2024 SRD, also indexed into the vector store
+  classes/          our own class rules, resolved per character
+  DnD-Character-Sheet-Helper/   fetched on demand, gitignored (see its PROVENANCE)
 data/             character sheets and the Chroma index (untracked)
+scripts/          fetch-context.sh - pulls the gitignored context checkout
 tests/            pytest
 ```
 
@@ -53,6 +56,31 @@ the spells.
 - https://toolsandtaverns.com/spells
 - https://dungeonmister.com/guides/classes-in-dungeons-dragons/celestial-warlock-dnd-2024-guide/
 - https://www.dndbeyond.com/classes/2190885-warlock#CelestialPatron
+
+### Fetched, not committed
+
+`context/DnD-Character-Sheet-Helper/` is a checkout of a third-party Obsidian plugin whose
+`rulebook/` data covers 2024 rules the SRD lacks - notably the Archfey, Celestial and Great
+Old One Warlock subclasses, since the SRD ships only the Fiend Patron. It is **gitignored**
+and fetched on demand:
+
+```bash
+scripts/fetch-context.sh          # fetch into context/DnD-Character-Sheet-Helper
+scripts/fetch-context.sh --check  # verify an existing checkout, fetch nothing
+```
+
+The download is pinned to a commit and verified against a SHA-256, so a moved tag or a
+re-published tarball fails loudly rather than silently changing the rules text. The backend
+reads it **in place** as an optional second rules source (`backend/libs/ionas.py`): the
+rules are indexed and searchable under their own `ionas-politis` tag, and the feature simply
+does not appear when the folder is absent.
+`context/DnD-Character-Sheet-Helper.PROVENANCE.md` records the pin, the licence, what the
+source is worth (the SRD ships only one subclass per class) and the verification of its
+content against the SRD.
+
+It is ignored rather than left untracked so that `git add -A` cannot turn its nested `.git`
+into a **gitlink** - a submodule pointer that commits no content, leaving a fresh clone with
+an empty directory and no warning that anything is missing.
 
 ## Versions
 
@@ -148,6 +176,8 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/srd/{name}?slug=`        | One section of one SRD file, quoted; omit `slug` for the whole file       |
 | `GET /api/class-context`           | Our own class context files, without their text                           |
 | `GET /api/class-context/{path}`    | One class context file, quoted; not SRD text                              |
+| `GET /api/ionas`                   | The optional rulebook's files, or `[]` when it is not installed           |
+| `GET /api/ionas/{name}`            | One rule from the optional rulebook, quoted; not SRD text                 |
 | `GET /api/search`                  | Search the vector index directly, for inspection                          |
 | `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
 
@@ -215,6 +245,41 @@ The path arrives from a URL, so it is checked rather than trusted: anything reso
 `context/classes` is refused, and the front end declines to render a link for a path that
 does not match the pattern. A traversal here would read any file on the machine and serve it
 as a rule.
+
+#### The optional second rulebook
+
+`context/DnD-Character-Sheet-Helper/` is the only source that fills the SRD's biggest
+subclass gap. The 2024 SRD ships exactly **one subclass per class** — for a Warlock the Fiend
+Patron, for a Wizard the Evoker — so a question about a Celestial Warlock's *Healing Light*
+or a Diviner's *Portent* has no SRD answer at all. It is a third-party checkout, fetched by
+`scripts/fetch-context.sh` and **gitignored**, so it is read in place and never redistributed
+by this repository. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the pin, the
+licence and the verification of its content against the SRD.
+
+**Optional is the whole design.** `ionas.available()` is one `is_dir` check; when the folder
+is absent, `sections()` is empty, `GET /api/ionas` returns `[]` and every caller degrades to
+the SRD — a machine without the checkout behaves exactly as it did before this source
+existed, and loses no feature. Empty is a normal answer rather than a 404, so a client does
+not have to treat an expected absence as a fault.
+
+Its rules are indexed alongside the spells and the SRD, one row per rule, under their own
+`doc_type: "ionas-politis"`. That tag is not cosmetic: the two rule sources are **not equally
+authoritative** — the SRD is the 2024 authority and is quoted, this is a transcription of the
+books — so a filter and a badge can name either, and `GET /api/ionas/{name}` reports
+`source: "ionas-politis"` rather than the SRD's badge.
+
+Two properties of the source are worth knowing before trusting an answer from it:
+
+- **It is a scan.** ~30 words arrive broken (`protec-tion`, `w ith`, a stray `O` for `0`) and
+  some headings are embedded in the prose they head. `ionas.normalise()` repairs these
+  against a dictionary built from the vendored SRD — the authority on how these words are
+  spelled — and repairs conservatively, since `a ward` joins to `award` while `a Long Rest`
+  must not join at all.
+- **Upstream has some wrong names**, deliberately not corrected because that would be this
+  project inventing rules text: three invocation keys disagree with the SRD (`repelling-blast`
+  holds *Repelling Blade*, where the SRD says *Repelling Blast*), and eight spell files are
+  stray copies whose `name` names a different spell than the file does. Where the two sources
+  overlap the SRD is the authority, and this source is consulted for what the SRD lacks.
 
 #### The Rules tab's ask box: three readings, in parallel
 
