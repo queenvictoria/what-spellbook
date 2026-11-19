@@ -34,6 +34,13 @@ _embeddings = None
 SRD_CHUNK_SIZE = 1200
 SRD_CHUNK_OVERLAP = 150
 
+# The spell corpus is chunked with the same budget, and it is the *same two values* rather
+# than two literals that happen to agree - a spell page and a rule are read by one search, so
+# a page split in half as many pieces would crowd out the rules beside it. Named here rather
+# than written twice for the reason the comment above gives.
+SPELL_CHUNK_SIZE = SRD_CHUNK_SIZE
+SPELL_CHUNK_OVERLAP = SRD_CHUNK_OVERLAP
+
 # The two values the index records for ``sources``. Named rather than inline because the
 # absent case is also the fallback for an index written before the field existed, and the
 # two spellings have to agree or that fallback silently forces a rebuild.
@@ -131,43 +138,10 @@ def build_index(docs_path: Path, db_dir: str, srd_path: Path | None = None,
     logging.info(
         f"Processing and vectorizing all {len(md_files)} files. This will take a moment..."
     )
-    documents = []
 
-    for p in md_files:
-        try:
-            content = p.read_text(encoding="utf-8")
-            logging.debug(f"Read file: {p}")
-
-            # Parse level/school/class-list/ritual out of the page header so the
-            # eligibility filters can run inside Chroma instead of in the prompt.
-            parsed = spells.parse_spell(spells.prettify_name(p.stem), p.name, content)
-
-            # Secure the spell name explicitly inside the document body text block
-            secured_content = f"Spell Name: {parsed.name}\n\n{content}"
-
-            documents.append(
-                Document(page_content=secured_content, metadata=spells.build_metadata(parsed, str(p)))
-            )
-        except Exception as e:
-            logging.error(f"Could not read file {p}: {e}")
-
-    if not documents:
+    final_docs = _spell_documents(md_files)
+    if not final_docs:
         raise IndexUnavailable(f"No readable spell documents under {docs_path}.")
-
-    # Split using Markdown header tags matching the exact spell sheet structure
-    headers_to_split_on = [("#", "Spell Name Header")]
-    md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
-
-    final_docs = []
-    for doc in documents:
-        header_splits = md_splitter.split_text(doc.page_content)
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=1200, chunk_overlap=150)
-        chunks = text_splitter.split_documents(header_splits)
-
-        # Ensure metadata maps down accurately to each generated text chunk
-        for chunk in chunks:
-            chunk.metadata.update(doc.metadata)
-        final_docs.extend(chunks)
 
     final_docs.extend(_srd_documents(srd_path))
     final_docs.extend(_ionas_documents(ionas_path))
@@ -227,6 +201,92 @@ class _Precomputed:
 
     def embed_query(self, text):
         return self._embeddings.embed_query(text)
+
+
+def _spell_documents(md_files: list[Path]) -> list[Document]:
+    """The spell corpus as indexable chunks, one row per *chunk* rather than per page.
+
+    Unlike the rulebook lanes, a spell page *is* split: 544 pages across 1,232 rows is the
+    measured shape, and the split point is the page's own ``#`` heading so a chunk never
+    begins mid-description.
+
+    Every chunk repeats the whole page's metadata, and it has to. ``build_metadata`` reads
+    level, school, class list and ritual from the page header, which lives in the *first*
+    chunk - so a filter evaluated against a later chunk with no metadata of its own would
+    find nothing and the spell would vanish from an eligibility lane. That is the failure
+    this copy exists to prevent, and it is invisible without counting rows.
+
+    A page that cannot be read is logged and skipped rather than raising, because a corpus
+    is allowed to contain one broken file and the remaining 543 are still an index.
+    """
+    documents: list[Document] = []
+
+    for p in md_files:
+        try:
+            content = p.read_text(encoding="utf-8")
+            logging.debug(f"Read file: {p}")
+
+            # Parse level/school/class-list/ritual out of the page header so the
+            # eligibility filters can run inside Chroma instead of in the prompt.
+            parsed = spells.parse_spell(spells.prettify_name(p.stem), p.name, content)
+
+            # Secure the spell name explicitly inside the document body text block
+            secured_content = f"Spell Name: {parsed.name}\n\n{content}"
+
+            documents.append(
+                Document(page_content=secured_content, metadata=spells.build_metadata(parsed, str(p)))
+            )
+        except Exception as e:
+            logging.error(f"Could not read file {p}: {e}")
+
+    # Split using Markdown header tags matching the exact spell sheet structure
+    headers_to_split_on = [("#", "Spell Name Header")]
+    md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+
+    final_docs = []
+    for doc in documents:
+        header_splits = md_splitter.split_text(doc.page_content)
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=SPELL_CHUNK_SIZE, chunk_overlap=SPELL_CHUNK_OVERLAP
+        )
+        chunks = text_splitter.split_documents(header_splits)
+
+        # Ensure metadata maps down accurately to each generated text chunk
+        for chunk in chunks:
+            chunk.metadata.update(doc.metadata)
+
+        final_docs.extend(_fold_name_into_first_chunk(chunks, doc.metadata["spell_name"]))
+
+    return final_docs
+
+
+def _fold_name_into_first_chunk(chunks: list[Document], name: str) -> list[Document]:
+    """Merge the injected ``Spell Name:`` line into the page's first real chunk.
+
+    The name is injected into the body because ``parse_spell`` reads it from the *filename*
+    and six corpus files are named after a different spell than they contain - so the
+    authoritative name has to travel with the text, not only with the metadata.
+
+    But the Markdown splitter splits on ``#`` headings, and the injected line sits *above*
+    the page's own heading. It therefore becomes a chunk of its own, containing nothing but
+    the name. Measured on the live index, that was **540 of 4,674 rows** - one per page,
+    ~11.5% of the index - each an embedded row with no content, and each eligible to come
+    back as a search hit that displays a spell's name and nothing else.
+
+    Folding rather than dropping, because dropping would lose the name from the body and
+    reintroduce the mis-named-file problem the injection exists to solve. A page that is
+    *only* its name keeps that single chunk, so the spell does not vanish from the index.
+    """
+    if len(chunks) < 2:
+        return chunks
+
+    prefix = f"Spell Name: {name}"
+    if chunks[0].page_content.strip() != prefix:
+        return chunks
+
+    first, rest = chunks[1], chunks[1:]
+    first.page_content = f"{prefix}\n\n{first.page_content}"
+    return rest
 
 
 def _srd_documents(srd_path: Path | None = None) -> list[Document]:
