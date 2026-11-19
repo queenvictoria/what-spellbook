@@ -173,6 +173,44 @@ def test_text_mode_accepts_an_empty_query_to_browse(db):
     assert result.total_matching == 2
 
 
+# --- the candidate cap note ---------------------------------------------------
+
+
+def test_the_cap_note_compares_chunks_asked_for_with_chunks_returned(db):
+    """The note used to compare *collapsed documents* against a *chunk* budget.
+
+    Those are only equal when every document contributes exactly one chunk, so the check was
+    backwards in practice: the spell corpus folds ~2.35 chunks into one hit and suppressed the
+    note, while the rulebook folds ~1.02 and fired it on almost every search. Here four
+    chunks collapse into three documents, so the old comparison stayed silent even though the
+    search really did hit its ceiling.
+    """
+    # limit=1 -> candidates = min(1 * CANDIDATE_FACTOR, MAX_CANDIDATES) = 4 chunks.
+    result = search.search(db, "fire", mode="vector", limit=1)
+    assert len(result.hits) == 1
+    assert result.note is not None
+    assert "capped at 4" in result.note
+
+
+def test_the_cap_note_does_not_fire_below_the_budget(db):
+    """A search that returned everything it asked for has no ceiling to report."""
+    result = search.search(db, "fire", mode="vector", limit=6)
+    assert result.note is None
+
+
+def test_the_cap_note_stops_saying_raise_the_limit_at_the_ceiling(db, monkeypatch):
+    """"Raise limit" is not advice when the limit is already the maximum.
+
+    At the ceiling the note names the filters instead, because that is the only thing left
+    that can widen what is visible.
+    """
+    monkeypatch.setattr(search, "MAX_CANDIDATES", 4)
+    result = search.search(db, "fire", mode="vector", limit=100)
+    assert result.note is not None
+    assert "maximum" in result.note
+    assert "Raise the limit" not in result.note
+
+
 def test_vector_mode_needs_text_to_embed(db):
     with pytest.raises(ValueError, match="needs some text"):
         search.search(db, "", mode="vector")

@@ -556,11 +556,25 @@ def search(db, query: str = "", *, mode: str = "vector", limit: int = DEFAULT_LI
         # many the filter admits" - and that is the useful number here, because it says
         # whether the filter is too narrow.
         total = len(_distinct_spells(_metadatas(db, where)))
-        if len(hits) >= candidates:
-            note = (
-                f"Results are capped at {candidates} candidate chunk(s); ranking beyond "
-                "that was not considered. Raise limit or narrow the filters."
-            )
+        # Compare *chunks retrieved* against *chunks asked for*, not collapsed documents
+        # against the chunk budget. `_collapse` folds ~2.35 chunks into one hit for a spell
+        # and ~1.02 for a rule, so the old comparison only held when every document happened
+        # to contribute exactly one chunk: it stayed silent on a truncated spell search and
+        # fired on almost every rulebook search, which is precisely backwards.
+        if len(scored) >= candidates:
+            if candidates >= MAX_CANDIDATES:
+                # "Raise the limit" is not advice when the limit is already at the ceiling,
+                # so say what actually narrows it instead of naming a control that is maxed.
+                note = (
+                    f"This search was capped at {candidates} chunks, which is the maximum; "
+                    "further candidates were not ranked. Narrow the filters to see more of "
+                    "what you are looking for."
+                )
+            else:
+                note = (
+                    f"This search was capped at {candidates} chunks, so documents beyond "
+                    "that were not ranked. Raise the limit or narrow the filters."
+                )
         hits = hits[offset:offset + limit]
 
     return Result(
