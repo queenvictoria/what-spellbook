@@ -1241,6 +1241,41 @@ def test_an_installed_rulebook_source_can_be_read_by_name(api):
     assert "Celestial" in body["title"]
 
 
+def test_a_rulebook_rule_says_where_it_sits(api):
+    """The breadcrumb trail is part of the wire contract, because only the server can build it.
+
+    "Healing Light" does not say it is a Celestial Patron feature, and its own file never
+    names the class - the class is in the *filename* and the subclass is the key it sits
+    under. A client holding one rule cannot reconstruct that, so the trail is sent.
+    """
+    body = api.get("/api/ionas/Healing Light").json()
+    assert body["ancestors"] == [
+        {"text": "Classes", "slug": "", "level": 1},
+        {"text": "Warlock", "slug": "", "level": 2},
+        {"text": "Celestial Patron", "slug": "", "level": 3},
+    ]
+
+
+def test_a_rulebook_choice_names_the_feature_that_grants_it(api):
+    """The cross-file link survives serialisation.
+
+    An invocation's own file says only "Invocation". The class and the granting feature are
+    recovered from a router and a third file, so the trail is the one thing on the wire that
+    could not have been derived from the payload the client already has.
+    """
+    body = api.get("/api/ionas/Agonizing Blast").json()
+    assert [crumb["text"] for crumb in body["ancestors"]] == [
+        "Warlock", "Eldritch Invocations",
+    ]
+
+
+def test_a_flat_rulebook_entry_has_an_empty_trail(api):
+    """A spell has nothing above it, and `ancestors` is present-but-empty rather than absent,
+    so a client can map over it without a null check."""
+    body = api.get("/api/ionas/Acid Splash").json()
+    assert body["ancestors"] == []
+
+
 def test_an_unknown_rule_in_the_optional_source_is_a_404(api):
     response = api.get("/api/ionas/No Such Rule Exists")
     assert response.status_code == 404

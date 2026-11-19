@@ -344,6 +344,25 @@ export interface IonasSection {
   text: string
   kind: string
   source: string
+  /**
+   * Where the rule sits, outermost first, excluding the rule itself.
+   *
+   * Empty for a spell, a feat and an item, which are single flat entries with nothing above
+   * them. Populated for a class or subclass feature, a class choice and a species trait,
+   * where the name alone does not say what it belongs to. Every crumb's `slug` is empty:
+   * the labels name files and folders, not other rules, so they render as text rather than
+   * links — see `RulebookBreadcrumb`.
+   */
+  ancestors: IonasCrumb[]
+}
+
+/** One step above an `IonasSection`. Mirrors `IonasCrumbSchema`. */
+export interface IonasCrumb {
+  text: string
+  /** Always empty for this source; kept so the shape matches the SRD's. */
+  slug: string
+  /** Depth, 1-based. */
+  level: number
 }
 
 export interface Character {

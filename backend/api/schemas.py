@@ -619,6 +619,21 @@ class IonasFileSchema(BaseModel):
     sections: int
 
 
+class IonasCrumbSchema(BaseModel):
+    """One step in a rulebook rule's ancestry, for a breadcrumb.
+
+    ``slug`` is empty for every crumb this source produces, and the client must render those
+    as text rather than links. That is not an omission: the source's hierarchy is files and
+    folders, and one section is emitted per rule, so there is no other section a crumb could
+    point at. The field is kept with the same shape as ``SrdCrumbSchema`` so one component
+    can draw both.
+    """
+
+    text: str
+    slug: str = ""
+    level: int = 0
+
+
 class IonasSectionSchema(BaseModel):
     """One rule from the optional rulebook, quoted.
 
@@ -626,6 +641,11 @@ class IonasSectionSchema(BaseModel):
     for the same reason ``ClassContextSchema`` is: this text is not the SRD. It is a scan of
     the 2024 books from a third-party source, so it must not be able to wear the SRD's
     quotation badge. ``source`` is always ``ionas-politis``.
+
+    ``ancestors`` is the chain of labels above the rule, outermost first, excluding the rule
+    itself. Sent for the same reason the SRD's is: ``Agonizing Blast`` does not say it is a
+    Warlock invocation, and only the server knows that the link between the two lives in a
+    third file.
     """
 
     name: str
@@ -635,3 +655,4 @@ class IonasSectionSchema(BaseModel):
     text: str
     kind: str = "rule"
     source: str = "ionas-politis"
+    ancestors: list[IonasCrumbSchema] = Field(default_factory=list)

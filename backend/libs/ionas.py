@@ -53,7 +53,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 
@@ -68,6 +68,17 @@ SOURCE = "ionas-politis"
 CLASSES = "classes"
 SUBCLASS_SUFFIX = "-subclasses"
 CLASS_CHOICES = "classChoices"
+
+# The heading each folder is presented under, so a breadcrumb starts at something a reader
+# recognises rather than at a directory name. A class is filed under "Classes", a species
+# trait under "Species" - the source's own folder for the latter is `races/`, which is the
+# 2014 word and is not what the 2024 rules call it.
+CLASSES_LABEL = "Classes"
+SPECIES_LABEL = "Species"
+FEATS_LABEL = "Feats"
+ITEMS_LABEL = "Items"
+SPELLS_LABEL = "Spells"
+RULES_LABEL = "Rules"
 
 # File stems that hold a *router* (a `slug -> Display Name` map) or a per-class spell list
 # rather than rules text. They are navigation, not content: their headings would be a bare
@@ -142,6 +153,24 @@ class IonasUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
+class Crumb:
+    """One step above a rule, for a breadcrumb.
+
+    ``slug`` is empty when no rule exists behind the label. That is not a gap to paper over:
+    the source has rules called *Eldritch Invocations* and *Celestial Patron*, but nothing
+    called *Warlock* - the class is a file of features, not a section - so a "Warlock" crumb
+    can be a label and cannot be a link. Rendering it as a control that does nothing would
+    be worse than rendering it as text.
+    """
+
+    text: str
+    slug: str = ""
+    # Depth, 1-based. The SRD's equivalent is the heading level; here it is the crumb's
+    # position in the trail, because the source has no heading depth to report.
+    level: int = 0
+
+
+@dataclass(frozen=True)
 class Section:
     """One rule from this source, ready to index or render.
 
@@ -164,6 +193,10 @@ class Section:
     level: int = 0
     # Every level the rule is granted at, for a class feature repeated across levels.
     levels: tuple[int, ...] = ()
+    # Where the rule sits, outermost first, excluding the rule itself - the same contract as
+    # ``srd.Section.ancestors``. ``Eldritch Invocations`` alone does not say it is a Warlock
+    # feature, and ``Agonizing Blast`` alone does not say it is one of its invocations.
+    ancestors: tuple[Crumb, ...] = ()
 
 
 def directory(override=None) -> Path:
@@ -340,8 +373,111 @@ def _reference(path: Path) -> str:
         return str(path)
 
 
+def _trail(*labels: str) -> tuple[Crumb, ...]:
+    """A breadcrumb trail from a list of labels, numbered outward in.
+
+    Every step here is a *label* and none is a link, unlike the SRD where a crumb can be
+    another heading. The source's hierarchy is made of files and folders - the class, the
+    subclass, the folder a rule is filed under - and this module emits one section per rule,
+    so the only section a crumb could point at is the rule itself. A trail of labels is the
+    honest answer: it says where the rule sits, which is what a reader arriving from a
+    citation cannot otherwise know.
+    """
+    kept = [normalise(label) for label in labels]
+    kept = [label for label in kept if label]
+    return tuple(
+        Crumb(text=label, level=index + 1) for index, label in enumerate(kept)
+    )
+
+
+def _owner_class(path: Path) -> str:
+    """The class a subclass file belongs to, from its name.
+
+    Subclass files are keyed by subclass and carry no class name in their content -
+    ``warlock-subclasses.json`` holds ``"Celestial Patron"`` and nothing that says Warlock -
+    so the stem is the only place the class is recorded. Without it a subclass feature has
+    no parent and the breadcrumb would start at the subclass, which does not say what it is
+    a subclass *of*.
+    """
+    stem = path.stem.removesuffix(SUBCLASS_SUFFIX)
+    return stem.replace("-", " ").title()
+
+
+def _strip_parenthetical(text: str) -> str:
+    """A router's display name without its prerequisite note.
+
+    The routers annotate their entries - ``"Agonizing Blast (Level 2+ Warlock, a Warlock
+    Cantrip That Deals Damage)"`` - because they are building a menu, and the note belongs in
+    the menu. The name is what the leaf file calls itself, so the note is removed before
+    matching the two.
+    """
+    return re.sub(r"\s*\(.*\)\s*$", "", text).strip()
+
+
+def _choice_owners(root: Path) -> dict[str, tuple[str, str]]:
+    """Which class feature grants each class choice, keyed by the choice's folded name.
+
+    A class-choice file is the most orphaned rule in the source. ``agonizing-blast.json``
+    says only that it is an *Invocation*; nothing in it, or in its filename, says it is a
+    Warlock option. The link exists, but across three files: a class file declares
+    ``"classChoices": ["eldritch-invocations"]`` under the *Eldritch Invocations* feature,
+    and that router maps each slot to the choice it names. Chasing it here is what lets a
+    breadcrumb read ``Warlock / Eldritch Invocations`` instead of ``Invocation``, which is a
+    category rather than a place in the hierarchy.
+
+    A router can be declared by more than one feature - the Blood Hunter lists
+    ``blood-curses`` under both *Hemocraft* and *Blood Curses* - so the candidates are ranked
+    by how many words the feature name shares with the router's own name. That is what picks
+    *Blood Curses* over *Hemocraft*: the source does not say which is the real parent, but
+    the names do.
+
+    Returns an empty mapping when the layout is not the one expected, because a class choice
+    with the weaker ``Invocation`` trail is still readable - and a breadcrumb is not worth
+    failing an index build over.
+    """
+    routers: dict[str, set[tuple[str, str]]] = {}
+    for path in _files(root):
+        if path.parent.name != CLASSES or path.stem.endswith(SUBCLASS_SUFFIX):
+            continue
+        data = _read(path)
+        if not isinstance(data, dict) or not isinstance(data.get("features"), dict):
+            continue
+        label = str(data.get("class") or path.stem.replace("-", " ").title()).strip()
+        for _level, entries in data["features"].items():
+            for entry in entries if isinstance(entries, list) else []:
+                if not isinstance(entry, dict):
+                    continue
+                feature = normalise(entry.get("name"))
+                choices = entry.get("classChoices")
+                if not feature or not isinstance(choices, list):
+                    continue
+                for router in choices:
+                    if isinstance(router, str):
+                        routers.setdefault(router, set()).add((label, feature))
+
+    owners: dict[str, tuple[str, str]] = {}
+    for router, features in routers.items():
+        path = root / CLASSES / CLASS_CHOICES / f"{router}.json"
+        data = _read(path)
+        if not isinstance(data, dict):
+            continue
+        words = set(_fold(router).replace("-", " ").split())
+        # Most shared words first, then the longest feature name - "Improved Brand of
+        # Castigation" is the specific feature where "Brand of Castigation" is the general one.
+        best = max(
+            features,
+            key=lambda pair: (len(words & set(_fold(pair[1]).split())), len(pair[1])),
+        )
+        for display in data.values():
+            name = _strip_parenthetical(str(display or ""))
+            if name:
+                owners.setdefault(_fold(name), best)
+    return owners
+
+
 def _section(*, name: str, title: str, text: str, kind: str, path: Path | None = None,
-             levels=(), prefix: str = "", level: int = 0) -> Section | None:
+             levels=(), prefix: str = "", level: int = 0,
+             ancestors: tuple[Crumb, ...] = ()) -> Section | None:
     """Build a section, or None when it carries no text to show.
 
     A section with a name and no body is a navigation entry - the router files are full of
@@ -372,6 +508,7 @@ def _section(*, name: str, title: str, text: str, kind: str, path: Path | None =
         kind=kind,
         level=level,
         levels=tuple(sorted(int(lv) for lv in levels if str(lv).isdigit())),
+        ancestors=ancestors,
     )
 
 
@@ -403,6 +540,9 @@ def _class_sections(data: dict, path: Path) -> list[Section]:
         section = _section(
             name=name, title=f"{label} - {name}", text=slot["description"],
             kind="class feature", path=path, levels=slot["levels"], prefix=label,
+            # The class name is the outermost crumb and is not itself a rule, so it is a
+            # label rather than a link - see `_trail`.
+            ancestors=_trail(CLASSES_LABEL, label),
         )
         if section is not None:
             found.append(section)
@@ -446,6 +586,7 @@ def _spellcasting_table(spellcasting, label: str) -> Section | None:
         text="\n".join(lines),
         kind="class",
         prefix=label,
+        ancestors=_trail(CLASSES_LABEL, label),
     )
 
 
@@ -453,6 +594,7 @@ def _subclass_sections(data: dict, path: Path) -> list[Section]:
     """One section per subclass feature. The file is keyed by subclass name, then level."""
     if not isinstance(data, dict):
         return []
+    label = _owner_class(path)
     found: list[Section] = []
     for subclass, levels in data.items():
         if not isinstance(levels, dict):
@@ -469,6 +611,7 @@ def _subclass_sections(data: dict, path: Path) -> list[Section]:
                     path=path,
                     levels=(level,),
                     prefix=subclass,
+                    ancestors=_trail(CLASSES_LABEL, label, subclass),
                 )
                 if section is not None:
                     found.append(section)
@@ -490,6 +633,12 @@ def _choice_sections(data, path: Path) -> list[Section]:
         text=data.get("description"),
         kind=str(data.get("badge") or "class choice").lower(),
         path=path,
+        # The badge is the granting feature's category - "Invocation", "Metamagic" - and a
+        # rule like *Agonizing Blast* is unreadable without it: nothing in the name says it
+        # is a Warlock option rather than a spell. The folder is the crumb above because
+        # the source keeps every class choice in one directory, whatever class it belongs
+        # to, so the folder is the only ancestor the file itself carries.
+        ancestors=_trail(CLASSES_LABEL, str(data.get("badge") or "")),
     )
     return [section] if section is not None else []
 
@@ -524,6 +673,8 @@ def _race_sections(data: dict, path: Path) -> list[Section]:
             kind="species trait",
             path=path,
             prefix=race,
+            # "Darkvision" is a trait of ten species, so the trail is what says which one.
+            ancestors=_trail(SPECIES_LABEL, race),
         )
         if section is not None:
             found.append(section)
@@ -570,6 +721,9 @@ def _rule_sections(data: dict, path: Path) -> list[Section]:
             kind=str(entry.get("badge") or "optional rule").lower(),
             path=path,
             prefix=title,
+            # The rules file is a small collection of variant rules ("Desperate Measures"),
+            # so its own title is the only grouping an entry has.
+            ancestors=_trail(RULES_LABEL, title),
         )
         if section is not None:
             found.append(section)
@@ -662,6 +816,9 @@ def _cached_sections(resolved: str) -> tuple[Section, ...]:
     # silent-staleness class of bug this project has already paid for once, with
     # monkeypatched paths that kept passing while testing nothing.
     root = Path(resolved)
+    # Built once for the whole source, because the link it recovers spans three files and a
+    # per-file builder cannot see the other two - see `_choice_owners`.
+    owners = _choice_owners(root)
     found: list[Section] = []
     seen: set[tuple[str, str, str]] = set()
     for path in _files(root):
@@ -676,8 +833,22 @@ def _cached_sections(resolved: str) -> tuple[Section, ...]:
             if key in seen:
                 continue
             seen.add(key)
-            found.append(section)
+            found.append(_with_owner(section, owners))
     return tuple(found)
+
+
+def _with_owner(section: Section, owners: dict[str, tuple[str, str]]) -> Section:
+    """A class choice's trail, extended with the class and feature that grant it.
+
+    Kept separate from the builder so the choice's own file stays readable on its own: the
+    builder can only say *Invocation*, and this adds *Warlock / Eldritch Invocations* from the
+    index. A rule whose owner cannot be recovered keeps the shorter trail rather than losing
+    its breadcrumb, and a non-choice section is returned untouched.
+    """
+    owner = owners.get(_fold(section.name))
+    if not owner:
+        return section
+    return replace(section, ancestors=_trail(*owner))
 
 
 def sections(override=None) -> list[Section]:
@@ -741,6 +912,10 @@ def lookup(name: str, override=None) -> dict | None:
                 "slug": section.slug,
                 "kind": section.kind,
                 "source": SOURCE,
+                "ancestors": [
+                    {"text": crumb.text, "slug": crumb.slug, "level": crumb.level}
+                    for crumb in section.ancestors
+                ],
             }
     return None
 

@@ -585,6 +585,46 @@ than the file does), and correcting them would be this project inventing rules t
 the two sources overlap the SRD is the authority; this one is consulted for what the SRD
 lacks. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the verification.
 
+### Where a rulebook rule sits: the hierarchy is filenames
+
+`ionas.Section.ancestors` is the chain of labels above a rule, outermost first, excluding
+the rule itself — the same contract as `srd.Section.ancestors`, and what
+`RulebookBreadcrumb` draws. Building it is a different job from the SRD's, because the SRD
+records its hierarchy *in the text* as headings while this source records it in **filenames
+and directories**. A rule read on its own therefore says nothing about where it belongs.
+
+- **A class choice's parent lives in a third file.** `agonizing-blast.json` says only that
+  it is an *Invocation* — a category, not a place. The real link is three files deep: a
+  class file declares `"classChoices": ["eldritch-invocations"]` on the *Eldritch
+  Invocations* feature, and that router maps each slot to the choice it names.
+  `_choice_owners` walks all three once per source, because a per-file builder cannot see
+  the other two. Verified: all 73 class choices resolve, none ambiguously.
+- **The router annotates its own entries**, `"Agonizing Blast (Level 2+ Warlock, a Warlock
+  Cantrip That Deals Damage)"`, because it is building a menu. The note is stripped before
+  matching, or nothing matches and every invocation silently keeps the weaker crumb — a
+  failure that looks like success.
+- **A router can be declared by two features, and only the names say which owns it.** The
+  Blood Hunter lists `blood-curses` under both *Hemocraft* and *Blood Curses*; the source
+  never says which is the parent. Candidates are ranked by how many words the feature name
+  shares with the router's name, which picks *Blood Curses* and would have picked
+  *Hemocraft* on file order.
+- **A subclass file never names its class.** `warlock-subclasses.json` is keyed by subclass
+  and holds no class name anywhere, so the class comes from the *stem*. Without it the trail
+  starts at *Celestial Patron* and never says what it is a patron of.
+- **Every crumb is a label, and its `slug` is empty.** The hierarchy is files and folders and
+  one section is emitted per rule, so a crumb names a place with no page of its own. Handing
+  a client a slug would send it looking for a rule that does not exist — and this project has
+  already paid for that class of bug once: a link that fails looks like a missing rule rather
+  than a missing page.
+- **The folder is the crumb above a class choice only when the owner cannot be traced.** The
+  fallback trail is `Classes / Invocation`, which is weaker but never empty. A breadcrumb is
+  not worth failing an index build over, so a layout change degrades rather than raises.
+- **A flat entry gets no trail at all.** A spell, a feat and an item are single entries with
+  nothing above them; an invented parent would send a reader looking for it.
+
+`ancestors` is rendering data, so it is not in the index metadata — a hit is opened by name
+and the trail is fetched with the rule.
+
 ### Browsing the SRD: a section knows where it sits
 
 `backend/libs/srd.py` reads the vendored files as documents, and `Section.ancestors` is the

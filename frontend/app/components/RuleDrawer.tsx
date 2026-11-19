@@ -5,6 +5,7 @@ import { X } from "lucide-react"
 import { api } from "@/api/client"
 import type { IonasSection } from "@/api/types"
 import { ClassContextCard } from "@/components/ClassContextCard"
+import { RulebookCard } from "@/components/RulebookCard"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { SrdCard } from "@/components/SrdCard"
 import { SrdTree } from "@/components/SrdTree"
@@ -149,10 +150,11 @@ function ClassBody({ target }: { target: RuleTarget }) {
 /**
  * One rule from the optional third-party rulebook, read from the drawer.
  *
- * The card is the shared `ClassContextCard`, and the badge it shows is deliberately **not**
- * the SRD's quotation badge: this text is a scan of the 2024 books rather than the SRD, so
- * showing it as the rulebook would let a transcription pass for the authority. `document` is
- * the rule's *name*, because that is what the endpoint addresses it by.
+ * The card is `RulebookCard`, which carries the rule's breadcrumb and its own badge. The
+ * badge is deliberately **not** the SRD's quotation badge: this text is a scan of the 2024
+ * books rather than the SRD, so showing it as the rulebook would let a transcription pass
+ * for the authority. `document` is the rule's *name*, because that is what the endpoint
+ * addresses it by.
  */
 function RulebookBody({ target }: { target: RuleTarget }) {
   const [found, setFound] = useState<{
@@ -186,7 +188,7 @@ function RulebookBody({ target }: { target: RuleTarget }) {
       {current?.kind === 'error' && <ErrorNotice error={current.error} compact />}
 
       {current?.kind === 'ok' && current.document && (
-        <ClassContextCard document={current.document} />
+        <RulebookCard section={current.document} />
       )}
     </div>
   )
