@@ -190,6 +190,20 @@ Measured, the flattening also loses information before the model does anything: 
 SRD chunks collapse to 1,166 heading names**, and those names are the anchors that let a
 citation open the rule it came from.
 
+Verified live against the rebuilt index, all three of the cases the strict matcher exists
+for resolve to the right heading — and the guide's design has nothing to anchor on:
+
+```
+'How does cover work?'            -> rules-glossary.md#cover
+'What is a short rest?'           -> rules-glossary.md#short-rest
+'How do I stabilize a creature?'  -> playing-the-game.md#stabilizing-a-character
+```
+
+The third is the one to look at: the subject word in the question is *creature*, and the
+heading that answers it is *Stabilizing a Character*. A vector search returns the nearest
+section, which on this corpus means the **Creature** heading — exactly the failure
+`AGENTS.md` records as already having happened once, and the reason the anchor exists.
+
 **(d) It breaks the source-attribution contract.** Every answer in this app carries a
 source badge (`sheet` / `model` / `rules` / `rules-inferred`) that tells the reader whether
 a sentence is *quoted from the 2024 SRD* or *generated*. That distinction is the reason the
