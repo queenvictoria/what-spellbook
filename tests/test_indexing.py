@@ -231,6 +231,33 @@ def test_a_corpus_with_no_readable_page_is_an_error_not_an_empty_index(tmp_path)
         indexing.build_index(empty, str(tmp_path / "db"), srd_path=tmp_path / "no-srd")
 
 
+def test_no_page_in_the_real_corpus_emits_a_name_only_chunk():
+    """The 540-row defect, asserted against the corpus that actually had it.
+
+    The miniature fixture proves the fold works; this proves the corpus no longer needs it,
+    because the failure was invisible in a one-page test and only appeared as a count.
+    Skipped when the 544-file corpus is not present, since it is untracked user data.
+    """
+    from pathlib import Path
+
+    directory = Path(str(config.DOCS_DIR_PATH))
+    files = list(directory.rglob("*.md"))
+    if len(files) < 100:
+        pytest.skip("the real spell corpus is not installed")
+
+    docs = indexing._spell_documents(files)
+    stubs = [
+        d for d in docs
+        if d.page_content.strip().startswith("Spell Name:")
+        and len(d.page_content.strip().split("\n")) == 1
+    ]
+
+    assert stubs == []
+    # Every row must still be independently usable: a filter reads these, so a row without
+    # them would vanish from whatever lane asked.
+    assert all("level" in d.metadata and "doc_type" in d.metadata for d in docs)
+
+
 def test_the_index_records_the_version_that_built_it():
     """The version is stored in the collection metadata and compared on read.
 
@@ -246,3 +273,7 @@ def test_the_index_records_the_version_that_built_it():
     source = inspect.getsource(indexing.build_index)
     assert '"index_version": config.INDEX_VERSION' in source
     assert '"sources": available_sources' in source
+
+    # 5 removed the name-only rows, which ``sources_match`` cannot detect because the *shape*
+    # did not change - so the version is the only guard that reaches an existing index.
+    assert config.INDEX_VERSION >= 5

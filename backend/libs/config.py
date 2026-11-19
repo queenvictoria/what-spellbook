@@ -40,7 +40,18 @@ DB_DIR = "./data/chroma_db"
 # "invalidates the user's data for nothing" mistake the cache schema notes describe. What
 # actually needs guarding is that an *installed* source is missing from the index, and that
 # is checked precisely, by ``indexing.sources_match`` against the index's own record.
-INDEX_VERSION = 4
+#
+# 5 removed 540 content-free rows. An injected ``Spell Name: <name>`` line sat above each
+# page's own ``#`` heading, so the heading splitter cut it into a chunk containing nothing
+# else - one per spell page, 11.5% of the whole index, every one of them an embedded row
+# that could return as a search hit showing a spell's name and no text. This *is* a change
+# to the rows rather than to the shape, so ``sources_match`` cannot see it and the version
+# is the only guard that can. The cost is deliberate and bounded: a rebuild, plus one fresh
+# model call for the next recommendation per character, because ``db_version`` joins the run
+# cache key. Existing runs are not deleted - ``cache.load_runs`` globs every version - so
+# history and ratings survive; they are only no longer *replayed*, which is the honest
+# behaviour when the index that produced them has changed underneath.
+INDEX_VERSION = 5
 
 # The optional second rulebook - the DnD Character Sheet Helper JSON, read in place and
 # skipped when absent. Point ``IONAS_DIR`` at a checkout elsewhere to override. See
