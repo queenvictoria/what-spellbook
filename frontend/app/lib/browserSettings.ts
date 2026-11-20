@@ -1,33 +1,68 @@
 /**
- * The one setting the browser owns: which API to talk to.
+ * The settings the browser owns, which is now all of them.
  *
- * Everything else the Settings page edits — the models and the OpenRouter key — is read by
- * the *backend* when it builds a model client, so a browser copy would be decorative. This
- * one is different in kind: the address has to be known before a request can be made at all,
- * so it cannot be fetched from the server it points at. It lives in `localStorage` for that
- * reason and for no other.
+ * `localStorage` is the store of record for the models and the OpenRouter key, because that is
+ * where the user set them and they have to survive without a server-side file. The API has no
+ * settings endpoint of its own that keeps anything: `PUT /api/settings` holds what it is sent
+ * *in memory for the life of the process* so the model client can be built from it, and
+ * nothing is written to disk. So a browser is the only durable copy, and the Next.js-style
+ * "server is the source of truth" model does not apply here.
  *
- * The build-time `VITE_API_BASE` remains the default, because a deployment should still be
- * able to bake the address in. A saved value is an override for the case that needs it: a
- * second API on another port, a copy on the LAN, a preview build pointed at a dev server.
+ * The one thing that cannot be a browser value is which settings the *server* pinned in its
+ * environment before it started. That outranks anything sent from here, so the page asks for
+ * it (`Settings.pinned`) and says so rather than letting a save look ignored.
+ *
+ * The API address is the same idea taken further: it has to be known before a request can be
+ * made, so it cannot even be sent anywhere.
  */
 
 /** `VITE_API_BASE` from the build, or the dev server every `npm run dev` wants. */
 export const BUILD_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
-const STORAGE_KEY = 'what-loadout.apiBase'
+const API_BASE_KEY = 'what-loadout.apiBase'
+const MODELS_KEY = 'what-loadout.models'
 
-/** The saved override, or null when the build's default should be used. */
-export function readApiBase(): string | null {
+/** The model settings a user has stored in this browser. */
+export interface StoredModelSettings {
+  reasoning_model?: string
+  fast_model?: string
+  api_key?: string
+  ollama_model?: string
+}
+
+/**
+ * Both stores degrade to "nothing saved" rather than throwing.
+ *
+ * Storage can be unavailable - a hard-blocked cookie setting, a sandboxed frame - and a
+ * settings screen must not be the thing that breaks the app. Reading nothing gives exactly the
+ * behaviour of having saved nothing, which is the fallback every caller already handles.
+ */
+function read(key: string): string | null {
   try {
-    const saved = window.localStorage.getItem(STORAGE_KEY)
-    return saved && saved.trim() ? saved.trim() : null
+    const value = window.localStorage.getItem(key)
+    return value && value.trim() ? value : null
   } catch {
-    // Storage can be unavailable — a hard-blocked cookie setting, a sandboxed frame — and a
-    // settings screen must not be the thing that breaks the app. Falling back to the build
-    // default is the same behaviour as having saved nothing.
     return null
   }
+}
+
+function write(key: string, value: string | null): boolean {
+  try {
+    if (value === null || !value.trim()) {
+      window.localStorage.removeItem(key)
+    } else {
+      window.localStorage.setItem(key, value)
+    }
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** The saved API override, or null when the build's default should be used. */
+export function readApiBase(): string | null {
+  const saved = read(API_BASE_KEY)
+  return saved ? saved.trim() : null
 }
 
 /**
@@ -45,24 +80,38 @@ export function hasApiBaseOverride(): boolean {
   return readApiBase() !== null
 }
 
-/**
- * Save an override, or clear it by passing null/blank.
- *
- * Returns nothing rather than throwing: the caller is a form that also has server-side saves
- * to report, and a browser that refuses to store is a reason to *say* so, not to fail the
- * whole submission.
- */
+/** Save an override, or clear it by passing null/blank. Returns whether it was stored. */
 export function writeApiBase(value: string | null): boolean {
+  return write(API_BASE_KEY, value)
+}
+
+/** The model settings stored in this browser, or an empty object when none are. */
+export function readModelSettings(): StoredModelSettings {
+  const raw = read(MODELS_KEY)
+  if (!raw) return {}
   try {
-    if (value === null || !value.trim()) {
-      window.localStorage.removeItem(STORAGE_KEY)
-      return true
-    }
-    window.localStorage.setItem(STORAGE_KEY, value.trim())
-    return true
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    // Only strings survive a round trip, so a hand-edited value cannot smuggle a non-string
+    // into a field the API expects as text.
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => typeof value === 'string'),
+    ) as StoredModelSettings
   } catch {
-    return false
+    // A corrupt entry is treated as nothing saved rather than as a hard failure: the user's
+    // next save overwrites it, and the page still opens with the server's defaults.
+    return {}
   }
+}
+
+/** Store the model settings, replacing whatever was there. Returns whether it was stored. */
+export function writeModelSettings(values: StoredModelSettings): boolean {
+  return write(MODELS_KEY, JSON.stringify(values))
+}
+
+/** Forget the stored model settings, so the server's defaults apply again. */
+export function clearModelSettings(): boolean {
+  return write(MODELS_KEY, null)
 }
 
 /**

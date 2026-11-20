@@ -104,16 +104,15 @@ one place.
       markdown files and homebrew content
 - [ ] Add a homebrew connector
 - [x] Create user settings page with localstorage for API keys and models
-      — the page is `frontend/app/screens/SettingsScreen.tsx` (Settings tab). The models and
-      the key are **not** in `localStorage` and cannot be: `llm._build()` reads them when it
-      constructs a client, and the key is the credential the *server* uses, so a browser copy
-      would be both decorative and readable by anything on the page. They are saved to
-      `.settings.json` at the repo root (gitignored, user data like `.env`) and layered
-      between `.env` and the launch environment by `config.env_view()` — a one-off
-      `LLM_MODEL=…` still wins, and `GET /api/settings` returns the key **masked**. Each field
-      reports which layer supplied its value, because a save can succeed and still not be the
-      value in use. `localStorage` holds the one setting that has to be known before a request
-      exists: the API base address.
+      — the page is `frontend/app/screens/SettingsScreen.tsx` (Settings tab), and the models
+      and key **are** in `localStorage`: the browser is the store of record. The server keeps
+      nothing — `PUT /api/settings` holds what it is sent in memory for the life of the
+      process so the model client can be built from it, and writes no file, because the key is
+      a credential and a server-side copy is a liability nobody asked for. The page re-pushes
+      on load, so a reload or a restart does not revert to the server's environment. One rule
+      overrides the browser: a variable set when the server *started* is pinned and wins, and
+      the page marks those fields so an edit that has no effect is explained. `.env` no longer
+      sets any of the four names.
 - [ ] Add image upload for a character
 - [ ] Add character importer and switcher
       — `GET /api/characters` and `service_for(name)` already exist and the UI never calls
@@ -205,7 +204,7 @@ Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGE
 
 ### Tests
 
-- 1319 pytest tests, including every API endpoint and error mapping.
+- 1307 pytest tests, including every API endpoint and error mapping.
 
 ## Next
 

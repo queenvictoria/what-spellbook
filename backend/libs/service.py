@@ -13,6 +13,7 @@ returned value.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from contextlib import contextmanager
@@ -226,7 +227,7 @@ class SpellbookService:
 
     def __init__(self, vector_db, character: dict, *, db_version=None,
                  refresh=False, backend=None, fast_backend=None, context_dir=None,
-                 cache_dir=None, books=None):
+                 cache_dir=None, books=None, overrides=None):
         self.db = vector_db
         self.character = character or {}
         self.character_text = characters.format_character(self.character)
@@ -235,7 +236,13 @@ class SpellbookService:
         self.books = config.select_book_count() if books is None else books
         self.context_dir = context_dir or config.CONTEXT_DIR_PATH
         self.cache_dir = cache_dir or config.CACHE_DIR_PATH
-        self.llm = backend if backend is not None else llm.build_llm()
+        # The model settings a client sent, resolved against the environment. Held rather than
+        # passed to each call because a client is constructed here and then used by a dozen
+        # methods - and because the *effective* map is needed again for the scaling cache's
+        # model label, which would otherwise record the environment's model for an answer the
+        # browser's model produced.
+        self.model_env = config.model_overrides(overrides) if overrides else dict(os.environ)
+        self.llm = backend if backend is not None else llm.build_llm(self.model_env)
         # A second client for the one-line questions, so a small model can answer them
         # without the reasoning model's latency. Built lazily: a session that never opens
         # a spell should not pay for a second client, and `LLM_MODEL_FAST` unset means
@@ -257,7 +264,7 @@ class SpellbookService:
         makes the setting optional rather than required.
         """
         if self._fast_llm is None:
-            self._fast_llm = llm.build_fast_llm()
+            self._fast_llm = llm.build_fast_llm(self.model_env)
         return self._fast_llm
 
     # --- conversations ---
@@ -821,7 +828,7 @@ class SpellbookService:
             return None
         note = _clean_scaling(answer, level)
         cache.save_scaling(character=character, level=level, spell=name, note=note,
-                           model=config.select_fast_model()[1], source="model",
+                           model=config.select_fast_model(self.model_env)[1], source="model",
                            cache_dir=self.cache_dir)
         return note
 

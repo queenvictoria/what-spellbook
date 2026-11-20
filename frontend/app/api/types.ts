@@ -379,16 +379,13 @@ export interface Health {
   cache_dir: string
 }
 
-/** Where an effective setting came from, so the page can name the layer that won. */
-export type SettingSource = 'launch' | 'saved' | 'env' | 'default'
-
 /**
- * One editable setting.
+ * One editable setting: what it is, and what the *server* would use if nothing were sent.
  *
- * `value` is the *effective* value, not what is saved: with three layers — `.env`, the saved
- * file and the launch environment — a value can be stored and still not be the one in use.
- * `source` is what makes that visible, because without it a save that "did nothing" has no
- * explanation on screen. A `secret` value is a mask, never the key itself.
+ * `value` is the server's own value from its environment, never the browser's. The browser
+ * holds the settings, so echoing them back would be a second copy able to drift; this is only
+ * the fallback a fresh browser seeds itself with. A `secret` value is always masked, so the
+ * response is never a way to read the key back out of the server.
  */
 export interface SettingField {
   key: string
@@ -396,16 +393,15 @@ export interface SettingField {
   help: string
   value: string | null
   secret: boolean
-  source: SettingSource
 }
 
 /**
- * Everything the settings page renders, in one response.
+ * What the settings page needs: the editable names, and the server's fallbacks.
  *
  * The resolved model and backend are sent alongside the fields because they answer the
  * question the page is really asked — "what will my next run use?" — and cannot be derived
- * from the fields: a name containing a slash means OpenRouter only while a key is present,
- * and otherwise falls back to Ollama.
+ * from the fields alone: a name containing a slash means OpenRouter only while a key is
+ * present, and otherwise falls back to Ollama.
  */
 export interface Settings {
   fields: SettingField[]
@@ -413,15 +409,20 @@ export interface Settings {
   reasoning_backend: string | null
   fast_model: string | null
   fast_backend: string | null
-  settings_file: string
-  writable: boolean
+  /**
+   * The settings this server pinned in its environment before it started.
+   *
+   * Not decoration and not derivable here: a launched variable outranks anything the browser
+   * sends, so a save for one of these is accepted and has no effect. The page names them
+   * rather than letting an edit look ignored, which nothing else on screen would explain.
+   */
+  pinned: string[]
+  any_pinned: boolean
+  /** Where a client is expected to keep these, so the page can say where a value lives. */
+  client_storage: string
 }
 
-/**
- * A partial update: only the fields present are written, so changing one box cannot clear
- * the others. An empty string is a deliberate "forget this", which is why an omitted field
- * is `undefined` and not `''`.
- */
+/** The model settings a client is using, pushed so the server can honour them for this run. */
 export interface SettingsPatch {
   reasoning_model?: string
   fast_model?: string

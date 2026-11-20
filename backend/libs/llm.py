@@ -101,17 +101,23 @@ def explain_failure(error, *, model: str | None = None, purpose: str = "the mode
     return f"Could not reach {purpose}: {error}"
 
 
-def build_llm():
+def build_llm(env=None):
     """Build the reasoning client chosen by ``config.select_model()``.
 
     One ``LLM_MODEL`` setting covers both backends; see ``select_model`` for how the
     name decides which one. A failure to construct the OpenRouter client (bad key,
     missing dependency) drops back to Ollama rather than aborting the session.
+
+    ``env`` is the effective environment to read. The API passes the merged
+    environment - the environment overlaid with whatever the browser sent - while the CLI
+    passes nothing and gets ``os.environ``. A mapping rather than a dataclass because that is
+    what ``select_model`` already takes, so the two surfaces cannot disagree about precedence
+    by each doing their own merge.
     """
-    return _build(config.select_model(), label="LLM")
+    return _build(config.select_model(env), label="LLM", env=env)
 
 
-def build_fast_llm():
+def build_fast_llm(env=None):
     """Build the small, fast client chosen by ``config.select_fast_model()``.
 
     A second client rather than a second setting on the first, because the two do
@@ -122,11 +128,12 @@ def build_fast_llm():
 
     ``LLM_MODEL_FAST`` unset means the main model is used, so the setting is optional.
     """
-    return _build(config.select_fast_model(), label="fast LLM",
-                  max_tokens=FAST_MAX_TOKENS)
+    return _build(config.select_fast_model(env), label="fast LLM",
+                  max_tokens=FAST_MAX_TOKENS, env=env)
 
 
-def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = None):
+def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = None,
+           env=None):
     """Construct one client from a resolved ``(backend, model)`` pair.
 
     Shared by both builders so the two cannot disagree about how a backend is reached -
@@ -138,7 +145,8 @@ def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = N
     from langchain_ollama import OllamaLLM
 
     backend, model = selection
-    api_key = os.getenv("OPENROUTER_API_KEY")
+    source = os.environ if env is None else env
+    api_key = (source.get("OPENROUTER_API_KEY") or "").strip()
 
     if backend == "openrouter":
         try:
@@ -160,8 +168,9 @@ def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = N
                 f"Could not initialise OpenRouter client ({e}); falling back to Ollama."
             )
             # A failed construction still falls back to the *Ollama* default, not to the
-            # requested OpenRouter id, which no local server would recognise.
-            fallback = config.OLLAMA_MODEL
+            # requested OpenRouter id, which no local server would recognise. The env is
+            # honoured here too, so a browser-supplied local name is still used.
+            fallback = (source.get("OLLAMA_MODEL") or "").strip() or config.OLLAMA_MODEL
             logging.info(f"{label} backend: Ollama ({fallback})")
             return OllamaLLM(model=fallback)
 

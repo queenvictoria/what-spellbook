@@ -186,7 +186,14 @@ def test_the_fast_budget_leaves_room_for_hidden_reasoning():
 
 
 def test_the_repo_env_and_the_default_agree():
-    """The checked-in default and .env should not silently disagree."""
+    """If ``.env`` sets a model, it must agree with the code's default.
+
+    ``.env`` no longer sets one - the model is chosen in the browser and sent with each
+    request - so the expected state is that it is absent, and this asserts that rather than
+    skipping. A skip would hide the case the test exists for: someone re-adding a model to
+    ``.env`` that contradicts ``config.OPENROUTER_MODEL``, which is exactly the silent
+    disagreement worth catching.
+    """
     from pathlib import Path
 
     env_file = Path(__file__).resolve().parent.parent / ".env"
@@ -203,7 +210,8 @@ def test_the_repo_env_and_the_default_agree():
 
     requested = values.get("LLM_MODEL")
     if not requested:
-        pytest.skip("LLM_MODEL is not set in .env")
+        # The documented state: the browser supplies the model, so nothing here needs one.
+        return
     if "/" in requested:
         assert requested == config.OPENROUTER_MODEL
     else:

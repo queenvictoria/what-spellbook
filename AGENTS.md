@@ -1938,63 +1938,57 @@ Measured live: the first `Booming Blade` request took 1.9s and wrote one entry; 
 three took 0.01s each. A level 11 sheet and a second character each missed and wrote their
 own entry, which is the key working.
 
-### A settings page must reach the backend, not the browser
+### The browser holds the settings; the server is told them
 
-The roadmap said "user settings page with localstorage for API keys and models", and the
-localstorage half is wrong - not as a preference, but because two of those settings cannot
-work from a browser at all:
+The roadmap asked for "user settings page with localstorage for API keys and models". The
+first attempt argued the localstorage half was impossible and put the values in a
+`.settings.json` on the server. That was wrong, and the reason is worth keeping: **a running
+process cannot have its environment changed**, so a server-side file is not a way to *avoid*
+the browser sending the values - it is a second copy that has to be kept in step with the one
+the user actually edits. The browser is the store of record, and the server is told.
 
-- **The model is chosen on the server.** `llm._build()` resolves `(backend, model)` and
-  constructs a client when a `SpellbookService` is made. A browser copy would be decorative:
-  the page could save it, show it back and report success, and the next recommendation would
-  still use whatever `.env` held. That is the worst shape a settings page can have, because
-  everything on screen says it worked.
-- **The key is the server's credential.** There is no authentication in front of the API, so
-  anything the browser holds is readable by any script on the page and is sent back on every
-  request. `GET /api/settings` returns it **masked** (`settings.mask`), never in full.
+What is true is narrower than the original objection, and it is the part that shaped the API:
 
-So the page is a form over `.settings.json` at the repo root - gitignored, because it can
-hold a key - and the one setting that *is* the browser's is the API base address, which has
-to be known before a request can be made and so cannot be fetched from the server it points
-at. `frontend/app/lib/browserSettings.ts` owns that one and nothing else.
+- **The key must not be persisted server-side.** It is a credential, and a copy on disk is a
+  liability nobody asked for. `PUT /api/settings` holds it **in memory for the life of the
+  process** and writes nothing - verified by a test that pushes a key and asserts the
+  directory is still empty.
+- **The response must never carry it back.** `GET`/`PUT` return a mask (`sk-o…e999`), so a
+  push is not a way to read the key out of the server. The mask is also why the secret box is
+  never pre-filled: there is nothing to pre-fill it with.
+- **The page must re-push on load.** Without it, a reload or a server restart silently reverts
+  to the server's environment and the stored settings only apply after pressing Save again -
+  which reads as "the settings did not stick".
 
-**Three layers now set the same name, and the order is the whole design.** `config.env_view()`
-merges them, and `config._LAUNCH_ENV` is the trick that makes it possible: `load_dotenv` does
-not overwrite an existing variable, so once `.env` is merged into `os.environ` a shell
-variable and a file variable are indistinguishable. Snapshotting `os.environ` *before* the
-merge keeps the two apart:
-
-| Wins | Source | Why |
-| --- | --- | --- |
-| 1 | the launch environment | `LLM_MODEL=… python -m backend` is a statement about this run |
-| 2 | `.settings.json` | the user's saved choice, which is what the page edits |
-| 3 | `.env` | the hand-edited default |
-
-A saved file that silently defeats a documented one-off override is worse than no override,
-which is why layer 1 beats layer 2 rather than the other way round.
+**One rule overrides the browser, and only one.** A variable set when the process *started* is
+pinned and wins, because a container or CLI started with an explicit model is a statement
+about that process and must not be second-guessed by a browser tab. `config._LAUNCH_ENV` is
+what makes the distinction possible: `load_dotenv` does not overwrite an existing variable, so
+once `.env` is merged into `os.environ` a shell variable and a file variable are
+indistinguishable - snapshotting before the merge keeps them apart. `config.model_overrides`
+applies the rule, and the API reports the pinned keys so the page can mark those fields. An
+edit that is accepted and has no effect is the one failure a settings page cannot explain on
+its own, which is why the badge and the card-level warning exist.
 
 Five things were learned building it, and each changed the design:
 
-- **A save can succeed and still not be the value in use.** With three layers that is not an
-  edge case, it is the expected outcome whenever the server was started with the variable set
-  - and nothing in the merged value reveals it. `config.setting_source()` names the winning
-  layer (`launch` / `saved` / `env` / `default`) and the page labels every field with it.
-  Without that, "I saved it and nothing changed" has no visible explanation.
-- **The service cache has to be dropped on save, or the page lies.** `service_for` memoises a
-  service per character, and a service holds the client it was built with - so a saved model
-  would be reported back by `GET /api/settings` (which re-reads the file) while the next
-  recommendation used the old client. Rebuilding is cheap because the vector index is shared;
-  rebuilding only the model client would be marginally cheaper and would be wrong the moment
-  a second setting joined the cache key.
+- **A blank value and an absent one are different statements.** Absent means "no opinion, use
+  the environment"; blank means "no preference, do not resurrect an old `.env` entry". The
+  request model is typed fields rather than a dict so the two stay distinguishable, and
+  `model_overrides` keeps a blank rather than dropping it.
+- **The service cache has to be dropped on a push, or the page lies.** `service_for` memoises
+  a service per character, and a service holds the client it was built with - so a pushed
+  model would be reported by `GET /api/settings` while the next recommendation used the old
+  client. Rebuilding is cheap because the vector index is shared.
+- **The payload must resolve through the same merge the service uses.** Resolving it from the
+  environment instead was a real inconsistency: after a push, `GET /api/settings` reported the
+  server's old model while `/api/health` - which asks the service - reported the new one, so
+  the page contradicted itself about the model in use.
 - **An unknown field must be rejected, not ignored.** `SettingsRequest` sets
   `extra="forbid"`, because a misspelled key otherwise answers 200 and changes nothing -
   invisible from the response, and the likeliest mistake this page can produce.
-- **`None` and `""` are different statements.** An absent field is *unchanged* so a form that
-  edited one box cannot wipe the others; an empty string is a deliberate "forget this". That
-  is why the request model is typed fields rather than a dict, and why `update` merges rather
-  than replaces.
 - **A secret field cannot be diffed against the value that was sent.** The first version
-  compared each box to the fetched value and skipped secrets - which made the key
+  compared each box to the fetched value and skipped secrets, which made the key
   **unwritable**: the Save button stayed disabled however much was typed, with nothing on
   screen to say why. Comparing a typed key to a mask would call every save a change, and
   including an untouched box would write `""` over the stored key. The answer is an explicit
@@ -2005,17 +1999,14 @@ Five things were learned building it, and each changed the design:
 
 Two smaller ones, both about a page that edits configuration having to be honest:
 
-- **A rejected save must not half-apply.** `update` validates every field before writing
-  anything, so a bad model name cannot leave a good key already stored.
 - **A failed fetch must still offer the fix.** The API-address card renders even when
   `GET /api/settings` fails, because a wrong address is the commonest reason it fails and that
   card is the only place to repair it - a screen that returned just the error would be
   unreachable exactly when it is needed. `tests/test_settings.py` pins this at the source
   level, since the symptom is a blank screen rather than a wrong value.
-
-The file is written to a sibling and `os.replace`d, so the reader - `config.env_view` while a
-client is being built - never sees a torn file, and `load()` never raises: a hand-edited typo
-must leave the `.env` defaults in force rather than stop the app.
+- **`.env` no longer sets any of the four names.** It documents them as commented examples
+  instead, because a value there is now a *pin* that silently outranks the page - which is the
+  right behaviour for a one-off and the wrong default for a checkout.
 
 ### Choosing the model: one setting, inferred backend
 
@@ -2027,17 +2018,23 @@ is `name:tag` and never does.
 - One setting is less to explain and less to get wrong than `LLM_MODEL` +
   `LLM_BACKEND`, which can contradict each other.
 - An Ollama name wins **even when `OPENROUTER_API_KEY` is set**. That is the feature:
-  a key can stay in `.env` for occasional use while local runs stay local and free.
+  a key can be kept for occasional use while local runs stay local and free.
 - A remote id with no key cannot work, so it falls back to Ollama **and logs why**.
   Silently swapping models makes a typo look like a backend failure.
-- `.env` values get stripped of quotes and whitespace - hand-edited files are commonly
-  quoted, and a quoted name would otherwise be sent to the server verbatim.
+- Values get stripped of quotes and whitespace - hand-edited files are commonly quoted, and a
+  quoted name would otherwise be sent to the server verbatim.
 
 The bug this replaced is worth remembering: the OpenRouter branch read the requested
 model but the Ollama branch hard-coded `config.OLLAMA_MODEL`, so `LLM_MODEL` worked for
 one backend and was **silently ignored** for the other. When one function handles two
 paths, check both - and prefer threading the resolved value through over letting each
 branch re-read the config.
+
+Both builders take the environment to read, and the API passes the merged one - the
+environment overlaid with whatever the browser sent. A mapping rather than a dataclass,
+because that is what `select_model` already takes, so the two surfaces cannot disagree about
+precedence by each doing its own merge. The key is read from the same mapping, which is what
+lets a pushed remote model be called with the pushed key rather than the environment's.
 
 Embeddings deliberately stay on Ollama: `nomic-embed-text` is local-only, so changing
 the reasoning model must not change how the index was built.

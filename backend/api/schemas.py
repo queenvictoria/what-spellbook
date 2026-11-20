@@ -326,31 +326,31 @@ class CharacterSchema(BaseModel):
 
 
 class SettingFieldSchema(BaseModel):
-    """One editable setting: its value, its label, and where the value came from.
+    """One editable setting: what it is, and what the server would use if the client sent nothing.
 
-    ``source`` is not decoration. With three layers ``.env``, the settings file and the
-    launch environment - a value can be set and still not be the one in use, so the page has
-    to be able to say which layer won. Without it, a user whose save "did nothing" has no way
-    to find out that the process was started with the variable set.
+    ``value`` is the *server's* value - from the environment - and never the client's own. The
+    browser holds the settings and is the authority on them, so echoing its values back would
+    be a second copy that can drift; this is only the fallback a fresh browser needs to seed
+    itself with. A secret is **never** returned in full, not even its own environment value:
+    the response must not be a way to read the key back out of the server.
     """
 
     key: str
     label: str
     help: str
-    # The effective value, or null when unset. A secret is a mask, never the value itself.
     value: str | None = None
     secret: bool = False
-    # launch | saved | env | default
-    source: str = "default"
 
 
 class SettingsSchema(BaseModel):
-    """Everything the settings page needs to render, in one response.
+    """What the settings page needs: the editable names, and the server's fallbacks for them.
 
-    The *effective* model is sent alongside the fields because it is the answer to the
-    question the page actually asks - "what will my next recommendation use?" - and it cannot
-    be derived from the fields alone: a model name that contains a slash means OpenRouter only
-    when a key is present, and otherwise falls back to Ollama.
+    There is deliberately no "saved settings" block, because the server saves nothing. The
+    tri-state a client needs in order to know what is *actually* in effect is carried per
+    field, so an empty response cannot be confused with "the browser's settings were ignored":
+
+    * ``value``/``source`` - the server's own setting, and whether it pins the field.
+    * ``client`` - where a browser keeps its settings, so the page can say so.
     """
 
     fields: list[SettingFieldSchema] = Field(default_factory=list)
@@ -358,24 +358,28 @@ class SettingsSchema(BaseModel):
     reasoning_backend: str | None = None
     fast_model: str | None = None
     fast_backend: str | None = None
-    # Where the file lives, so the page can tell the user what it edits and why it is gitignored.
-    settings_file: str = ""
-    # False when the file cannot be written, so the page can say so before the user types.
-    writable: bool = True
+    # Which settings the process pinned at launch, and therefore ignores a browser's value for.
+    pinned: list[str] = Field(default_factory=list)
+    # True when any of them is pinned, so the page can lead with the caveat rather than hope
+    # the user reads four rows of badges.
+    any_pinned: bool = False
+    # Where a client is expected to keep these. Sent for the same reason ``settings_file``
+    # used to be: the page should be able to say *where* a value lives, and "in this browser"
+    # is a different and more surprising answer than "in a file on the server".
+    client_storage: str = "localStorage"
 
 
 class SettingsRequest(BaseModel):
-    """A partial update, keyed by wire name.
+    """The model settings a client is using, pushed so the server can honour them.
 
-    Every field is ``None`` by default, and ``None`` means *unchanged* - which is the whole
-    reason this is not a dict of ``str``. An empty string is a deliberate "clear this", and
-    collapsing the two would make it impossible to save one box without wiping the others.
+    Every field is ``None`` by default, and ``None`` means *unset* - which is a real state
+    here, not "unchanged": the browser is the source of truth, so a push carries the whole
+    picture. An empty string is a deliberate "no preference", which lets a cleared box fall
+    through to the default instead of resurrecting an old ``.env`` entry.
 
-    Extra keys are **forbidden**, so a misspelled field is a 422 rather than a save that
-    reports success and changed nothing. That is the failure this page is most likely to
-    produce, and it is invisible from the response: ``{"reasoning_model": "x"}`` and
-    ``{"reasoning_modle": "x"}`` both answer 200 without help, but only one of them did
-    anything.
+    Extra keys are **forbidden**, so a misspelled field is a 422 rather than a push that
+    reports success and changed nothing - invisible from the response, and the likeliest
+    mistake this page can produce.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -385,8 +389,8 @@ class SettingsRequest(BaseModel):
     api_key: str | None = None
     ollama_model: str | None = None
 
-    def changed(self) -> dict[str, str]:
-        """Only the fields the caller actually sent, so an absent box is left alone."""
+    def supplied(self) -> dict[str, str]:
+        """The fields the client actually sent, as wire key -> value (``None`` accepted)."""
         return self.model_dump(exclude_unset=True)
 
 

@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -54,7 +53,6 @@ from backend.libs import (
     rules,
     search,
     service,
-    settings as settings_store,
     spellstats,
     spells,
     srd,
@@ -166,6 +164,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         "character_name": character_name,
         "cache_dir": Path(cache_dir) if cache_dir is not None else config.CACHE_DIR_PATH,
         "services": {},
+        # What the browser last pushed, held **in memory for the life of the process**. The
+        # server writes no settings file: the key is a credential, and a copy of it on disk is
+        # a liability nobody asked for. The browser is the durable store and re-pushes on load,
+        # so a restart is recovered from rather than lost.
+        "overrides": {},
     }
 
     def get_db():
@@ -188,6 +191,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 raise _error(404, str(e))
             state["services"][key] = service.SpellbookService(
                 get_db(), sheet, backend=state["backend"], cache_dir=state["cache_dir"],
+                overrides=state["overrides"],
             )
         return state["services"][key]
 
@@ -228,76 +232,71 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
     # --- settings ---
 
     def settings_payload() -> schemas.SettingsSchema:
-        """The editable settings, each with its value, label and effective source."""
-        saved = settings_store.load()
+        """The editable names, the server's own fallbacks, and what is actually in effect.
+
+        Resolved through ``config.model_overrides`` rather than from the environment, because
+        the environment is only *half* the answer once a browser has pushed something. Reading
+        it directly made this endpoint disagree with ``/api/health`` after a save - the page
+        reported the server's old model while the service, which does merge, used the new one.
+        """
+        effective = config.model_overrides(state["overrides"])
+        launch = config._launch_env()
         fields = []
-        for setting in settings_store.EDITABLE:
-            value = config._clean(config.env_view().get(setting.env)) or None
+        for setting in config.MODEL_SETTINGS:
+            value = config._clean(effective.get(setting.env)) or None
             fields.append(schemas.SettingFieldSchema(
                 key=setting.key,
                 label=setting.label,
                 help=setting.help,
-                # A secret is masked, always - including when the value came from .env, so the
-                # response is never a way to read the key back out of the server.
-                value=settings_store.mask(value) if setting.secret else value,
+                # A secret is masked, always - including when it came from the environment, so
+                # the response is never a way to read the key back out of the server.
+                value=config.mask_secret(value) if setting.secret else value,
                 secret=setting.secret,
-                source=config.setting_source(setting.env),
             ))
-        reasoning_backend, reasoning_model = config.select_model()
-        fast_backend, fast_model = config.select_fast_model()
+        pinned = [
+            setting.key for setting in config.MODEL_SETTINGS
+            if config._clean(launch.get(setting.env))
+        ]
+        reasoning_backend, reasoning_model = config.select_model(effective)
+        fast_backend, fast_model = config.select_fast_model(effective)
         return schemas.SettingsSchema(
             fields=fields,
             reasoning_model=reasoning_model,
             reasoning_backend=reasoning_backend,
             fast_model=fast_model,
             fast_backend=fast_backend,
-            settings_file=str(settings_store.path()),
-            writable=_settings_writable(),
+            pinned=pinned,
+            any_pinned=bool(pinned),
         )
 
     @app.get("/api/settings", response_model=schemas.SettingsSchema, tags=["settings"])
     def get_settings():
-        """The model settings, for the settings page.
+        """The editable settings, for the settings page.
 
-        Values are returned rather than only echoed back on a write, because the page has to
-        show what is *currently* in use - which after a hand-edit of ``.env``. A saved key is
-        masked; see ``settings.mask``.
+        The server's own values are returned rather than only echoed back on a write, because
+        a fresh browser has nothing stored and needs somewhere to start. They are *fallbacks*,
+        not the current state: the browser holds the settings and is the authority on them.
         """
         return settings_payload()
 
     @app.put("/api/settings", response_model=schemas.SettingsSchema, tags=["settings"])
     def put_settings(request: schemas.SettingsRequest):
-        """Save any of the supplied settings, leaving the rest untouched.
+        """Take the client's settings, so the next request is served with them.
 
-        Only the fields present in the body are written, so a page that changed one box does
-        not need to resend the others - and cannot accidentally clear them.
+        The whole picture is sent rather than a diff, because the browser is the store of
+        record - a field the client omits means "no opinion", and a field it sends blank means
+        "no preference", which is a different thing and is kept as one.
 
-        **The service cache is dropped on a successful save.** A service holds the model
-        client it was built with, so keeping them would mean the page saved a new model and
-        the next recommendation used the old one - the page would look broken while doing
-        exactly what it said. Services are rebuilt on the next request, which is cheap (the
-        vector index is shared); rebuilding only the model client would be marginally
-        cheaper, and would be wrong the moment a second setting joined the cache key.
+        **The service cache is dropped on every push.** A service holds the model client it was
+        built with, so keeping them would mean the page saved a new model and the next
+        recommendation used the old one - the page would look broken while doing exactly what
+        it said. Services are rebuilt on the next request, which is cheap (the vector index is
+        shared); rebuilding only the model client would be marginally cheaper, and would be
+        wrong the moment a second setting joined the cache key.
         """
-        try:
-            settings_store.update(request.changed())
-        except settings_store.SettingsError as e:
-            raise _error(400, str(e))
-        except settings_store.SettingsUnavailable as e:
-            raise _error(500, str(e))
-
+        state["overrides"] = request.supplied()
         state["services"].clear()
         return settings_payload()
-
-    def _settings_writable() -> bool:
-        """Whether the settings file can be written, without writing one.
-
-        Checked with the file's *directory* rather than the file, because a fresh install has
-        no file yet and the useful question is "could a save succeed" - a read-only checkout
-        is the case worth reporting before the user has typed anything.
-        """
-        directory = settings_store.path().parent
-        return os.access(directory, os.W_OK)
 
     # --- generation ---
 

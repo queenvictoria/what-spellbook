@@ -1,9 +1,10 @@
-"""The settings store, its precedence, and the endpoints the settings page uses.
+"""The model settings a browser sends, and the rule that decides which of them apply.
 
-The store is the interesting part: it is the only place a *user* writes configuration, it can
-hold an API key, and it is layered under ``.env`` and the launch environment. So the tests here
-are about the three things that would be invisible if they broke - what wins over what, that a
-secret never comes back out, and that a partial save leaves the rest alone.
+The browser is the store of record for these now, so the server's job is narrow and worth
+pinning precisely: accept what it is sent, hold it **in memory only**, let a launched
+environment variable outrank it, and never write the key anywhere. Each of those is a
+statement that would be invisible if it broke - a file appearing on disk, a pushed model
+being ignored, a secret coming back out - so each has a test here.
 """
 
 from __future__ import annotations
@@ -15,42 +16,30 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.main import create_app
-from backend.libs import config, settings
+from backend.libs import config, llm
 
 from conftest import FakeDB, FakeLLM
 
 LOIS = {"Name": "Lois", "Class": "Warlock", "Current Level": 5}
+SECRET = "sk-or-v1-supersecretvalue999"
 
 
 @pytest.fixture
-def settings_file(tmp_path, monkeypatch):
-    """Redirect the settings file into a temp directory, so the real one is never touched.
-
-    Patched on ``config`` because that is the module ``settings.path`` reads - patching a
-    copy would let a test pass while writing the user's real settings.
-    """
-    target = tmp_path / ".settings.json"
-    monkeypatch.setattr(config, "SETTINGS_FILE_PATH", target)
-    return target
-
-
-@pytest.fixture
-def clean_model_env(settings_file, monkeypatch):
+def clean_model_env(monkeypatch):
     """A process environment with none of the four editable names set.
 
-    The selectors read the overlay only when they are given no ``env``, so a test that passed
-    a dict would be testing the *caller's* mapping and not the precedence at all - which is
-    how two of these tests first passed for the wrong reason. Clearing the real values and
-    the launch snapshot makes ``select_model()`` observe the settings file and nothing else.
+    The selectors read ``os.environ``, so a developer's own ``.env`` would otherwise decide
+    what these tests observe - and a test that passes because of the machine it ran on is
+    worse than no test.
     """
     monkeypatch.setattr(config, "_LAUNCH_ENV", {})
-    for name in settings.BY_ENV:
-        monkeypatch.delenv(name, raising=False)
-    return settings_file
+    for setting in config.MODEL_SETTINGS:
+        monkeypatch.delenv(setting.env, raising=False)
+    return monkeypatch
 
 
 @pytest.fixture
-def api(tmp_path, monkeypatch, settings_file):
+def api(tmp_path, monkeypatch, clean_model_env):
     """A client wired to fakes, with the character sheet overridden."""
     app = create_app(vector_db=FakeDB(), backend=FakeLLM(), character_name="lois",
                      cache_dir=str(tmp_path / "cache"))
@@ -58,226 +47,155 @@ def api(tmp_path, monkeypatch, settings_file):
     return TestClient(app)
 
 
-# --- the store ---
+# --- the settings table ---
 
 
-def test_saving_and_loading_round_trips(settings_file):
-    settings.update({"reasoning_model": "qwen3.5:4b"})
-    assert settings.load() == {"LLM_MODEL": "qwen3.5:4b"}
-    assert json.loads(settings_file.read_text()) == {"LLM_MODEL": "qwen3.5:4b"}
+def test_every_setting_names_both_its_wire_and_environment_name():
+    """One table, so the page and the CLI cannot drift into two names for one setting."""
+    keys = {setting.key for setting in config.MODEL_SETTINGS}
+    envs = {setting.env for setting in config.MODEL_SETTINGS}
+    assert keys == {"reasoning_model", "fast_model", "api_key", "ollama_model"}
+    assert envs == {"LLM_MODEL", "LLM_MODEL_FAST", "OPENROUTER_API_KEY", "OLLAMA_MODEL"}
 
 
-def test_the_file_stores_environment_names(settings_file):
-    """The file stays hand-editable with the same vocabulary .env and the README use."""
-    settings.update({"reasoning_model": "x/y", "api_key": "k"})
-    written = json.loads(settings_file.read_text())
-    assert written["LLM_MODEL"] == "x/y"
-    assert written["OPENROUTER_API_KEY"] == "k"
+def test_only_the_key_is_secret():
+    secret = [s.key for s in config.MODEL_SETTINGS if s.secret]
+    assert secret == ["api_key"]
 
 
-def test_a_missing_file_is_empty_and_not_an_error(settings_file):
-    assert not settings_file.exists()
-    assert settings.load() == {}
+# --- defaults and overrides ---
 
 
-def test_an_unreadable_file_falls_back_rather_than_raising(settings_file):
-    """A hand-edited typo must not stop the app from starting.
+def test_defaults_report_only_what_is_set(clean_model_env):
+    assert config.model_defaults() == {}
+    clean_model_env.setenv("LLM_MODEL", "a/b")
+    assert config.model_defaults() == {"LLM_MODEL": "a/b"}
 
-    This is the file's whole reason to exist - so the values need not be edited by hand - so
-    a mistake in it has to be survivable rather than fatal.
+
+def test_a_client_value_wins_over_the_environment(clean_model_env):
+    clean_model_env.setenv("LLM_MODEL", "from/env")
+    merged = config.model_overrides({"reasoning_model": "from/browser"})
+    assert merged["LLM_MODEL"] == "from/browser"
+
+
+def test_a_launched_variable_beats_the_client(clean_model_env):
+    """The rule that keeps a container or CLI from being second-guessed by a browser tab.
+
+    A process started with an explicit model is a statement about that process, so a value
+    pushed from a page must not override it - and the page is told which fields are pinned so
+    an edit that has no effect is explained rather than mysterious.
     """
-    settings_file.write_text("{ this is not json")
-    assert settings.load() == {}
+    merged = config.model_overrides({"reasoning_model": "from/browser"},
+                                    base={"LLM_MODEL": "pinned:1"})
+    assert merged["LLM_MODEL"] == "pinned:1"
 
 
-def test_unknown_keys_in_the_file_are_ignored(settings_file):
-    settings_file.write_text(json.dumps({"LLM_MODEL": "a/b", "SECRET_HANDLE": "x"}))
-    assert settings.load() == {"LLM_MODEL": "a/b"}
+def test_a_blank_client_value_clears_rather_than_falls_back(clean_model_env):
+    """Clearing a box means "no preference", not "resurrect the old .env entry"."""
+    clean_model_env.setenv("LLM_MODEL", "from/env")
+    merged = config.model_overrides({"reasoning_model": ""})
+    assert merged["LLM_MODEL"] == ""
+    assert config.select_model(merged) == ("ollama", config.OLLAMA_MODEL)
 
 
-def test_blank_values_are_not_stored(settings_file):
-    settings.update({"reasoning_model": "   "})
-    assert settings.load() == {}
-    assert json.loads(settings_file.read_text()) == {}
+def test_an_absent_field_leaves_the_environment_alone(clean_model_env):
+    clean_model_env.setenv("LLM_MODEL", "from/env")
+    assert config.model_overrides({})["LLM_MODEL"] == "from/env"
 
 
-def test_quotes_are_stripped(settings_file):
-    """These are the same values .env holds, where a hand-edit often quotes a name."""
-    settings.update({"reasoning_model": '"qwen3.5:4b"'})
-    assert settings.load() == {"LLM_MODEL": "qwen3.5:4b"}
+def test_a_pushed_model_decides_the_backend(clean_model_env):
+    merged = config.model_overrides({"reasoning_model": "vendor/model", "api_key": "k"})
+    assert config.select_model(merged) == ("openrouter", "vendor/model")
 
 
-def test_clearing_one_setting_leaves_the_others(settings_file):
-    """Clearing is per-field, because a form that forgot one box must not wipe it."""
-    settings.update({"reasoning_model": "a/b", "api_key": "k"})
-    settings.update({"reasoning_model": ""})
-    assert settings.load() == {"OPENROUTER_API_KEY": "k"}
+def test_a_pushed_local_model_selects_ollama(clean_model_env):
+    merged = config.model_overrides({"reasoning_model": "qwen3.5:4b"})
+    assert config.select_model(merged) == ("ollama", "qwen3.5:4b")
 
 
-def test_an_absent_field_is_unchanged_not_cleared(settings_file):
-    """The distinction the request model's `None` exists for: absent is not empty."""
-    settings.update({"reasoning_model": "a/b", "fast_model": "c/d"})
-    settings.update({"fast_model": "e/f"})
-    assert settings.load() == {"LLM_MODEL": "a/b", "LLM_MODEL_FAST": "e/f"}
+def test_a_pushed_fast_model_is_used(clean_model_env):
+    merged = config.model_overrides({"fast_model": "qwen2.5-coder:1.5b-base"})
+    assert config.select_fast_model(merged) == ("ollama", "qwen2.5-coder:1.5b-base")
 
 
-@pytest.mark.parametrize("value", ["has a space", "two  words"])
-def test_a_model_name_with_a_space_is_rejected(settings_file, value):
-    """A model id is one token, and the failure at call time would not name this field."""
-    with pytest.raises(settings.SettingsError):
-        settings.update({"reasoning_model": value})
+def test_an_unset_fast_model_falls_back_to_the_reasoning_model(clean_model_env):
+    merged = config.model_overrides({"reasoning_model": "qwen3.5:4b"})
+    assert config.select_fast_model(merged) == config.select_model(merged)
 
 
-def test_a_line_break_is_rejected(settings_file):
-    with pytest.raises(settings.SettingsError):
-        settings.update({"api_key": "sk-abc\ndef"})
+# --- the clients are built from the pushed settings ---
 
 
-def test_an_overlong_value_is_rejected(settings_file):
-    with pytest.raises(settings.SettingsError):
-        settings.update({"reasoning_model": "a" * (settings.MAX_MODEL + 1)})
+def test_build_llm_honours_a_pushed_ollama_model(clean_model_env):
+    client = llm.build_llm(config.model_overrides({"reasoning_model": "qwen2.5-coder:7b-instruct"}))
+    assert type(client).__name__ == "OllamaLLM"
+    assert client.model == "qwen2.5-coder:7b-instruct"
 
 
-def test_a_rejected_save_does_not_half_apply(settings_file):
-    """A save that fails must leave the file exactly as it was."""
-    settings.update({"reasoning_model": "a/b", "fast_model": "c/d"})
-    with pytest.raises(settings.SettingsError):
-        # `api_key` is fine, `reasoning_model` is not - and neither may land.
-        settings.update({"reasoning_model": "bad name", "api_key": "k"})
-    assert settings.load() == {"LLM_MODEL": "a/b", "LLM_MODEL_FAST": "c/d"}
+def test_build_llm_honours_a_pushed_openrouter_model(clean_model_env):
+    client = llm.build_llm(
+        config.model_overrides({"reasoning_model": "openai/gpt-4o-mini", "api_key": "k"})
+    )
+    assert type(client).__name__ == "ChatOpenAI"
+    assert client.model_name == "openai/gpt-4o-mini"
 
 
-def test_an_unknown_setting_name_is_rejected(settings_file):
-    with pytest.raises(settings.SettingsError):
-        settings.update({"nope": "x"})
+def test_build_llm_uses_the_pushed_key_not_the_environment_one(clean_model_env):
+    """The key travels with the model, or a pushed remote model would be called with no key."""
+    clean_model_env.setenv("OPENROUTER_API_KEY", "env-key")
+    client = llm.build_llm(
+        config.model_overrides({"reasoning_model": "openai/gpt-4o-mini", "api_key": "pushed-key"})
+    )
+    assert client.openai_api_key.get_secret_value() == "pushed-key"
 
 
-def test_a_non_string_value_is_rejected(settings_file):
-    with pytest.raises(settings.SettingsError):
-        settings.update({"reasoning_model": 42})
+def test_build_fast_llm_honours_a_pushed_fast_model(clean_model_env):
+    client = llm.build_fast_llm(
+        config.model_overrides({"fast_model": "qwen2.5-coder:1.5b-base"})
+    )
+    assert client.model == "qwen2.5-coder:1.5b-base"
 
 
-def test_clear_removes_the_file(settings_file):
-    settings.update({"reasoning_model": "a/b"})
-    settings.clear()
-    assert not settings_file.exists()
-    # Idempotent: clearing an absent file is not an error.
-    settings.clear()
+def test_the_fast_client_still_caps_its_output(clean_model_env):
+    client = llm.build_fast_llm(config.model_overrides({"fast_model": "qwen3.5:4b"}))
+    assert client.num_predict == llm.FAST_MAX_TOKENS
 
 
-def test_the_file_is_not_world_readable(settings_file):
-    """It can hold an API key, so it must not be readable by every user on the machine."""
-    settings.update({"api_key": "sk-or-v1-secret"})
-    mode = settings_file.stat().st_mode & 0o777
-    assert mode & 0o077 == 0, f"expected a private file, got {oct(mode)}"
+def test_a_broken_openrouter_client_falls_back_to_the_pushed_local_model(clean_model_env, monkeypatch):
+    """The fallback must be the *local* name, and the pushed one - not the environment's."""
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", lambda **kw: (_ for _ in ()).throw(RuntimeError("bad key")))
+    merged = config.model_overrides({
+        "reasoning_model": "openai/gpt-4o-mini", "api_key": "k", "ollama_model": "pushed:local",
+    })
+    client = llm.build_llm(merged)
+    assert type(client).__name__ == "OllamaLLM"
+    assert client.model == "pushed:local"
 
 
-# --- masking ---
+# --- the service ---
 
 
-def test_a_long_secret_is_masked_to_its_ends():
-    """Enough to tell which key is loaded, not enough to use."""
-    masked = settings.mask("sk-or-v1-abcdefghijklmnop")
-    assert masked == "sk-o…mnop"
-    assert "abcdefghij" not in masked
+def test_the_service_resolves_overrides_once(clean_model_env):
+    from backend.libs import service
+
+    svc = service.SpellbookService(
+        FakeDB(), {}, backend=FakeLLM(),
+        overrides={"reasoning_model": "a/b", "api_key": "k", "fast_model": "c/d"},
+    )
+    assert config.select_model(svc.model_env) == ("openrouter", "a/b")
+    assert config.select_fast_model(svc.model_env) == ("openrouter", "c/d")
 
 
-def test_a_short_secret_is_masked_whole():
-    """Showing four characters of eight is most of it."""
-    assert set(settings.mask("sk-abcde")) == {"•"}
+def test_the_service_without_overrides_reads_the_environment(clean_model_env):
+    from backend.libs import service
 
-
-@pytest.mark.parametrize("value", [None, ""])
-def test_an_absent_secret_masks_to_none(value):
-    assert settings.mask(value) is None
-
-
-# --- precedence ---
-
-
-def test_a_saved_setting_overrides_env(settings_file, monkeypatch):
-    monkeypatch.setenv("LLM_MODEL", "from/env")
-    settings.update({"reasoning_model": "from/file"})
-    assert config.env_view({})["LLM_MODEL"] == "from/file"
-
-
-def test_a_launched_variable_beats_a_saved_setting(settings_file):
-    """A one-off on the command line is a statement about this run, so it must win.
-
-    The regression this guards: a saved file that silently defeats
-    `LLM_MODEL=qwen3.5:4b python -m backend` makes the documented override a lie.
-    """
-    settings.update({"reasoning_model": "from/file"})
-    merged = config.env_view({"LLM_MODEL": "from/launch"})
-    assert merged["LLM_MODEL"] == "from/launch"
-
-
-def test_a_launched_variable_beats_env(settings_file, monkeypatch):
-    monkeypatch.setenv("LLM_MODEL", "from/env")
-    assert config.env_view({"LLM_MODEL": "from/launch"})["LLM_MODEL"] == "from/launch"
-
-
-def test_env_applies_when_nothing_is_saved_or_launched(settings_file, monkeypatch):
-    monkeypatch.setenv("LLM_MODEL", "from/env")
-    assert config.env_view({})["LLM_MODEL"] == "from/env"
-
-
-def test_a_launched_variable_that_is_absent_does_not_clear_a_saved_one(settings_file):
-    """Only variables actually *set* at launch win; an empty base must not wipe the file."""
-    settings.update({"reasoning_model": "from/file"})
-    assert config.env_view({"SOMETHING_ELSE": "x"})["LLM_MODEL"] == "from/file"
-
-
-def test_the_saved_setting_decides_the_model_and_backend(clean_model_env):
-    """The end-to-end point of the overlay: a saved name changes what is selected.
-
-    ``select_model()`` is called *with no argument*, so it reads ``config.env_view()`` - which
-    is the whole path a real run takes. Passing a mapping here would exercise the caller's
-    dict instead and prove nothing about the settings file.
-    """
-    settings.update({"reasoning_model": "qwen3.5:4b"})
-    assert config.select_model() == ("ollama", "qwen3.5:4b")
-
-
-def test_a_saved_model_with_a_slash_selects_openrouter_when_a_key_is_present(clean_model_env):
-    settings.update({"reasoning_model": "vendor/model", "api_key": "k"})
-    assert config.select_model() == ("openrouter", "vendor/model")
-
-
-def test_the_saved_fast_model_is_used(clean_model_env):
-    settings.update({"fast_model": "qwen2.5-coder:1.5b-base"})
-    assert config.select_fast_model() == ("ollama", "qwen2.5-coder:1.5b-base")
-
-
-def test_a_saved_remote_model_without_a_key_falls_back_to_ollama(clean_model_env):
-    """The cleared/unset case: a name with a slash is meaningless with no key, and the
-    fallback must be the local default rather than the unreachable remote id."""
-    settings.update({"reasoning_model": "vendor/model"})
-    backend, model = config.select_model()
-    assert backend == "ollama"
-    assert model == config.OLLAMA_MODEL
-
-
-@pytest.mark.parametrize(
-    ("name", "launch", "saved", "env_value", "expected"),
-    [
-        ("LLM_MODEL", {"LLM_MODEL": "a"}, "b", "c", "launch"),
-        ("LLM_MODEL", {}, "b", "c", "saved"),
-        ("LLM_MODEL", {}, None, "c", "env"),
-        ("LLM_MODEL", {}, None, None, "default"),
-    ],
-)
-def test_setting_source_names_the_winning_layer(
-    settings_file, monkeypatch, name, launch, saved, env_value, expected
-):
-    """The page cannot show a winner it cannot name, and the merge is invisible without it."""
-    if env_value is None:
-        monkeypatch.delenv(name, raising=False)
-    else:
-        monkeypatch.setenv(name, env_value)
-    if saved is not None:
-        settings.update({"reasoning_model": saved})
-    assert config.setting_source(name, launch) == expected
+    # A name with no slash, so it resolves as a local model: a slash would mean OpenRouter and
+    # fall back to the default for want of a key, which is a different behaviour.
+    clean_model_env.setenv("LLM_MODEL", "env-model:tag")
+    svc = service.SpellbookService(FakeDB(), {}, backend=FakeLLM())
+    assert config.select_model(svc.model_env) == ("ollama", "env-model:tag")
 
 
 # --- the endpoints ---
@@ -288,39 +206,37 @@ def test_get_settings_lists_every_editable_field(api):
     assert [field["key"] for field in body["fields"]] == [
         "reasoning_model", "fast_model", "api_key", "ollama_model",
     ]
-    assert body["settings_file"].endswith(".settings.json")
+    assert body["client_storage"] == "localStorage"
 
 
-def test_get_settings_reports_the_effective_model(api, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
-    monkeypatch.setenv("LLM_MODEL", "vendor/model")
+def test_get_settings_reports_the_servers_own_fallback(api, clean_model_env):
+    clean_model_env.setenv("LLM_MODEL", "env-model:tag")
     body = api.get("/api/settings").json()
-    assert body["reasoning_model"] == "vendor/model"
-    assert body["reasoning_backend"] == "openrouter"
+    field = next(f for f in body["fields"] if f["key"] == "reasoning_model")
+    assert field["value"] == "env-model:tag"
 
 
-def test_get_settings_never_returns_the_api_key(api, monkeypatch):
-    """The credential the *server* uses must not be readable through this endpoint."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-verysecretvalue")
+def test_get_settings_never_returns_the_api_key(api, clean_model_env):
+    """The credential the server uses must not be readable through this endpoint."""
+    clean_model_env.setenv("OPENROUTER_API_KEY", SECRET)
     body = api.get("/api/settings").json()
-    key = next(field for field in body["fields"] if field["key"] == "api_key")
-    assert key["secret"] is True
-    assert "verysecretvalue" not in json.dumps(body)
-    assert key["value"] == settings.mask("sk-or-v1-verysecretvalue")
+    assert SECRET not in json.dumps(body)
+    field = next(f for f in body["fields"] if f["key"] == "api_key")
+    assert field["secret"] is True
+    assert field["value"] == "sk-o…e999"
 
 
-def test_put_settings_saves_a_model(api):
-    body = api.put("/api/settings", json={"reasoning_model": "qwen3.5:4b"}).json()
-    assert body["reasoning_model"] == "qwen3.5:4b"
+def test_put_settings_applies_the_pushed_model(api, clean_model_env):
+    body = api.put("/api/settings", json={"reasoning_model": "qwen2.5-coder:7b-instruct"}).json()
+    assert body["reasoning_model"] == "qwen2.5-coder:7b-instruct"
     assert body["reasoning_backend"] == "ollama"
-    assert api.get("/api/settings").json()["reasoning_model"] == "qwen3.5:4b"
 
 
-def test_a_saved_model_is_rebuilt_for_the_next_request(tmp_path, monkeypatch, settings_file):
+def test_the_pushed_model_reaches_the_next_request(tmp_path, monkeypatch, clean_model_env):
     """The bug this guards is the page appearing to work while nothing changed.
 
-    No ``backend`` is injected, so ``service_for`` builds a real client from the settings -
-    and the cached service must be dropped or the old client keeps answering.
+    No ``backend`` is injected, so ``service_for`` builds a real client from the pushed
+    settings - and the memoised service must be dropped or the old client keeps answering.
     """
     app = create_app(vector_db=FakeDB(), character_name="lois",
                      cache_dir=str(tmp_path / "cache"))
@@ -333,46 +249,68 @@ def test_a_saved_model_is_rebuilt_for_the_next_request(tmp_path, monkeypatch, se
     assert first != "qwen2.5-coder:7b-instruct", "the fixture must start somewhere else"
 
 
-def test_put_settings_only_writes_what_was_sent(api, settings_file):
-    api.put("/api/settings", json={"reasoning_model": "a/b", "api_key": "k"})
-    api.put("/api/settings", json={"fast_model": "c/d"})
-    assert settings.load() == {
-        "LLM_MODEL": "a/b", "OPENROUTER_API_KEY": "k", "LLM_MODEL_FAST": "c/d",
-    }
+def test_put_settings_reports_the_same_model_health_does(tmp_path, monkeypatch, clean_model_env):
+    """The page and the health endpoint must not disagree about the model in use.
 
-
-def test_put_settings_clears_a_field_sent_empty(api, settings_file):
-    """Cleared means the *stored* value is gone; the field then reports the .env default.
-
-    Not ``null``: with the file cleared, ``.env`` supplies the model again, and the page has
-    to show what is actually in use rather than an empty box that lies about the next run.
+    Resolving the payload from the environment instead of through the merge was a real
+    inconsistency: after a push this reported the server's old model while ``/api/health``,
+    which asks the service, reported the new one. No backend is injected, so both endpoints
+    resolve a real client and the comparison means something.
     """
-    api.put("/api/settings", json={"reasoning_model": "a/b"})
-    assert settings.load() == {"LLM_MODEL": "a/b"}
+    app = create_app(vector_db=FakeDB(), character_name="lois",
+                     cache_dir=str(tmp_path / "cache"))
+    monkeypatch.setattr("backend.libs.characters.load_character_data", lambda name, **kw: dict(LOIS))
+    client = TestClient(app)
 
-    body = api.put("/api/settings", json={"reasoning_model": ""}).json()
-    assert settings.load() == {}
-    field = next(f for f in body["fields"] if f["key"] == "reasoning_model")
-    assert field["source"] != "saved"
+    client.put("/api/settings", json={"reasoning_model": "qwen2.5-coder:7b-instruct"})
+    assert client.get("/api/settings").json()["reasoning_model"] == \
+        client.get("/api/health").json()["model"]
 
 
-def test_put_settings_reports_a_bad_value_as_400(api):
-    """4xx, not 5xx: the request cannot work however often it is retried."""
-    response = api.put("/api/settings", json={"reasoning_model": "not a model name"})
-    assert response.status_code == 400
-    assert "space" in response.json()["detail"]
+def test_put_settings_never_writes_a_file(api, tmp_path, monkeypatch):
+    """The key is a credential, so the server must not keep a copy of it anywhere."""
+    monkeypatch.chdir(tmp_path)
+    api.put("/api/settings", json={"reasoning_model": "a/b", "api_key": SECRET})
+    written = [p.name for p in Path(tmp_path).rglob("*") if p.is_file()]
+    assert written == [], f"a push must not write anything, found {written}"
+
+
+def test_put_settings_does_not_echo_the_key(api, clean_model_env):
+    body = api.put("/api/settings", json={"reasoning_model": "a/b", "api_key": SECRET}).json()
+    assert SECRET not in json.dumps(body)
+
+
+def test_a_pinned_setting_is_reported_and_wins(api, clean_model_env):
+    """A launched variable outranks the browser, and the page is told which fields those are."""
+    clean_model_env.setattr(config, "_LAUNCH_ENV", {"LLM_MODEL": "pinned:1"})
+    body = api.put("/api/settings", json={"reasoning_model": "from/browser"}).json()
+    assert body["pinned"] == ["reasoning_model"]
+    assert body["any_pinned"] is True
+    assert body["reasoning_model"] == "pinned:1"
+
+
+def test_nothing_is_pinned_by_default(api, clean_model_env):
+    body = api.get("/api/settings").json()
+    assert body["pinned"] == []
+    assert body["any_pinned"] is False
 
 
 def test_put_settings_rejects_an_unknown_field(api):
     """A misspelled field must not be a 200 that changed nothing."""
-    response = api.put("/api/settings", json={"reasoning_modle": "a/b"})
-    assert response.status_code == 422
+    assert api.put("/api/settings", json={"reasoning_modle": "a/b"}).status_code == 422
 
 
-def test_an_empty_put_changes_nothing(api, settings_file):
-    settings.update({"reasoning_model": "a/b"})
-    assert api.put("/api/settings", json={}).status_code == 200
-    assert settings.load() == {"LLM_MODEL": "a/b"}
+def test_put_settings_accepts_an_empty_push(api, clean_model_env):
+    """A client with nothing stored must be able to say so, and get the server's defaults."""
+    clean_model_env.setenv("LLM_MODEL", "env-model:tag")
+    body = api.put("/api/settings", json={}).json()
+    assert body["reasoning_model"] == "env-model:tag"
+
+
+def test_put_settings_accepts_a_blank_value_as_no_preference(api, clean_model_env):
+    clean_model_env.setenv("LLM_MODEL", "env-model:tag")
+    body = api.put("/api/settings", json={"reasoning_model": ""}).json()
+    assert body["reasoning_model"] == config.OLLAMA_MODEL
 
 
 def test_openapi_lists_the_settings_routes(api):
@@ -381,21 +319,37 @@ def test_openapi_lists_the_settings_routes(api):
     assert set(paths["/api/settings"]) >= {"get", "put"}
 
 
+# --- the front end's own contract ---
+
+
+def test_the_browser_store_owns_the_models_and_the_key():
+    """The settings live in `localStorage`, so the module must actually store them.
+
+    A source-level check because the alternative is a browser test, and the failure it guards
+    is silent: a page that renders four boxes and persists none of them looks correct until
+    the next reload.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "frontend" / "app" / "lib" / "browserSettings.ts"
+    ).read_text(encoding="utf-8")
+    assert "what-loadout.models" in source
+    assert "readModelSettings" in source and "writeModelSettings" in source
+
+
 def test_a_wrong_api_base_does_not_hide_the_way_to_fix_it():
     """The address card must render when the settings request fails.
 
     A wrong API address is the commonest reason ``GET /api/settings`` fails, and the card that
     repairs it is on this very page - so a screen whose failure path returned only the error
     would be unreachable precisely when it is needed. Checked at the source level because the
-    symptom is a blank screen rather than a wrong value, and nothing at runtime here can see
-    the difference.
+    symptom is a blank screen rather than a wrong value.
     """
     source = (
         Path(__file__).resolve().parent.parent
         / "frontend" / "app" / "screens" / "SettingsScreen.tsx"
     ).read_text(encoding="utf-8")
     assert "<ApiBaseCard />" in source
-    # The card must be drawn inside the loading/error branch, not only in the happy path.
     branch = source.index("if (!settings) {")
     card = source.index("<ApiBaseCard />")
     assert card > branch, "the address card must render when the settings fetch fails"

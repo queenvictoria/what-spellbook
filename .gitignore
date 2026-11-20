@@ -8,11 +8,6 @@ __pycache__/
 # like data/, and never a build artefact.
 .cache/
 
-# Settings saved from the Settings page (models and the OpenRouter key). Beside .env
-# because it overlays it, and ignored for the same reason: it can hold a credential, so
-# it is user data rather than configuration anyone should commit.
-.settings.json
-.settings.json.tmp
 
 # Root-level Node leftovers from the retired browser-only RAG plan. Scoped to the root
 # with a leading slash so the front end, which has to commit its lockfile, still can.

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import dataclass
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -17,23 +18,16 @@ from dotenv import load_dotenv
 # backend/libs/config.py -> backend/libs -> backend -> repo root
 ROOT = Path(__file__).resolve().parents[2]
 
-# Pull OPENROUTER_API_KEY (and friends) out of the untracked .env file at the repo root.
+# Pull CHARACTER (and friends) out of the untracked .env file at the repo root.
 ENV_FILE = ROOT / ".env"
 
-# Snapshot the *launching* environment before .env is merged into it, so the two can be
-# told apart afterwards. ``load_dotenv`` does not overwrite an existing variable, so after
-# the merge a variable set in the shell and one read from .env look identical in
-# ``os.environ`` - and they need different precedence. See ``env_view``.
+# Snapshot the *launching* environment before .env is merged into it. ``load_dotenv`` does not
+# overwrite an existing variable, so after the merge a variable set in the shell and one read
+# from .env look identical in ``os.environ`` - and only the shell one may outrank a browser.
+# See ``model_overrides``.
 _LAUNCH_ENV = dict(os.environ)
 
 load_dotenv(ENV_FILE)
-
-# Settings saved from the Settings page: a small JSON file holding the same four values that
-# used to be edited in .env by hand. Beside .env rather than inside it, because this file is
-# rewritten by the API while .env is the hand-edited default, and it is gitignored for the
-# same reason .env is - a saved API key is user data, not configuration to commit.
-SETTINGS_FILE = ".settings.json"
-SETTINGS_FILE_PATH = ROOT / SETTINGS_FILE
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -155,10 +149,123 @@ def dev_origins(env=None) -> list[str]:
 
 # Primary reasoning model: DeepSeek V4.1 Flash over OpenRouter's OpenAI-compatible API.
 # Local Ollama (same host the embeddings use) remains the offline fallback.
+#
+# These are **fallbacks only**. The model is chosen in the browser (the Settings tab) and sent
+# with each request, so nothing here needs to be set for the app to work - an unset
+# ``LLM_MODEL`` simply means "whatever the front end asked for". They exist so the CLI, which
+# has no browser, and an unconfigured client both have somewhere obvious to land.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 OLLAMA_MODEL = "qwen3.5:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
+
+
+@dataclass(frozen=True)
+class ModelSetting:
+    """One setting a client may send, and the environment name it stands in for.
+
+    ``key`` is the wire name the front end uses; ``env`` is the environment variable the CLI
+    uses. Both name the same thing, so the table is what stops the two surfaces drifting into
+    different vocabulary for one setting - and it is the list the API validates a request
+    against, so a name not in it can never become configuration.
+    """
+
+    key: str
+    env: str
+    label: str
+    help: str
+    secret: bool = False
+
+
+# The settings a browser may supply, in display order.
+MODEL_SETTINGS: tuple[ModelSetting, ...] = (
+    ModelSetting(
+        key="reasoning_model",
+        env="LLM_MODEL",
+        label="Reasoning model",
+        help=(
+            "Writes the book recommendations. A name containing a slash is an OpenRouter id "
+            "(vendor/model); anything else is an Ollama model on this machine."
+        ),
+    ),
+    ModelSetting(
+        key="fast_model",
+        env="LLM_MODEL_FAST",
+        label="Fast model",
+        help=(
+            "Answers the one-line questions, such as how a spell scales at the loaded level. "
+            "Leave empty to use the reasoning model."
+        ),
+    ),
+    ModelSetting(
+        key="api_key",
+        env="OPENROUTER_API_KEY",
+        label="OpenRouter API key",
+        help="Needed by any model whose name contains a slash.",
+        secret=True,
+    ),
+    ModelSetting(
+        key="ollama_model",
+        env="OLLAMA_MODEL",
+        label="Local Ollama model",
+        help="Used when no OpenRouter key is set, or when the reasoning model names a local model.",
+    ),
+)
+
+MODEL_SETTING_KEYS = tuple(setting.key for setting in MODEL_SETTINGS)
+MODEL_SETTINGS_BY_KEY = {setting.key: setting for setting in MODEL_SETTINGS}
+
+
+def model_defaults(env=None) -> dict[str, str]:
+    """The environment's own values for the editable settings, keyed by ``env`` name.
+
+    Sent to the front end so a fresh browser can start from whatever the server has - a
+    launched ``LLM_MODEL``, or a hand-edited ``.env`` - instead of an empty form. Only names
+    that are actually set appear, so "unset" stays distinguishable from "set to blank".
+    """
+    env = os.environ if env is None else env
+    found = {}
+    for setting in MODEL_SETTINGS:
+        value = _clean(env.get(setting.env))
+        if value:
+            found[setting.env] = value
+    return found
+
+
+def model_overrides(values, *, env=None, base=None) -> dict[str, str]:
+    """Merge a client's settings over the environment, returning the effective name map.
+
+    The client's value wins **unless the environment set it at launch**, which is the one case
+    where a per-run statement has to beat a per-browser one - a CLI or a container started with
+    an explicit model must not be second-guessed by whatever a browser tab has stored. A
+    *blank* client value is kept rather than treated as absent, so clearing a box on the
+    settings page genuinely means "no preference" and falls through to the default instead of
+    silently resurrecting an old ``.env`` entry.
+
+    ``base`` replaces the launch environment, which is what a test needs to check the rule
+    without touching the real one.
+    """
+    launch = _launch_env() if base is None else base
+    merged = dict(env if env is not None else os.environ)
+    for setting in MODEL_SETTINGS:
+        if setting.key not in values:
+            continue
+        value = values[setting.key]
+        if _clean(launch.get(setting.env)):
+            merged[setting.env] = launch[setting.env]     # pinned for this process
+        else:
+            merged[setting.env] = "" if value is None else str(value)
+    return merged
+
+
+def _launch_env() -> dict[str, str]:
+    """The environment as it was when the process started, before ``.env`` was merged.
+
+    ``load_dotenv`` does not overwrite an existing variable, so once it has run a shell
+    variable and a ``.env`` one are indistinguishable in ``os.environ`` - and only the shell
+    one should outrank a browser. Snapshotting at import is what keeps that distinction.
+    """
+    return _LAUNCH_ENV
 
 
 def _clean(value) -> str:
@@ -166,66 +273,19 @@ def _clean(value) -> str:
     return (value or "").strip().strip('"').strip("'").strip()
 
 
-def env_view(base=None) -> dict[str, str]:
-    """The environment the model settings are read from: launch env, then file, then .env.
+def mask_secret(value: str | None) -> str | None:
+    """A secret reduced to enough to recognise it and not enough to use it.
 
-    Three sources, and the order is the whole design. The settings page exists so the usual
-    way to change a model is a form rather than an editor, but a saved value must not be
-    able to override a deliberate one-off::
-
-        LLM_MODEL=qwen3.5:4b python -m backend
-
-    is a statement about *this* run, and the command line is checked before the file for the
-    same reason ``os.environ`` already wins over ``.env``. So the precedence is:
-
-    1. **An environment variable set where the process was launched.** Deliberate and
-       per-invocation; beats everything, because a one-off override that a saved file
-       silently defeats is worse than no override at all.
-    2. **The settings file.** The user's saved choice, which is what the page edits.
-    3. **``.env``.** The hand-edited default, and where these values lived before the page.
-
-    Only the editable names are consulted from the settings file, so a stray key in it can
-    never become configuration.
-
-    ``base`` replaces the launch-environment source, which is what a test needs to exercise
-    precedence without touching the real environment. The settings file is still read, so a
-    test can save a value and then show that ``base`` wins over it.
+    The API returns this instead of the key so the settings response is never a way to read a
+    credential back out of the server. It is deliberately not a fixed-width redaction: the
+    point is that a user can tell *which* key is loaded, and ``sk-o…e999`` does that where
+    ``***`` does not.
     """
-    # Imported here rather than at module scope because ``settings`` imports this module back
-    # for the file path, and a cycle at import time would break both.
-    from . import settings as settings_store
-
-    launch = _LAUNCH_ENV if base is None else base
-    saved = settings_store.load()
-
-    merged = dict(os.environ)      # .env, already merged in by load_dotenv
-    merged.update(saved)           # the settings file beats .env
-    for name in settings_store.BY_ENV:
-        value = launch.get(name)
-        if value is not None:
-            merged[name] = value   # a launched variable beats the file
-    return merged
-
-
-def setting_source(name: str, base=None) -> str:
-    """Where ``name``'s effective value comes from: ``launch``, ``saved``, ``env`` or ``default``.
-
-    The precedence in :func:`env_view` is invisible from the value alone: a model saved on
-    the settings page and the same model set in ``.env`` look identical once merged, so a
-    user whose edit appears to do nothing has no way to find out why. Naming the winner is
-    the difference between "the page is broken" and "this run overrode it on the command
-    line" - and it is the page's job to say which, because only the server knows.
-    """
-    from . import settings as settings_store
-
-    launch = _LAUNCH_ENV if base is None else base
-    if _clean(launch.get(name)):
-        return "launch"
-    if name in settings_store.load():
-        return "saved"
-    if _clean(os.environ.get(name)):
-        return "env"
-    return "default"
+    if not value:
+        return None
+    if len(value) <= 8:
+        return "…"
+    return f"{value[:4]}…{value[-4:]}"
 
 
 def select_book_count(env=None) -> int:
@@ -277,7 +337,7 @@ def select_model(env=None) -> tuple[str, str]:
     is nothing to fall back to but Ollama, so that is reported rather than silently
     swapping models.
     """
-    env = env_view() if env is None else env
+    env = os.environ if env is None else env
 
     requested = _clean(env.get("LLM_MODEL"))
     api_key = _clean(env.get("OPENROUTER_API_KEY"))
@@ -307,9 +367,9 @@ def select_fast_model(env=None) -> tuple[str, str]:
 
     Unset means "no separate fast model", and the main model is used instead - so the
     setting is optional and a project without it behaves exactly as before. Routing is
-    the     same name-based inference ``select_model`` uses, and for the same reason.
+    the same name-based inference ``select_model`` uses, and for the same reason.
     """
-    env = env_view() if env is None else env
+    env = os.environ if env is None else env
 
     requested = _clean(env.get("LLM_MODEL_FAST"))
     if not requested:
