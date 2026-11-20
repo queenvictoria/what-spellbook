@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react"
-import { Check, Eye, EyeOff, Pin, RotateCcw, Save } from "lucide-react"
+import { Check, Eye, EyeOff, Pin, RotateCcw, Save, X } from "lucide-react"
 
 import { api } from "@/api/client"
-import type { Settings, SettingField } from "@/api/types"
+import type { Settings, SettingField, SettingsPatch } from "@/api/types"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -14,6 +14,7 @@ import {
   CardTitle,
 } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Select } from "@/components/ui/select"
 import {
   apiBaseError,
   BUILD_API_BASE,
@@ -30,11 +31,11 @@ import { cn } from "@/lib/utils"
 /**
  * Where the app reads its configuration from: this browser.
  *
- * The models and the OpenRouter key are stored in `localStorage` and pushed to the API. The
- * server keeps nothing — `PUT /api/settings` holds what it is sent **in memory for the life of
- * the process** so the model client can be built from it, and writes no file, because the key
- * is a credential and a server-side copy of it is a liability nobody asked for. Two
- * consequences this screen has to be honest about:
+ * The models, their providers and the provider keys are stored in `localStorage` and pushed to
+ * the API. The server keeps nothing — `PUT /api/settings` holds what it is sent **in memory for
+ * the life of the process** so the model client can be built from it, and writes no file,
+ * because the key is a credential and a server-side copy of it is a liability nobody asked for.
+ * Two consequences this screen has to be honest about:
  *
  * * **This browser is the only durable copy.** Clearing site data loses the settings, and the
  *   next run falls back to whatever the server's environment has.
@@ -64,22 +65,7 @@ export function SettingsScreen() {
         const stored = readModelSettings()
         const applied = await api.saveSettings(stored)
         setSettings(applied)
-        // Seeded from what is stored, falling back to the server's own value so a fresh
-        // browser opens showing what it will actually use rather than four empty boxes. A
-        // secret is never seeded: the server only ever sends a mask, and putting that in the
-        // field would make the next save write the mask as the key.
-        setDrafts(
-          Object.fromEntries(
-            definitions.fields
-              .filter((field) => !field.secret)
-              .map((field) => [
-                field.key,
-                stored[field.key as keyof StoredModelSettings] ??
-                  field.value ??
-                  "",
-              ]),
-          ),
-        )
+        setDrafts(seed(definitions, stored))
         setTouched({})
       })
       .catch(setError)
@@ -87,12 +73,22 @@ export function SettingsScreen() {
 
   useEffect(load, [load])
 
-  /** The whole picture, because the browser is the store of record rather than a diff. */
-  function current(): StoredModelSettings {
+  /**
+   * What to push: only the boxes the user has actually changed.
+   *
+   * This is the fix for a second save wiping the key. A secret box is never pre-filled — the
+   * server only ever sends a mask, so filling it in would write the mask back as the key — so
+   * the page cannot resend a key it already holds. Sending every box regardless therefore sent
+   * an empty string for the key on every save after the first, and "blank" means "remove it".
+   * An absent field means "no change", so only touched boxes are sent, plus a secret that has
+   * been explicitly cleared (which sends `""` and is the Clear button's whole job).
+   */
+  function current(): SettingsPatch {
     if (!settings) return {}
-    const values: StoredModelSettings = {}
+    const values: SettingsPatch = {}
     for (const field of settings.fields) {
-      values[field.key as keyof StoredModelSettings] = drafts[field.key] ?? ""
+      if (!touched[field.key]) continue
+      values[field.key as keyof SettingsPatch] = drafts[field.key] ?? ""
     }
     return values
   }
@@ -109,31 +105,24 @@ export function SettingsScreen() {
     setSaved(false)
     try {
       const values = current()
-      const kept = writeModelSettings(values)
+      // Merged into what is already stored rather than replacing it, because `values` is a
+      // diff: replacing would drop every untouched box, and the stored copy has to stay whole
+      // because it is the one that survives a server restart.
+      const stored: StoredModelSettings = { ...readModelSettings(), ...values }
+      for (const key of Object.keys(values) as (keyof SettingsPatch)[]) {
+        if (!stored[key]) delete stored[key]
+      }
+      const kept = writeModelSettings(stored)
       // Pushed even when storage refused, so the session still behaves as the form says - the
       // alternative is a Save button that appears to do nothing at all.
       const applied = await api.saveSettings(values)
       setSettings(applied)
-      // Re-seed from what was just saved, and forget what was touched. Without this the secret
-      // box keeps the typed key and stays "touched", so the form reads as dirty after a
-      // successful save.
-      //
-      // Seeded from `values` rather than from `applied.fields`, which is the trap: a field's
-      // `value` in the response is the *server's environment* value, and that is usually null
-      // because the whole point of this page is that the server has nothing. Seeding from it
-      // blanked every box the moment Save succeeded, and only a reload - which re-seeds from
-      // storage - brought them back. The response is still what the "In effect on the server"
-      // card reads, because that is the one thing only the server can resolve.
-      setDrafts(
-        Object.fromEntries(
-          applied.fields
-            .filter((f) => !f.secret)
-            .map((f) => [
-              f.key,
-              values[f.key as keyof StoredModelSettings] ?? "",
-            ]),
-        ),
-      )
+      // Re-seed from what is now stored, and forget what was touched: the boxes have to agree
+      // with the picture the page just made durable, and a field left "touched" reads as dirty
+      // after a successful save. Seeding from the stored copy rather than from
+      // `applied.fields` is deliberate — a field's `value` in the response is the *server's*
+      // environment value, which is usually null here, so seeding from it blanked every box.
+      setDrafts(seed(applied, stored))
       setTouched({})
       if (!kept) setSaveError(new Error(NOT_STORED))
       setSaved(true)
@@ -185,67 +174,72 @@ export function SettingsScreen() {
 
   const dirty = settings.fields.some((field) => touched[field.key])
   const pinned = new Set(settings.pinned)
+  const groups = groupFields(settings.fields)
 
   return (
     <div className="mx-auto max-w-3xl space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Models</CardTitle>
-          <CardDescription>
-            Stored in this browser and pushed to the API on change. The server
-            keeps nothing, so these survive without a settings file on it. The
-            CLI reads the same names from its own environment.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          {settings.any_pinned && (
-            <p className="rounded-md border border-radiant-500/40 bg-radiant-500/5 p-3 text-xs text-radiant-200">
-              This server was started with some of these already set in its
-              environment, and those win — a launched variable outranks a
-              browser, so an edit to a pinned field will be accepted and have no
-              effect. They are marked below.
-            </p>
-          )}
-
-          {settings.fields.map((field) => (
-            <Field
-              key={field.key}
-              field={field}
-              value={drafts[field.key] ?? ""}
-              touched={touched[field.key] === true}
-              pinned={pinned.has(field.key)}
-              onChange={(value) => edit(field, value)}
-            />
-          ))}
-
-          {saveError != null && <ErrorNotice error={saveError} compact />}
-
-          <div className="flex flex-wrap items-center gap-3 pt-1">
-            <Button onClick={save} disabled={saving || !dirty}>
-              <Save className="h-4 w-4" />
-              {saving ? "Saving…" : "Save"}
-            </Button>
-            <Button variant="outline" onClick={reset} disabled={saving}>
-              <RotateCcw className="h-4 w-4" />
-              Use the server's defaults
-            </Button>
-            {saved && !dirty && (
-              <span className="flex items-center gap-1 text-xs text-verdant-400">
-                <Check className="h-3.5 w-3.5" />
-                Saved. The next request uses it.
-              </span>
+      {groups.map(([title, fields], index) => (
+        <Card key={title}>
+          <CardHeader>
+            <CardTitle>{title}</CardTitle>
+            <CardDescription>{GROUP_HELP[title] ?? ""}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            {index === 0 && settings.any_pinned && (
+              <p className="rounded-md border border-radiant-500/40 bg-radiant-500/5 p-3 text-xs text-radiant-200">
+                This server was started with some of these already set in its
+                environment, and those win — a launched variable outranks a
+                browser, so an edit to a pinned field will be accepted and have no
+                effect. They are marked below.
+              </p>
             )}
-            {dirty && (
-              <span className="text-xs text-parchment/50">Unsaved changes</span>
+
+            {fields.map((field) => (
+              <Field
+                key={field.key}
+                field={field}
+                value={drafts[field.key] ?? ""}
+                touched={touched[field.key] === true}
+                pinned={pinned.has(field.key)}
+                onChange={(value) => edit(field, value)}
+                onClear={() => edit(field, "")}
+              />
+            ))}
+
+            {index === groups.length - 1 && (
+              <>
+                {saveError != null && <ErrorNotice error={saveError} compact />}
+
+                <div className="flex flex-wrap items-center gap-3 pt-1">
+                  <Button onClick={save} disabled={saving || !dirty}>
+                    <Save className="h-4 w-4" />
+                    {saving ? "Saving…" : "Save"}
+                  </Button>
+                  <Button variant="outline" onClick={reset} disabled={saving}>
+                    <RotateCcw className="h-4 w-4" />
+                    Use the server's defaults
+                  </Button>
+                  {saved && !dirty && (
+                    <span className="flex items-center gap-1 text-xs text-verdant-400">
+                      <Check className="h-3.5 w-3.5" />
+                      Saved. The next request uses it.
+                    </span>
+                  )}
+                  {dirty && (
+                    <span className="text-xs text-parchment/50">
+                      Unsaved changes
+                    </span>
+                  )}
+                </div>
+              </>
             )}
-          </div>
-        </CardContent>
-      </Card>
+          </CardContent>
+        </Card>
+      ))}
 
       {/* What the next run will actually do, resolved by the backend through the same merge the
-          service uses. It cannot be derived from the boxes above: a name containing a slash
-          means OpenRouter only while a key is present, and a pinned field overrides its box
-          whatever the box says. */}
+          service uses. It cannot be derived from the boxes above: a provider chosen without a
+          key falls back to Ollama, and a pinned field overrides its box whatever the box says. */}
       <Card>
         <CardHeader>
           <CardTitle>In effect on the server</CardTitle>
@@ -259,13 +253,13 @@ export function SettingsScreen() {
             <Row label="Reasoning">
               <Resolved
                 model={settings.reasoning_model}
-                backend={settings.reasoning_backend}
+                provider={settings.reasoning_provider}
               />
             </Row>
             <Row label="Fast">
               <Resolved
                 model={settings.fast_model}
-                backend={settings.fast_backend}
+                provider={settings.fast_provider}
               />
             </Row>
           </dl>
@@ -280,21 +274,77 @@ export function SettingsScreen() {
 const NOT_STORED =
   "This browser refused to store the settings, so they apply only until the page is reloaded."
 
-/** One model box, with its label, help and whether the server pins it. */
+/** What each card is for, keyed by the group the backend put its fields in. */
+const GROUP_HELP: Record<string, string> = {
+  Models:
+    "Stored in this browser and pushed to the API on change. The provider says which service " +
+    "serves the name, which the name alone cannot — an Ollama model may be a Hugging Face repo " +
+    "id and so contains slashes. The CLI reads the same names from its own environment.",
+  "API keys":
+    "Held in this browser and sent to the server only in memory, for the life of the process. " +
+    "A key is never pre-filled here and is never written to disk, so Save leaves it alone " +
+    "unless you type a new one.",
+  Fallback:
+    "Where the server lands when a chosen provider cannot run — a remote model with no key, " +
+    "or a client that failed to construct. A local model, so it needs no key.",
+}
+
+/**
+ * The box values to show, given the server's definitions and what this browser stored.
+ *
+ * A stored value wins over the server's, because the browser is the store of record. Falling
+ * back to `resolved` rather than `value` is what makes a fresh browser show what will *actually*
+ * run: the environment usually names no provider at all, while the server still resolves one
+ * (Ollama, or OpenRouter when it has a key), and a blank dropdown beside a card naming a model
+ * reads as two answers to one question.
+ *
+ * A secret is never seeded: the server only ever sends a mask, and putting that in the field
+ * would make the next save write the mask as the key.
+ */
+function seed(
+  definitions: Settings,
+  stored: StoredModelSettings,
+): Record<string, string> {
+  return Object.fromEntries(
+    definitions.fields.map((field) => {
+      if (field.secret) return [field.key, ""]
+      const own = stored[field.key as keyof StoredModelSettings]
+      return [field.key, own ?? field.resolved ?? field.value ?? ""]
+    }),
+  )
+}
+
+/** The fields in the order the backend listed them, split by the card they belong in. */
+function groupFields(fields: SettingField[]): [string, SettingField[]][] {
+  const groups: [string, SettingField[]][] = []
+  for (const field of fields) {
+    const last = groups.at(-1)
+    if (last && last[0] === field.group) last[1].push(field)
+    else groups.push([field.group, [field]])
+  }
+  return groups
+}
+
+/** One setting row: label, control, and whether the server pins it. */
 function Field({
   field,
   value,
   touched,
   pinned,
   onChange,
+  onClear,
 }: {
   field: SettingField
   value: string
   touched: boolean
   pinned: boolean
   onChange: (value: string) => void
+  onClear: () => void
 }) {
   const [revealed, setRevealed] = useState(false)
+  // Whether the *server* holds a key, which is the only thing on screen that says one is set:
+  // the box is never pre-filled, so an empty box means "no new key", not "no key".
+  const held = field.secret ? field.value : null
 
   return (
     <div className="space-y-1.5">
@@ -314,25 +364,47 @@ function Field({
             set on the server
           </Badge>
         )}
+        {held && (
+          <Badge tone="verdant" title="A key is loaded on the server">
+            <Check className="h-3 w-3" />
+            key set
+          </Badge>
+        )}
       </div>
 
       <div className="flex gap-2">
-        <Input
-          id={field.key}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          // A secret is a password box, but one that can be revealed while typing: the value is
-          // never echoed anywhere else, so hiding it only makes a typo invisible.
-          type={field.secret && !revealed ? "password" : "text"}
-          autoComplete="off"
-          spellCheck={false}
-          placeholder={
-            field.secret && field.value
-              ? `Server has ${field.value}`
-              : "Not set"
-          }
-          className="font-mono"
-        />
+        {field.choices ? (
+          <Select
+            id={field.key}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            aria-label={field.label}
+          >
+            {/* An empty value is "no opinion", which is not the same as any provider: it lets
+                the server decide from the key it has, and is what an untouched form holds. */}
+            <option value="">Let the server decide</option>
+            {field.choices.map((choice) => (
+              <option key={choice} value={choice}>
+                {choice}
+              </option>
+            ))}
+          </Select>
+        ) : (
+          <Input
+            id={field.key}
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            // A secret is a password box, but one that can be revealed while typing: the value
+            // is never echoed anywhere else, so hiding it only makes a typo invisible.
+            type={field.secret && !revealed ? "password" : "text"}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder={
+              held ? `Saved: ${held}. Leave empty to keep it.` : "Not set"
+            }
+            className="font-mono"
+          />
+        )}
         {field.secret && (
           <Button
             type="button"
@@ -348,19 +420,29 @@ function Field({
             )}
           </Button>
         )}
+        {/* A set key cannot be removed by emptying the box, because an empty box already means
+            "keep it" - that is what stops a save wiping it. Removing one is an explicit act
+            with its own control, which sends a blank value and nothing else. */}
+        {(held || (field.secret && touched && value !== "")) && (
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            aria-label={`Clear the ${field.label}`}
+            title="Remove the saved key"
+            onClick={onClear}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        )}
       </div>
 
       <p className="text-xs text-parchment/50">
         {field.help}
-        {/* A secret box is never pre-filled — there is nothing to pre-fill it with, since the
-            server only ever sends a mask — so this line is the only thing on screen that says
-            whether a key is held anywhere. It says "in use" rather than "in the environment"
-            because the value may be the one this browser pushed, not the server's own. */}
-        {field.secret && field.value && !touched && (
+        {held && (
           <>
             {" "}
-            A key is in use:{" "}
-            <code className="text-parchment/70">{field.value}</code>.
+            A key is in use: <code className="text-parchment/70">{held}</code>.
           </>
         )}
       </p>
@@ -370,16 +452,16 @@ function Field({
 
 function Resolved({
   model,
-  backend,
+  provider,
 }: {
   model: string | null
-  backend: string | null
+  provider: string | null
 }) {
   if (!model) return <span className="text-parchment/50">Not resolved</span>
   return (
     <span className="flex flex-wrap items-center gap-2">
       <code className="text-parchment/90">{model}</code>
-      {backend && <Badge tone="arcane">{backend}</Badge>}
+      {provider && <Badge tone="arcane">{provider}</Badge>}
     </span>
   )
 }

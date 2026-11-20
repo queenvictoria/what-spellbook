@@ -17,6 +17,11 @@ from . import config
 # (reasoning reached 1635 tokens on one call at a higher cap).
 FAST_MAX_TOKENS = 1024
 
+# The reasoning model writes three whole books, and the Anthropic API requires a cap where
+# OpenRouter's is optional. Only used by the Claude branch, but sized for the job: it must not
+# truncate an answer that OpenRouter would have delivered uncapped.
+REASONING_MAX_TOKENS = 8192
+
 # Where Ollama listens when OLLAMA_HOST is unset. Both the reasoning model and the
 # embeddings model are reached here, so a failure to connect means the whole local stack
 # is down rather than one model.
@@ -63,7 +68,7 @@ def names_missing_model(error) -> bool:
 
 
 def explain_failure(error, *, model: str | None = None, purpose: str = "the model",
-                    local: bool = True) -> str:
+                    local: bool = True, provider: str = "openrouter") -> str:
     """Turn a backend exception into a sentence a person can act on.
 
     The raw text from the Ollama client is ``Failed to connect to Ollama. Please check that
@@ -71,6 +76,9 @@ def explain_failure(error, *, model: str | None = None, purpose: str = "the mode
     what is wrong but not what to do about it in *this* project - and it is buried behind
     an HTTP 503 the UI only shows as a red line. Naming the address, the command and the
     model is the difference between a bug report and a fix.
+
+    ``provider`` names which key a remote failure is about, because naming the wrong one
+    sends the user to edit a credential the failing request never read.
     """
     if local and names_connection_failure(error):
         message = (
@@ -89,9 +97,10 @@ def explain_failure(error, *, model: str | None = None, purpose: str = "the mode
         # A remote provider is not something the user can start, so the advice is about the
         # two things they *can* change: the key and the network.
         named = f"'{model}'" if model else "the model"
+        key_env = config.provider_key_env(provider) or "the API key"
         return (
-            f"Could not reach {named} at the configured provider. Check that "
-            "OPENROUTER_API_KEY is set and valid, and that the network allows the request."
+            f"Could not reach {named} at {provider}. Check that "
+            f"{key_env} is set and valid, and that the network allows the request."
         )
     if isinstance(error, TimeoutError) or "timed out" in _text_of(error):
         return (
@@ -134,49 +143,89 @@ def build_fast_llm(env=None):
 
 def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = None,
            env=None):
-    """Construct one client from a resolved ``(backend, model)`` pair.
+    """Construct one client from a resolved ``(provider, model)`` pair.
 
-    Shared by both builders so the two cannot disagree about how a backend is reached -
+    Shared by both builders so the two cannot disagree about how a provider is reached -
     the bug this replaced was a branch that read the requested model in one path and a
     hard-coded default in the other.
+
+    A provider that cannot be constructed falls back to Ollama rather than aborting the
+    session, because a settings page saved on another machine is not a reason to have no
+    working backend at all. The fallback is logged and named, so it never looks like the
+    requested model answered.
     """
     import os
 
     from langchain_ollama import OllamaLLM
 
-    backend, model = selection
+    provider, model = selection
     source = os.environ if env is None else env
-    api_key = (source.get("OPENROUTER_API_KEY") or "").strip()
 
-    if backend == "openrouter":
+    if provider == "openrouter":
         try:
             from langchain_openai import ChatOpenAI
 
             llm = ChatOpenAI(
                 model=model,
-                api_key=api_key,
+                api_key=_key(source, "OPENROUTER_API_KEY"),
                 base_url=config.OPENROUTER_BASE_URL,
                 temperature=0.3,
                 max_retries=2,
                 timeout=180,
                 **({"max_tokens": max_tokens} if max_tokens else {}),
             )
-            logging.info(f"{label} backend: OpenRouter ({model})")
+            logging.info(f"{label} provider: OpenRouter ({model})")
             return llm
         except Exception as e:
-            logging.warning(
-                f"Could not initialise OpenRouter client ({e}); falling back to Ollama."
+            return _local_fallback(label, model, source, e)
+
+    if provider == "claude":
+        try:
+            from langchain_anthropic import ChatAnthropic
+
+            llm = ChatAnthropic(
+                model=model,
+                api_key=_key(source, "ANTHROPIC_API_KEY"),
+                temperature=0.3,
+                max_retries=2,
+                default_request_timeout=180,
+                # `max_tokens` is *required* by the Anthropic API rather than optional, so the
+                # reasoning client needs a floor even though it is the one caller that does not
+                # care about a cap. Sized well above the fast cap because this is the model that
+                # writes three whole books.
+                max_tokens=max_tokens or REASONING_MAX_TOKENS,
             )
-            # A failed construction still falls back to the *Ollama* default, not to the
-            # requested OpenRouter id, which no local server would recognise. The env is
-            # honoured here too, so a browser-supplied local name is still used.
-            fallback = (source.get("OLLAMA_MODEL") or "").strip() or config.OLLAMA_MODEL
-            logging.info(f"{label} backend: Ollama ({fallback})")
-            return OllamaLLM(model=fallback)
+            logging.info(f"{label} provider: Claude ({model})")
+            return llm
+        except Exception as e:
+            return _local_fallback(label, model, source, e)
 
     # `model` is already the resolved Ollama name, including any LLM_MODEL override.
-    logging.info(f"{label} backend: Ollama ({model})")
+    logging.info(f"{label} provider: Ollama ({model})")
     return OllamaLLM(model=model, **({"num_predict": max_tokens} if max_tokens else {}))
+
+
+def _key(source, name: str) -> str:
+    """One provider's key from the effective environment, stripped of quotes and padding."""
+    return config._clean(source.get(name))
+
+
+def _local_fallback(label: str, model: str, source, error):
+    """Hand back the local client after a remote one could not be constructed.
+
+    The fallback must be the *Ollama* default and not the requested remote id, which no local
+    server would recognise - and it must honour the pushed ``OLLAMA_MODEL``, so a browser's
+    local name is still used.
+    """
+    from langchain_ollama import OllamaLLM
+
+    logging.warning(
+        f"Could not initialise the {label} provider for '{model}' ({error}); "
+        f"falling back to Ollama."
+    )
+    fallback = config._clean(source.get("OLLAMA_MODEL")) or config.OLLAMA_MODEL
+    logging.info(f"{label} provider: Ollama ({fallback})")
+    return OllamaLLM(model=fallback)
 
 
 def extract_text(response) -> str:
@@ -228,7 +277,22 @@ def is_local(llm) -> bool:
     key, quota or network problem. Decided by client type rather than by re-reading the
     environment, which could have changed since the client was built.
     """
-    return type(llm).__name__.lower().startswith("ollama")
+    return client_provider(llm) == "ollama"
+
+
+def client_provider(llm) -> str:
+    """Which provider a built client talks to, decided by its type.
+
+    Read off the client rather than off the environment for the same reason ``is_local`` is:
+    the environment may have changed since the client was built, and a message that names the
+    wrong key sends the user to edit a credential the failing request never read.
+    """
+    name = type(llm).__name__.lower()
+    if name.startswith("ollama"):
+        return "ollama"
+    if name.startswith("chatanthropic"):
+        return "claude"
+    return "openrouter"
 
 
 def embedding_failure(error) -> "EmbeddingUnavailable | None":
@@ -255,7 +319,8 @@ def invoke(llm, prompt: str) -> str:
     except Exception as e:
         raise LLMUnavailable(
             explain_failure(e, model=model_name(llm), purpose="the model",
-                            local=is_local(llm))
+                            local=is_local(llm),
+                            provider=client_provider(llm))
         ) from e
     if not text.strip():
         raise EmptyCompletion(

@@ -156,8 +156,25 @@ def dev_origins(env=None) -> list[str]:
 # has no browser, and an unconfigured client both have somewhere obvious to land.
 OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 OPENROUTER_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+ANTHROPIC_MODEL = "claude-sonnet-4-5"
 OLLAMA_MODEL = "qwen3.5:4b"
 EMBEDDING_MODEL = "nomic-embed-text"
+
+# The services a model name can mean, spelled as they are on the wire. This tuple is the one
+# place the list exists: the settings table offers it as a dropdown, ``_select`` branches on
+# it, and ``llm._build`` builds one client per entry.
+PROVIDERS = ("openrouter", "claude", "ollama")
+
+# The key each remote provider needs. A provider not in here (Ollama) needs none, which is
+# what makes "can this provider actually run" a single lookup rather than a chain of ifs.
+PROVIDER_KEY_ENV = {"openrouter": "OPENROUTER_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+
+# Each provider's default model, used when a provider is chosen but no name is given.
+PROVIDER_DEFAULT_MODEL = {
+    "openrouter": OPENROUTER_MODEL,
+    "claude": ANTHROPIC_MODEL,
+    "ollama": OLLAMA_MODEL,
+}
 
 
 @dataclass(frozen=True)
@@ -168,6 +185,9 @@ class ModelSetting:
     uses. Both name the same thing, so the table is what stops the two surfaces drifting into
     different vocabulary for one setting - and it is the list the API validates a request
     against, so a name not in it can never become configuration.
+
+    ``choices`` turns a box into a dropdown. It exists because a provider is one of three
+    known values, and a free-text box for it would make a typo look like a backend failure.
     """
 
     key: str
@@ -175,18 +195,40 @@ class ModelSetting:
     label: str
     help: str
     secret: bool = False
+    choices: tuple[str, ...] | None = None
+    # Which card the page puts this field in. Kept here rather than in the page so the table
+    # stays the one description of a setting: a field added here appears in a familiar place
+    # instead of wherever the front end happened to stop rendering.
+    group: str = "Models"
 
 
-# The settings a browser may supply, in display order.
+# The settings a browser may supply, in display order. The provider sits above its model
+# because it is what the model name *means*: a name alone cannot say which service serves it,
+# and inferring from the presence of a slash was wrong - an Ollama model may be a Hugging Face
+# repo, ``hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M``.
 MODEL_SETTINGS: tuple[ModelSetting, ...] = (
+    ModelSetting(
+        key="reasoning_provider",
+        env="LLM_PROVIDER",
+        label="Reasoning provider",
+        help=(
+            "Which service serves the reasoning model. A model name alone cannot say: an "
+            "Ollama model may be a Hugging Face repo id, which also contains slashes."
+        ),
+        choices=PROVIDERS,
+    ),
     ModelSetting(
         key="reasoning_model",
         env="LLM_MODEL",
         label="Reasoning model",
-        help=(
-            "Writes the book recommendations. A name containing a slash is an OpenRouter id "
-            "(vendor/model); anything else is an Ollama model on this machine."
-        ),
+        help="Writes the book recommendations, as the provider above names it.",
+    ),
+    ModelSetting(
+        key="fast_provider",
+        env="LLM_PROVIDER_FAST",
+        label="Fast provider",
+        help="Which service serves the fast model. Unset follows the reasoning provider.",
+        choices=PROVIDERS,
     ),
     ModelSetting(
         key="fast_model",
@@ -201,14 +243,27 @@ MODEL_SETTINGS: tuple[ModelSetting, ...] = (
         key="api_key",
         env="OPENROUTER_API_KEY",
         label="OpenRouter API key",
-        help="Needed by any model whose name contains a slash.",
+        help="Needed only by a model whose provider is OpenRouter.",
         secret=True,
+        group="API keys",
+    ),
+    ModelSetting(
+        key="anthropic_api_key",
+        env="ANTHROPIC_API_KEY",
+        label="Anthropic API key",
+        help="Needed only by a model whose provider is Claude.",
+        secret=True,
+        group="API keys",
     ),
     ModelSetting(
         key="ollama_model",
         env="OLLAMA_MODEL",
-        label="Local Ollama model",
-        help="Used when no OpenRouter key is set, or when the reasoning model names a local model.",
+        label="Local Ollama fallback",
+        help=(
+            "Used when a chosen provider cannot run - a remote model with no key, or a client "
+            "that failed to construct - and as the model when nothing else is set."
+        ),
+        group="Fallback",
     ),
 )
 
@@ -320,45 +375,108 @@ def select_book_count(env=None) -> int:
     return requested
 
 
-def select_model(env=None) -> tuple[str, str]:
-    """Return ``(backend, model)`` for the reasoning model.
+def provider(env=None, key: str = "LLM_PROVIDER") -> str | None:
+    """The provider named by ``key``, or ``None`` when the environment names none.
 
-    ``LLM_MODEL`` is the single override, and which backend it means is inferred from
-    the name rather than from a second setting - the two conventions are unambiguous:
-    an OpenRouter id is ``vendor/model`` (always contains a slash) while an Ollama name
-    is ``name:tag`` (never does). So:
-
-      LLM_MODEL unset          -> the default for whichever backend the key allows
-      LLM_MODEL=deepseek/x     -> OpenRouter
-      LLM_MODEL=qwen3.5:4b     -> Ollama, even when an OpenRouter key is present
-
-    That last case is the point: it lets a key be kept in ``.env`` for occasional use
-    while running locally by default. If a remote model is requested with no key there
-    is nothing to fall back to but Ollama, so that is reported rather than silently
-    swapping models.
+    ``None`` is a real answer here, distinct from ``"ollama"``: it means "the environment has
+    no opinion", which is what lets the default be decided by which key is present rather
+    than by an arbitrary choice of provider. An unrecognised value is reported and treated as
+    absent, because a typo must not silently become a different service.
     """
     env = os.environ if env is None else env
+    raw = _clean(env.get(key)).lower()
+    if not raw:
+        return None
+    if raw not in PROVIDERS:
+        logging.warning(
+            f"{key}='{raw}' is not one of {', '.join(PROVIDERS)}; ignoring it."
+        )
+        return None
+    return raw
 
-    requested = _clean(env.get("LLM_MODEL"))
-    api_key = _clean(env.get("OPENROUTER_API_KEY"))
-    fallback_model = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
 
-    if requested:
-        if "/" in requested:
-            if api_key:
-                return "openrouter", requested
+def provider_key_env(name: str) -> str | None:
+    """The environment variable holding the key ``name`` needs, or ``None`` for a local one."""
+    return PROVIDER_KEY_ENV.get(name)
+
+
+def _select(requested_provider: str | None, requested_model: str,
+            env, *, label: str) -> tuple[str, str]:
+    """Resolve one provider/model pair, honouring an explicit provider when there is one.
+
+    The explicit provider is authoritative because the name cannot be: an Ollama model may be
+    a Hugging Face repo id (``hf.co/…/…:Q4_K_M``) and so contains slashes, which is exactly
+    what the old name-based inference read as an OpenRouter id - so it sent a local model to a
+    remote service and failed there with a message about the API key.
+
+    With no provider given, the name is still read the old way, because the CLI and a
+    hand-written ``.env`` rely on it and one setting is easier to explain than two.
+    """
+    if requested_provider == "ollama":
+        return "ollama", requested_model or _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
+
+    if requested_provider:
+        key_env = PROVIDER_KEY_ENV[requested_provider]
+        model = requested_model or PROVIDER_DEFAULT_MODEL[requested_provider]
+        if _clean(env.get(key_env)):
+            return requested_provider, model
+        # A remote provider with no key cannot work at all, so falling back is the only way to
+        # answer - and it is logged, because silently swapping models makes a missing key look
+        # like a backend failure.
+        fallback = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
+        logging.warning(
+            f"{label} is set to provider '{requested_provider}' but {key_env} is empty; "
+            f"using Ollama '{fallback}'."
+        )
+        return "ollama", fallback
+
+    # No provider: infer from the name, as before.
+    if requested_model:
+        if "/" in requested_model:
+            if _clean(env.get("OPENROUTER_API_KEY")):
+                return "openrouter", requested_model
+            fallback = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
             logging.warning(
-                f"LLM_MODEL='{requested}' looks like an OpenRouter model but "
-                f"OPENROUTER_API_KEY is not set; using Ollama '{fallback_model}'."
+                f"{label}='{requested_model}' looks like an OpenRouter model but "
+                f"OPENROUTER_API_KEY is not set; using Ollama '{fallback}'."
             )
-        else:
-            return "ollama", requested
+            return "ollama", fallback
+        return "ollama", requested_model
 
-    return ("openrouter", OPENROUTER_MODEL) if api_key else ("ollama", fallback_model)
+    fallback = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
+    return ("openrouter", OPENROUTER_MODEL) if _clean(env.get("OPENROUTER_API_KEY")) \
+        else ("ollama", fallback)
+
+
+def select_model(env=None) -> tuple[str, str]:
+    """Return ``(provider, model)`` for the reasoning model.
+
+    ``LLM_PROVIDER`` + ``LLM_MODEL`` name it. The provider is what the model name *means*, and
+    it is a setting of its own rather than something inferred from the name, because the name
+    cannot carry it: OpenRouter ids are ``vendor/model``, but so are Hugging Face Ollama models
+    (``hf.co/mradermacher/RollMind-v1-…:Q4_K_M``), and reading a slash as "remote" sent a local
+    model to OpenRouter.
+
+    With ``LLM_PROVIDER`` unset the old name-based inference still applies, so an existing
+    ``.env`` or CLI one-liner keeps working:
+
+      nothing set              -> OpenRouter if a key is present, else Ollama
+      LLM_MODEL=deepseek/x     -> OpenRouter
+      LLM_MODEL=qwen3.5:4b     -> Ollama, even when an OpenRouter key is present
+      LLM_PROVIDER=ollama      -> Ollama, whatever the name looks like
+
+    A remote provider with no key has nothing to fall back to but Ollama, so that is reported
+    rather than silently swapped.
+    """
+    env = os.environ if env is None else env
+    return _select(
+        provider(env, "LLM_PROVIDER"), _clean(env.get("LLM_MODEL")), env,
+        label="LLM_MODEL",
+    )
 
 
 def select_fast_model(env=None) -> tuple[str, str]:
-    """Return ``(backend, model)`` for the small, fast model.
+    """Return ``(provider, model)`` for the small, fast model.
 
     ``LLM_MODEL_FAST`` is a second, independent setting rather than a modifier on
     ``LLM_MODEL``, because the two do different jobs: the main model writes a whole
@@ -366,28 +484,20 @@ def select_fast_model(env=None) -> tuple[str, str]:
     question about a spell and is not. Pointing it at a smaller model is the point.
 
     Unset means "no separate fast model", and the main model is used instead - so the
-    setting is optional and a project without it behaves exactly as before. Routing is
-    the same name-based inference ``select_model`` uses, and for the same reason.
+    setting is optional and a project without it behaves exactly as before. Its provider is
+    independently settable through ``LLM_PROVIDER_FAST`` and falls back to the reasoning
+    provider, because the common case is one service for both.
     """
     env = os.environ if env is None else env
-
-    requested = _clean(env.get("LLM_MODEL_FAST"))
-    if not requested:
+    requested_model = _clean(env.get("LLM_MODEL_FAST"))
+    requested_provider = provider(env, "LLM_PROVIDER_FAST")
+    if not requested_model and not requested_provider:
         return select_model(env)
 
-    api_key = _clean(env.get("OPENROUTER_API_KEY"))
-    fallback_model = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
-
-    if "/" in requested:
-        if api_key:
-            return "openrouter", requested
-        logging.warning(
-            f"LLM_MODEL_FAST='{requested}' looks like an OpenRouter model but "
-            f"OPENROUTER_API_KEY is not set; using Ollama '{fallback_model}'."
-        )
-        return "ollama", fallback_model
-
-    return "ollama", requested
+    return _select(
+        requested_provider or provider(env, "LLM_PROVIDER"),
+        requested_model, env, label="LLM_MODEL_FAST",
+    )
 
 
 def resolve(path) -> Path:

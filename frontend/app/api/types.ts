@@ -393,22 +393,40 @@ export interface SettingField {
   help: string
   value: string | null
   secret: boolean
+  /**
+   * A closed set of legal values, when the setting is a choice rather than free text.
+   *
+   * The provider is one of three known services, so a text box would let a typo become a
+   * backend that does not exist — and the only symptom would be a model client that fell back
+   * to Ollama with a warning nobody reads.
+   */
+  choices: string[] | null
+  /** Which card the page puts this in, so a new setting lands somewhere sensible. */
+  group: string
+  /**
+   * The value actually in effect, which is not always `value`.
+   *
+   * The environment may name no provider while the resolved one is still Ollama, because that
+   * is what the server would use — so a form seeded from `value` alone would show five blanks
+   * beside a card confidently naming a model. Masked for a secret, exactly as `value` is.
+   */
+  resolved: string | null
 }
 
 /**
  * What the settings page needs: the editable names, and the server's fallbacks.
  *
- * The resolved model and backend are sent alongside the fields because they answer the
+ * The resolved model and provider are sent alongside the fields because they answer the
  * question the page is really asked — "what will my next run use?" — and cannot be derived
- * from the fields alone: a name containing a slash means OpenRouter only while a key is
- * present, and otherwise falls back to Ollama.
+ * from the fields alone: a chosen provider falls back to Ollama when the remote one has no
+ * key, and a pinned field overrides its box whatever the box says.
  */
 export interface Settings {
   fields: SettingField[]
   reasoning_model: string | null
-  reasoning_backend: string | null
+  reasoning_provider: string | null
   fast_model: string | null
-  fast_backend: string | null
+  fast_provider: string | null
   /**
    * The settings this server pinned in its environment before it started.
    *
@@ -422,11 +440,20 @@ export interface Settings {
   client_storage: string
 }
 
-/** The model settings a client is using, pushed so the server can honour them for this run. */
+/**
+ * The model settings a client is using, pushed so the server can honour them for this run.
+ *
+ * An **absent** field means "no change" and a **blank** one means "remove it". The distinction
+ * is what keeps a key alive across saves: the secret box is never pre-filled, so the page
+ * cannot resend a key it holds, and treating "not resent" as "cleared" wiped it every time.
+ */
 export interface SettingsPatch {
+  reasoning_provider?: string
   reasoning_model?: string
+  fast_provider?: string
   fast_model?: string
   api_key?: string
+  anthropic_api_key?: string
   ollama_model?: string
 }
 

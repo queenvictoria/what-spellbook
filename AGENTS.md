@@ -1972,10 +1972,18 @@ its own, which is why the badge and the card-level warning exist.
 
 Five things were learned building it, and each changed the design:
 
-- **A blank value and an absent one are different statements.** Absent means "no opinion, use
-  the environment"; blank means "no preference, do not resurrect an old `.env` entry". The
-  request model is typed fields rather than a dict so the two stay distinguishable, and
-  `model_overrides` keeps a blank rather than dropping it.
+- **A blank value and an absent one are different statements.** Absent means "no change" on a
+  push and "no opinion, use the environment" in a merge; blank means "remove it, do not
+  resurrect an old `.env` entry". The request model is typed fields rather than a dict so the
+  two stay distinguishable, and `model_overrides` keeps a blank rather than dropping it. The
+  whole key-survival fix is this distinction being honoured end to end.
+- **A box's value and its *resolved* value are not the same thing.** The environment usually
+  names no provider while the server still resolves one - Ollama by default, OpenRouter when
+  it has a key - and an unset fast model follows the reasoning one. Seeding the form from
+  `value` alone showed five blanks beside a card confidently naming a model, which reads as two
+  answers to one question. `SettingFieldSchema.resolved` carries what will actually run, and
+  the seed prefers it; `value` stays what the environment literally says, because "is this
+  pinned" is a different question from "what will be used".
 - **The service cache has to be dropped on a push, or the page lies.** `service_for` memoises
   a service per character, and a service holds the client it was built with - so a pushed
   model would be reported by `GET /api/settings` while the next recommendation used the old
@@ -1997,6 +2005,27 @@ Five things were learned building it, and each changed the design:
   reset, because the response carries only a mask and putting that in the field would make the
   next save write the mask as the key.
 
+**A second save wiped the key, and the cause was the push carrying the whole form.** The rule
+above says untouched means *absent*, but the page still sent every box — so the second save
+sent `"api_key": ""`, and blank means "remove it". Three things had to change together:
+
+- **The client sends only what was touched.** `current()` skips any box whose `touched` entry
+  is unset, and the stored copy is *merged* rather than replaced, because a diff cannot be the
+  whole picture. A source-level test pins both halves, since the failure is silent either way:
+  send everything and the key dies, send nothing and Save is a no-op.
+- **The server merges an absent field instead of replacing the map.** `state["overrides"]` was
+  assigned `request.supplied()`, so anything not resent was erased. It now updates — with one
+  exception that is not an inconsistency: **a push with no fields at all means "forget
+  everything"**. That is what Reset sends, and a browser with nothing stored has no opinion to
+  merge. Merging there would make Reset do nothing while the page cleared its own copy, so the
+  server would go on using the values it had just been told to forget. Verified live by
+  clearing `localStorage` and reloading: the resolved models went back to the environment's.
+- **Removing a key needs its own control.** An empty box already means "keep it", so emptying
+  it can never clear the key — hence the Clear button, which sends `""` and nothing else. It
+  only appears when a key is actually held (or when one has been typed), and the row shows a
+  `key set` badge and the mask in the placeholder, because a box that is never pre-filled
+  otherwise looks the same whether a key is loaded or not.
+
 Two smaller ones, both about a page that edits configuration having to be honest:
 
 - **A failed fetch must still offer the fix.** The API-address card renders even when
@@ -2008,21 +2037,47 @@ Two smaller ones, both about a page that edits configuration having to be honest
   instead, because a value there is now a *pin* that silently outranks the page - which is the
   right behaviour for a one-off and the wrong default for a checkout.
 
-### Choosing the model: one setting, inferred backend
+### Choosing the model: the provider is a setting, because the name cannot carry it
 
-`LLM_MODEL` picks the reasoning model for both backends. Which backend it means is
-**inferred from the name**, not configured separately, because the conventions are
-unambiguous: an OpenRouter id is `vendor/model` and always contains `/`, an Ollama name
-is `name:tag` and never does.
+`LLM_MODEL` picks the reasoning model and `LLM_PROVIDER` says **which service serves it**. The
+provider used to be *inferred* from the name - an OpenRouter id is `vendor/model` and contains
+`/`, an Ollama name is `name:tag` and does not - and that inference was wrong.
 
-- One setting is less to explain and less to get wrong than `LLM_MODEL` +
-  `LLM_BACKEND`, which can contradict each other.
-- An Ollama name wins **even when `OPENROUTER_API_KEY` is set**. That is the feature:
-  a key can be kept for occasional use while local runs stay local and free.
-- A remote id with no key cannot work, so it falls back to Ollama **and logs why**.
-  Silently swapping models makes a typo look like a backend failure.
+An Ollama model may be a Hugging Face repo id:
+
+```
+hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M
+```
+
+Three slashes, and the rule sent it to OpenRouter, where it failed with a message about
+`OPENROUTER_API_KEY`. Nothing in the name distinguishes that from `deepseek/deepseek-v4.1-flash`,
+so no refinement of the rule can work. The provider is therefore explicit.
+
+- **`PROVIDERS` is the one list.** The settings table offers it as a dropdown, `_select`
+  branches on it, `llm._build` builds one client per entry, and `PROVIDER_KEY_ENV` /
+  `PROVIDER_DEFAULT_MODEL` are keyed by it. A provider added in one place and not the others is
+  a dropdown value nobody can build.
+- **Every remote provider needs its own key**, and `PROVIDER_KEY_ENV` is what makes "can this
+  provider run" a single lookup instead of a chain of ifs. An OpenRouter key must not make a
+  Claude model look runnable - it would be called with no credential and fail with the *wrong*
+  provider's error.
+- **With no provider set the old inference still applies**, so an existing `.env` or CLI
+  one-liner keeps working. Naming one overrides it outright, which is the fix.
+- **A provider whose key is missing falls back to Ollama and logs why.** Silently swapping
+  models makes a missing key look like a backend failure. Same rule as before: an unrecognised
+  provider name is logged and ignored rather than used.
 - Values get stripped of quotes and whitespace - hand-edited files are commonly quoted, and a
   quoted name would otherwise be sent to the server verbatim.
+
+**Claude is a real provider, not a placeholder.** `llm._build` has a `ChatAnthropic` branch
+(`langchain-anthropic`), and the API call needs a token cap where OpenRouter's is optional - so
+the reasoning path passes `REASONING_MAX_TOKENS` (8192) because the Anthropic API rejects a
+request without one. That cap is sized for three whole books, not for the fast model's phrase.
+
+**A failure message names the key of the provider that actually answered.** `explain_failure`
+takes the provider, derived from the built client's type by `client_provider` rather than
+re-read from the environment - which may have changed since. Naming `OPENROUTER_API_KEY` for a
+failed Claude request sends the user to edit a credential the request never read.
 
 The bug this replaced is worth remembering: the OpenRouter branch read the requested
 model but the Ollama branch hard-coded `config.OLLAMA_MODEL`, so `LLM_MODEL` worked for
@@ -2039,13 +2094,13 @@ lets a pushed remote model be called with the pushed key rather than the environ
 Embeddings deliberately stay on Ollama: `nomic-embed-text` is local-only, so changing
 the reasoning model must not change how the index was built.
 
-`LLM_MODEL_FAST` is a **second, independent** setting, not a modifier on the first, and
-it routes by the same name-based inference. The two do different jobs: the reasoning
-model writes a whole recommendation and is worth waiting for, while the fast one answers
-a one-line question about a spell. Unset means "no separate fast model" and the main
-model is used, so the setting is optional. `llm._build()` is shared by both builders so
-the two cannot disagree about how a backend is reached - which is exactly the bug the
-single-setting version had.
+`LLM_MODEL_FAST` is a **second, independent** setting, not a modifier on the first, with its
+own `LLM_PROVIDER_FAST` that falls back to `LLM_PROVIDER` - because one service for both is the
+common case, so naming it once has to be enough. The two do different jobs: the reasoning model
+writes a whole recommendation and is worth waiting for, while the fast one answers a one-line
+question about a spell. Unset means "no separate fast model" and the main model is used, so the
+setting is optional. `llm._build()` is shared by both builders so the two cannot disagree about
+how a provider is reached - which is exactly the bug the single-setting version had.
 
 ### A token cap sized to the answer truncates a reasoning model to nothing
 

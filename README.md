@@ -797,27 +797,45 @@ whatever a one-line fake SRD implies rather than what the real one does.
 ### Choosing the model
 
 The model is chosen on the **Settings** tab and sent with each request; the CLI reads the same
-names from its environment. Which backend a name means is inferred from the name, because the
-two conventions are unambiguous — an OpenRouter id is `vendor/model` (contains `/`), an Ollama
-name is `name:tag` (does not):
+names from its environment. Each model has a **provider** as well as a name, and the provider is
+a setting of its own rather than something read off the name — because the name cannot carry it.
+Ollama models can be Hugging Face repo ids and so contain slashes too:
 
-| `LLM_MODEL`                         | Backend used                                    |
-| ----------------------------------- | ----------------------------------------------- |
-| unset, `OPENROUTER_API_KEY` set     | OpenRouter, `deepseek/deepseek-v4.1-flash-1017` |
-| unset, no key                       | Ollama, `qwen3.5:4b`                            |
-| `deepseek/deepseek-v4.1-flash-1017` | OpenRouter                                      |
-| `qwen2.5-coder:7b-instruct`         | Ollama — **even with a key present**            |
+```
+hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M
+```
 
-That last row is the point: it lets a key be kept for occasional use while running locally by
-default. A remote model id with no key falls back to Ollama and says so, rather than silently
-swapping models.
+Reading a slash as "remote" sent that local model to OpenRouter, where it failed with a message
+about an API key. The provider is now explicit:
+
+| `LLM_PROVIDER` | `LLM_MODEL`                                    | Provider used         |
+| -------------- | ---------------------------------------------- | --------------------- |
+| unset          | unset, `OPENROUTER_API_KEY` set                | OpenRouter, `deepseek/deepseek-v4.1-flash-1017` |
+| unset          | unset, no key                                  | Ollama, `qwen3.5:4b`  |
+| `openrouter`   | `deepseek/deepseek-v4.1-flash-1017`            | OpenRouter            |
+| `claude`       | `claude-sonnet-4-5`                            | Claude                |
+| `ollama`       | `qwen2.5-coder:7b-instruct`                    | Ollama                |
+| `ollama`       | `hf.co/mradermacher/RollMind-v1-…:Q4_K_M`      | Ollama                |
+
+With **no provider set** the name is still read the old way — a slash means OpenRouter — so an
+existing one-off command keeps working. Naming a provider overrides that entirely, which is what
+makes a slashed Ollama name usable.
+
+- **Every remote provider needs its own key.** `ANTHROPIC_API_KEY` for `claude`,
+  `OPENROUTER_API_KEY` for `openrouter`. A provider whose key is absent cannot run, so it falls
+  back to Ollama **and says so**, rather than silently swapping models or calling the service
+  with no credential.
+- **Ollama needs no key**, which is what makes "can this provider run" one lookup.
+- An Ollama provider wins **even when a remote key is present**, so a key can be kept for
+  occasional use while local runs stay local and free.
 
 Nothing needs to be set for the app to work — with no model anywhere it falls back to Ollama.
 The environment is still read, which is what keeps the CLI usable without a browser:
 
 ```bash
-LLM_MODEL=qwen2.5-coder:7b-instruct python -m backend   # local, one-off
-LLM_MODEL=openai/gpt-4o-mini python -m backend          # OpenRouter, one-off
+LLM_PROVIDER=ollama LLM_MODEL=qwen2.5-coder:7b-instruct python -m backend   # local, one-off
+LLM_PROVIDER=openrouter LLM_MODEL=openai/gpt-4o-mini python -m backend      # OpenRouter
+LLM_PROVIDER=claude LLM_MODEL=claude-sonnet-4-5 python -m backend           # Claude
 ```
 
 A variable set this way is **pinned**: it outranks whatever the Settings tab has stored, and
@@ -828,12 +846,13 @@ The embeddings model stays on Ollama regardless — `nomic-embed-text` is local-
 
 `LLM_MODEL_FAST` is a second, independent setting for the small model that answers
 one-line questions — currently reading a spell's scaling at the character's level when the
-spell states it in prose rather than in a table. It routes by the same name-based
-inference, and **unset means the main model is used**, so it is optional:
+spell states it in prose rather than in a table. It has its own `LLM_PROVIDER_FAST`, which
+falls back to `LLM_PROVIDER` because one service for both is the common case, and **unset means
+the main model is used**, so it is optional:
 
 ```bash
-LLM_MODEL_FAST=deepseek/deepseek-v4-flash-0731   # OpenRouter
-LLM_MODEL_FAST=qwen2.5-coder:1.5b-base           # local
+LLM_MODEL_FAST=deepseek/deepseek-v4-flash-0731   # follows LLM_PROVIDER
+LLM_PROVIDER_FAST=ollama LLM_MODEL_FAST=qwen2.5-coder:1.5b-base
 ```
 
 Its output is capped (`llm.FAST_MAX_TOKENS`), and the cap has to cover the model's _hidden

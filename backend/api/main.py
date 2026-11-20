@@ -241,9 +241,23 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         """
         effective = config.model_overrides(state["overrides"])
         launch = config._launch_env()
+        reasoning_provider, reasoning_model = config.select_model(effective)
+        fast_provider, fast_model = config.select_fast_model(effective)
+        # What each box *resolves* to, which is what a fresh browser needs to open on. A box
+        # can be empty while the server still runs a model - the provider falls back to what
+        # the key allows, and an unset fast model follows the reasoning one - so the form
+        # would otherwise show five blanks beside a card confidently naming a model.
+        in_effect = {
+            "reasoning_provider": reasoning_provider,
+            "reasoning_model": reasoning_model,
+            "fast_provider": fast_provider,
+            "fast_model": fast_model,
+            "ollama_model": config._clean(effective.get("OLLAMA_MODEL")) or config.OLLAMA_MODEL,
+        }
         fields = []
         for setting in config.MODEL_SETTINGS:
             value = config._clean(effective.get(setting.env)) or None
+            resolved = in_effect.get(setting.key)
             fields.append(schemas.SettingFieldSchema(
                 key=setting.key,
                 label=setting.label,
@@ -252,19 +266,20 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 # the response is never a way to read the key back out of the server.
                 value=config.mask_secret(value) if setting.secret else value,
                 secret=setting.secret,
+                choices=list(setting.choices) if setting.choices else None,
+                group=setting.group,
+                resolved=config.mask_secret(value) if setting.secret else resolved,
             ))
         pinned = [
             setting.key for setting in config.MODEL_SETTINGS
             if config._clean(launch.get(setting.env))
         ]
-        reasoning_backend, reasoning_model = config.select_model(effective)
-        fast_backend, fast_model = config.select_fast_model(effective)
         return schemas.SettingsSchema(
             fields=fields,
             reasoning_model=reasoning_model,
-            reasoning_backend=reasoning_backend,
+            reasoning_provider=reasoning_provider,
             fast_model=fast_model,
-            fast_backend=fast_backend,
+            fast_provider=fast_provider,
             pinned=pinned,
             any_pinned=bool(pinned),
         )
@@ -283,9 +298,17 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
     def put_settings(request: schemas.SettingsRequest):
         """Take the client's settings, so the next request is served with them.
 
-        The whole picture is sent rather than a diff, because the browser is the store of
-        record - a field the client omits means "no opinion", and a field it sends blank means
-        "no preference", which is a different thing and is kept as one.
+        **Absent and blank mean different things, and that difference is what keeps the key
+        alive.** An absent field is *no change*: a secret box is never pre-filled (the server
+        only sends a mask), so the page cannot resend a key it already holds, and reading
+        "not resent" as "cleared" wiped the credential on every save after the first. A blank
+        string is a deliberate removal, which is how the Clear button forgets a key.
+
+        **A push with no fields at all means "forget everything"**, which is the one case where
+        merging and replacing must agree: a browser with nothing stored has no opinion to
+        merge, and both the first load of a fresh browser and the Reset button say so by
+        sending `{}`. Merging there would make Reset do nothing at all - the page would clear
+        its own copy and the server would go on using the values it was told to forget.
 
         **The service cache is dropped on every push.** A service holds the model client it was
         built with, so keeping them would mean the page saved a new model and the next
@@ -294,7 +317,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         shared); rebuilding only the model client would be marginally cheaper, and would be
         wrong the moment a second setting joined the cache key.
         """
-        state["overrides"] = request.supplied()
+        supplied = request.supplied()
+        if supplied:
+            state["overrides"].update(supplied)
+        else:
+            state["overrides"].clear()
         state["services"].clear()
         return settings_payload()
 

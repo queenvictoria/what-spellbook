@@ -333,6 +333,9 @@ class SettingFieldSchema(BaseModel):
     be a second copy that can drift; this is only the fallback a fresh browser needs to seed
     itself with. A secret is **never** returned in full, not even its own environment value:
     the response must not be a way to read the key back out of the server.
+
+    ``choices`` turns a text box into a dropdown, so a value with a small closed set of legal
+    spellings cannot be mistyped into something that looks like a backend failure.
     """
 
     key: str
@@ -340,6 +343,15 @@ class SettingFieldSchema(BaseModel):
     help: str
     value: str | None = None
     secret: bool = False
+    choices: list[str] | None = None
+    # The value actually in effect, which is not always ``value``: the environment may name no
+    # provider while the resolved one is still Ollama, because that is what the server would
+    # use. Sent so a fresh browser opens showing what will really run rather than a row of
+    # empty boxes whose real answer is "the default". Masked for a secret, like ``value``.
+    resolved: str | None = None
+    # Which card the page puts this in. The table in ``config`` decides, so a new setting
+    # appears somewhere sensible rather than wherever the renderer happened to stop.
+    group: str = "Models"
 
 
 class SettingsSchema(BaseModel):
@@ -355,9 +367,9 @@ class SettingsSchema(BaseModel):
 
     fields: list[SettingFieldSchema] = Field(default_factory=list)
     reasoning_model: str | None = None
-    reasoning_backend: str | None = None
+    reasoning_provider: str | None = None
     fast_model: str | None = None
-    fast_backend: str | None = None
+    fast_provider: str | None = None
     # Which settings the process pinned at launch, and therefore ignores a browser's value for.
     pinned: list[str] = Field(default_factory=list)
     # True when any of them is pinned, so the page can lead with the caveat rather than hope
@@ -377,6 +389,12 @@ class SettingsRequest(BaseModel):
     picture. An empty string is a deliberate "no preference", which lets a cleared box fall
     through to the default instead of resurrecting an old ``.env`` entry.
 
+    **An absent field keeps whatever was pushed before, which is the whole reason the key
+    survives a second save.** A secret box is never pre-filled - the server only ever sends a
+    mask - so the page cannot resend the key it already has, and treating "not resent" as
+    "cleared" wiped the credential on every save after the first. So absence and an empty
+    string are deliberately different: absent is "no change", ``""`` is "remove it".
+
     Extra keys are **forbidden**, so a misspelled field is a 422 rather than a push that
     reports success and changed nothing - invisible from the response, and the likeliest
     mistake this page can produce.
@@ -384,9 +402,12 @@ class SettingsRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    reasoning_provider: str | None = None
     reasoning_model: str | None = None
+    fast_provider: str | None = None
     fast_model: str | None = None
     api_key: str | None = None
+    anthropic_api_key: str | None = None
     ollama_model: str | None = None
 
     def supplied(self) -> dict[str, str]:

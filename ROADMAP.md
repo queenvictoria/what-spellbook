@@ -112,7 +112,11 @@ one place.
       on load, so a reload or a restart does not revert to the server's environment. One rule
       overrides the browser: a variable set when the server *started* is pinned and wins, and
       the page marks those fields so an edit that has no effect is explained. `.env` no longer
-      sets any of the four names.
+      sets any of the names. Each model carries an explicit **provider** (`openrouter`,
+      `claude`, `ollama`) rather than inferring one from a slash in the name — Ollama models can
+      be Hugging Face repo ids (`hf.co/mradermacher/RollMind-v1-…:Q4_K_M`) and have slashes too.
+      Each remote provider has its own key field, a `key set` badge and a Clear button, and a
+      save only sends the boxes that changed, so a second save no longer wipes the key.
 - [ ] Add image upload for a character
 - [ ] Add character importer and switcher
       — `GET /api/characters` and `service_for(name)` already exist and the UI never calls

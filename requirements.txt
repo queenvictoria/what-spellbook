@@ -6,6 +6,11 @@ langchain-community==0.4.2
 langchain-core==1.7.0
 langchain-ollama==1.1.0
 langchain-openai==1.7.2
+# The Claude provider. Pinned like the other two: the settings page offers it as a choice, so a
+# missing dependency would make one of the three providers fail to construct and fall back to
+# Ollama with only a log line to say why.
+langchain-anthropic==1.7.7
+anthropic==2.12.0
 langchain-text-splitters==1.1.3
 langgraph==1.2.17
 langgraph-checkpoint==4.3.0

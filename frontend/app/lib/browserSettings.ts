@@ -24,9 +24,12 @@ const MODELS_KEY = 'what-loadout.models'
 
 /** The model settings a user has stored in this browser. */
 export interface StoredModelSettings {
+  reasoning_provider?: string
   reasoning_model?: string
+  fast_provider?: string
   fast_model?: string
   api_key?: string
+  anthropic_api_key?: string
   ollama_model?: string
 }
 
