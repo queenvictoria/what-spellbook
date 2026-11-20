@@ -1,11 +1,11 @@
-import tailwindcss from '@tailwindcss/vite'
-import react from '@vitejs/plugin-react'
-import { defineConfig } from 'vite'
+import tailwindcss from "@tailwindcss/vite";
+import react from "@vitejs/plugin-react";
+import { defineConfig } from "vite";
 
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    alias: { '@': new URL('./app', import.meta.url).pathname },
+    alias: { "@": new URL("./app", import.meta.url).pathname },
   },
   server: {
     // The API allows this dev origin explicitly, so the front end calls the API
@@ -16,5 +16,15 @@ export default defineConfig({
     // running on the same machine; the API's CORS list follows FRONTEND_PORT, so a
     // second instance needs both set to the same value.
     port: Number(process.env.VITE_PORT) || 5173,
+    watch: {
+      ignored: [
+        "**/node_modules/**",
+        "**/.git/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/coverage/**",
+        "**/.vite/**",
+      ],
+    },
   },
-})
+});
