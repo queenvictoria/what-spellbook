@@ -1,5 +1,6 @@
 import { NavLink, Navigate, Route, Routes } from "react-router-dom"
 
+import { LicensingNotice } from "@/components/LicensingNotice"
 import { CharacterScreen } from "@/screens/CharacterScreen"
 import { HistoryScreen } from "@/screens/HistoryScreen"
 import { RulesScreen } from "@/screens/RulesScreen"
@@ -18,7 +19,7 @@ const NAV = [
 
 export function App() {
   return (
-    <div className="min-h-screen pb-10 sm:pb-0 sm:pt-10">
+    <div className="min-h-screen flex flex-col pb-10 sm:pb-0 sm:pt-10">
       {/* Sticky rather than fixed: the header keeps its place in the flow, so the main
           content needs no compensating top padding. z-40 sits below the drawers (z-50). */}
       <header className="fixed w-screen bottom-0 sm:bottom-auto sm:top-0 z-40 border-t sm:border-t-0 sm:border-b border-void-800 bg-void-900/70 backdrop-blur">
@@ -64,7 +65,7 @@ export function App() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-6xl px-6 py-8">
+      <main className="mx-auto max-w-6xl px-6 py-8 grow">
         <Routes>
           <Route path="/" element={<Navigate to="/scenario" replace />} />
           <Route path="/scenario" element={<ScenarioScreen />} />
@@ -80,6 +81,11 @@ export function App() {
           <Route path="*" element={<Navigate to="/scenario" replace />} />
         </Routes>
       </main>
+
+      {/* The third-party attributions, below the routed screen. CC-BY-4.0 requires the
+          notice to travel with the work, and the work is the app — the SRD text is quoted
+          all over the Rules tab. It renders nothing when the API cannot be reached. */}
+      <LicensingNotice />
     </div>
   )
 }

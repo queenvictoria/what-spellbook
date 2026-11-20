@@ -27,7 +27,7 @@ one place.
       — **the data is now there**: 44 of the 97 stored book files carry a rating, so the
       "once enough books are rated" precondition is met. Nothing aggregates them yet; the
       only reader is `/history`, which prints a per-run score.
-- [ ] Add /character command to switch characters — `/character` exists but *asks about* the
+- [ ] Add /character command to switch characters — `/character` exists but _asks about_ the
       loaded sheet (`/c perception`); nothing switches which sheet is loaded. The API already
       has `GET /api/characters` and `service_for(name)`, so the seam is there.
 - [x] Refactor `main.py` and supporting files into a proper class/module structure so it can power both the CLI and a front end via an API. Pulled the CLI functions out into their own layer and noted the design in AGENTS/ROADMAP.
@@ -78,7 +78,7 @@ one place.
 - [x] Rules list: Then enable a vector search over the documents.
 - [x] "Ask" box on the Rules tab should: filter rules by title, heading, subheading; search the text using vector search; and ask the question of the LLM. — the three run in parallel, each panel updating as it resolves. The filter matches headings client-side and opens the path to each match; the search is `GET /api/search`; the ask is unchanged.
 - [ ] Provide a history search.
-      — the Conversations subtab filters by *kind* (ask/chat), which is a category, not a
+      — the Conversations subtab filters by _kind_ (ask/chat), which is a category, not a
       search. Neither subtab has a text box.
 - [ ] Rules list: Context documents and attachments should be links to the rules.
       — **partly done**: citations and provenance paths are links (`RulePathLink`), and
@@ -89,14 +89,20 @@ one place.
       `RulesContextDrawerProvider` + `SelectionWatcher`. The rules surfaces (`SrdCard`,
       `RulebookCard`, `SpellCard`, `RulesScreen`) have no selection watcher.
 - [x] The context menu should support "ask" and "search".
-- [ ] Add licensing information to comply with 5.2.1 SRD
-      — attribution exists in `context/srd/PROVENANCE.md` and the README, but nothing is
-      shown *in the app* and there is no root `LICENSE`. CC-BY-4.0 requires the notice to
-      travel with the work, so a UI footer is the gap.
-- [ ] Add licensing information for DnD-Character-Sheet-Helper
-      — `context/DnD-Character-Sheet-Helper.PROVENANCE.md` records the GPL-3.0 licence and
-      the pin; the app never says so, and the source is optional so the notice has to be
-      conditional on it being present.
+- [x] Add licensing information to comply with 5.2.1 SRD
+      — `backend/libs/licensing.py` holds the attribution, `GET /api/licensing` serves it,
+      and `LicensingNotice` renders it as a footer in `App.tsx`. `NOTICE.md` is the
+      long-form record and a test pins its sentence to the module's so the two cannot drift.
+      Still open: no root `LICENSE` for _this project's own code_ — no licence has been
+      chosen for it, which is a decision rather than a task.
+- [x] Add licensing information for DnD-Character-Sheet-Helper
+      — the same module and endpoint carry it, and `Source.present` is `ionas.available()`,
+      so the notice appears only when the checkout is installed. A clone without it owes
+      nothing and renders nothing.
+- [ ] Add a UI for including and indexing new rulesets with dubious licensing at
+      the discretion of the user. eg DnD-Character-Sheet-Helper. Or load your own
+      markdown files and homebrew content
+- [ ] Add a homebrew connector
 - [ ] Create user settings page with localstorage for API keys and models
       — nothing reads `localStorage` today; the model and key come from `.env` via
       `config.select_model()` / `select_fast_model()`, and the API base is a build-time
@@ -106,6 +112,10 @@ one place.
       — `GET /api/characters` and `service_for(name)` already exist and the UI never calls
       them; `api.characters()` is defined in the client and unused. Sheets are YAML in
       `data/characters/`, which is gitignored, so an importer writes to user data.
+- [ ] Add another class that could use a loadout worker
+- [ ] Switch to websockets
+- [ ] Stream LLM responses
+- [ ] Test with fine tuned DND model like https://huggingface.co/ostamand/RollMind-v1-gemma3-12b ollama run hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M
 
 ## Technology Stack (as built)
 

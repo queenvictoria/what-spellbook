@@ -35,6 +35,7 @@ reused - loading the vector index per request would dominate the response time.
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from backend.libs import (
     config,
     indexing,
     ionas,
+    licensing,
     llm,
     rules,
     search,
@@ -821,6 +823,29 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         if found is None:
             raise _error(404, f"No rule named '{name}' in the optional rulebook source.")
         return schemas.IonasSectionSchema(**found)
+
+    # --- licensing ---
+
+    @app.get("/api/licensing", response_model=list[schemas.LicenceSourceSchema],
+              tags=["meta"])
+    def licensing_sources():
+        """Every third-party source this app knows about, and the attribution it requires.
+
+        Returned in full rather than filtered to what is installed, so a licensing screen
+        can say "not installed" for the optional rulebook instead of silently omitting it.
+        ``present`` is the field a client filters on when it only wants the obligations
+        that actually apply.
+
+        The SRD's notice is unconditional because its text is vendored into this
+        repository and redistributed. The optional rulebook's is conditional because it is
+        fetched and read in place, so a checkout without it owes nothing - and a notice for
+        content that is not there would be a claim about a redistribution that never
+        happened.
+        """
+        return [
+            schemas.LicenceSourceSchema(**dataclasses.asdict(source))
+            for source in licensing.sources()
+        ]
 
     return app
 

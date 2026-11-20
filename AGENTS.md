@@ -39,6 +39,8 @@ backend/
     timing.py       per-phase aggregation behind the ETA
     llm.py          backend selection, response normalisation, typed errors
     search.py       direct index search for inspection (filters, modes, facets)
+    licensing.py    third-party attribution - the SRD's CC-BY-4.0 notice and the
+                    optional rulebook's GPL-3.0 one, each conditional on presence
     service.py      SpellbookService - the application layer
     watching.py     corpus file watcher
   cli/            terminal only - parsing, completion, progress, formatting

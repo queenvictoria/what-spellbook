@@ -69,6 +69,22 @@ def test_health_reports_the_session(api):
     assert body["index_version"] >= 3
 
 
+def test_licensing_lists_every_source_and_its_attribution(api):
+    """The footer renders this, so the sentence and the presence flag must both arrive.
+
+    Returned in full rather than filtered: a licensing screen has to be able to say "not
+    installed", which is a different statement from omitting the row.
+    """
+    body = api.get("/api/licensing").json()
+    keys = [source["key"] for source in body]
+    assert "srd" in keys
+    srd = next(source for source in body if source["key"] == "srd")
+    assert srd["present"] is True
+    assert srd["licence"] == "CC-BY-4.0"
+    assert "Wizards of the Coast" in srd["attribution"]
+    assert srd["licence_url"].startswith("https://")
+
+
 def test_openapi_schema_is_valid(api):
     """The front end generates its client from this, so it must serialise."""
     schema = api.get("/openapi.json").json()

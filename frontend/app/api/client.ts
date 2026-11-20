@@ -11,6 +11,7 @@ import type {
   Health,
   IonasFile,
   IonasSection,
+  LicenceSource,
   RunBooks,
   RunSummary,
   SearchFacetsResponse,
@@ -97,6 +98,15 @@ const query = (params: Record<string, string | undefined>) => {
 
 export const api = {
   health: () => request<Health>('/api/health'),
+
+  /**
+   * Every third-party source and the attribution it requires.
+   *
+   * Returned in full, including sources that are not installed, so a licensing screen can
+   * say "not installed" rather than silently omitting a row. Filter on `present` when only
+   * the obligations that actually apply are wanted.
+   */
+  licensing: () => request<LicenceSource[]>('/api/licensing'),
 
   characters: () => request<string[]>('/api/characters'),
 

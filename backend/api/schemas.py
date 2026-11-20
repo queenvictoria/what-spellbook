@@ -604,6 +604,31 @@ class ClassContextFileSchema(BaseModel):
     path: str
 
 
+class LicenceSourceSchema(BaseModel):
+    """One third-party source, and the attribution it requires.
+
+    ``present`` is what makes the notice honest: the SRD is always installed and the
+    optional rulebook usually is not, so a client renders the attribution for what is
+    actually there rather than for what might be. The list is returned in full so a
+    licensing screen can also say "not installed" - which is a different statement from
+    omitting the row, and the difference matters when the question is "what does this app
+    owe?".
+
+    ``attribution`` is the licence's own sentence, not a paraphrase. A rewritten
+    attribution is not an attribution.
+    """
+
+    key: str
+    name: str
+    holder: str
+    licence: str
+    licence_url: str
+    source_url: str
+    attribution: str
+    present: bool
+    note: str = ""
+
+
 class IonasFileSchema(BaseModel):
     """One file of the optional rulebook, as a table of contents entry.
 

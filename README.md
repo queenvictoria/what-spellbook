@@ -82,6 +82,21 @@ It is ignored rather than left untracked so that `git add -A` cannot turn its ne
 into a **gitlink** - a submodule pointer that commits no content, leaving a fresh clone with
 an empty directory and no warning that anything is missing.
 
+### Licensing
+
+Two third-party sources need a notice, and they need different things. The SRD is
+**vendored**, so its CC-BY-4.0 attribution travels with the work and applies always. The
+optional rulebook is **fetched and read in place**, so its GPL-3.0 notice applies only when
+the checkout is installed — a notice for content that is not there would be a claim about a
+redistribution that never happened.
+
+`backend/libs/licensing.py` holds both attributions, `GET /api/licensing` serves them, and
+`LicensingNotice` renders the installed ones as a footer in the app. `NOTICE.md` is the
+long-form record; a test pins its SRD sentence to the module's so the two cannot drift.
+
+**No licence has been chosen for this project's own code**, so there is no root `LICENSE`.
+That is a decision still to make, not an oversight.
+
 ## Versions
 
 ### Front end
@@ -178,6 +193,7 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/class-context/{path}`    | One class context file, quoted; not SRD text                              |
 | `GET /api/ionas`                   | The optional rulebook's files, or `[]` when it is not installed           |
 | `GET /api/ionas/{name}`            | One rule from the optional rulebook, quoted; not SRD text                 |
+| `GET /api/licensing`               | Every third-party source and the attribution it requires                  |
 | `GET /api/search`                  | Search the vector index directly, for inspection                          |
 | `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
 

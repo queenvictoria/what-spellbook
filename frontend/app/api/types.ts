@@ -380,6 +380,30 @@ export interface Health {
 }
 
 /**
+ * One third-party source and the attribution it requires.
+ *
+ * Mirrors `LicenceSourceSchema`. `present` is the field that makes the notice honest: the
+ * SRD is always installed and the optional rulebook usually is not, so a screen renders the
+ * attribution for what is actually there. The list arrives in full so a licensing screen can
+ * also say "not installed" — a different statement from omitting the row, and the difference
+ * matters when the question is "what does this app owe?".
+ *
+ * `attribution` is the licence's own sentence, not a paraphrase. A rewritten attribution is
+ * not an attribution.
+ */
+export interface LicenceSource {
+  key: string
+  name: string
+  holder: string
+  licence: string
+  licence_url: string
+  source_url: string
+  attribution: string
+  present: boolean
+  note: string
+}
+
+/**
  * One distinct spell a search returned, with the chunk that matched it.
  *
  * Distinct spells, not chunks: the index holds ~1280 chunks for 544 spells, so a raw
