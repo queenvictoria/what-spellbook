@@ -822,9 +822,10 @@ existing one-off command keeps working. Naming a provider overrides that entirel
 makes a slashed Ollama name usable.
 
 - **Every remote provider needs its own key.** `ANTHROPIC_API_KEY` for `claude`,
-  `OPENROUTER_API_KEY` for `openrouter`. A provider whose key is absent cannot run, so it falls
-  back to Ollama **and says so**, rather than silently swapping models or calling the service
-  with no credential.
+  `OPENROUTER_API_KEY` for `openrouter`. A provider whose key is absent — or whose key cannot
+  possibly work, being the masked preview the page shows, too short, or carrying the other
+  provider's prefix — cannot run, so it falls back to Ollama **and says so**, rather than
+  calling the service and returning its `401`.
 - **Ollama needs no key**, which is what makes "can this provider run" one lookup.
 - An Ollama provider wins **even when a remote key is present**, so a key can be kept for
   occasional use while local runs stay local and free.
@@ -872,10 +873,15 @@ larger non-thinking model gives more reliable structured output
 
 ### Settings: the browser holds them, the server honours them
 
-The **Settings** tab edits the four names above — the reasoning model, the fast model, the
-OpenRouter key and the local Ollama name — without an editor. They are stored in the
-browser's `localStorage` and pushed to the API, which holds them **in memory for the life of
-the process** and writes nothing to disk.
+The **Settings** tab edits everything above — each model, its provider, both provider keys and
+the local Ollama fallback — without an editor. They are stored in the browser's
+`localStorage` and pushed to the API, which holds them **in memory for the life of the
+process** and writes nothing to disk.
+
+The same variables can still be set in the environment, and `.env.example` is the documented
+template for that — copy it to `.env`, which is gitignored and yours. Nothing in this repo
+writes `.env`; a variable set there is a **pin** that outranks the Settings tab, so leave it
+commented out unless you mean it.
 
 That split is deliberate, and it is the opposite of the obvious design:
 

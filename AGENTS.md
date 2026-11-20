@@ -2033,9 +2033,35 @@ Two smaller ones, both about a page that edits configuration having to be honest
   card is the only place to repair it - a screen that returned just the error would be
   unreachable exactly when it is needed. `tests/test_settings.py` pins this at the source
   level, since the symptom is a blank screen rather than a wrong value.
-- **`.env` no longer sets any of the four names.** It documents them as commented examples
-  instead, because a value there is now a *pin* that silently outranks the page - which is the
-  right behaviour for a one-off and the wrong default for a checkout.
+- **`.env` no longer sets any of the model names.** The committed template is `.env.example`,
+  which documents them as commented examples, because a value in `.env` is a *pin* that
+  silently outranks the page - the right behaviour for a one-off and the wrong default for a
+  checkout.
+
+### Never write to `.env`; edit `.env.example`
+
+**`.env` is untracked user configuration, and tooling must not rewrite it.** This was learned by
+doing it: a change to the model variable names was made by overwriting `.env` directly, which
+silently replaced the user's own values with documentation. Because the file is gitignored,
+`git checkout` could not bring it back - it had to be reconstructed by hand from an earlier
+read in the session, which only worked because the original content happened to still be in
+context.
+
+So the documented variable names live in **`.env.example`**, which is tracked, reviewable and
+safe to rewrite. `.env` is created from it by the user (`cp .env.example .env`) and is theirs
+from then on.
+
+Three tests pin this, because the failure is destructive and silent:
+
+- `.env.example` exists and `.env` stays in `.gitignore`.
+- The template mentions every variable the code actually reads - a template missing one is
+  worse than none, because it looks authoritative.
+- No module under `backend/` or `scripts/` opens `ENV_FILE` for writing. Reading it is how the
+  app loads its settings, and is expected.
+
+The general rule, which is not about `.env`: **when a change needs a user's private file to
+differ, change what is committed and let the user apply it.** Docstring-and-template edits are
+reversible; edits to gitignored state are not.
 
 ### Choosing the model: the provider is a setting, because the name cannot carry it
 
@@ -2073,6 +2099,31 @@ so no refinement of the rule can work. The provider is therefore explicit.
 (`langchain-anthropic`), and the API call needs a token cap where OpenRouter's is optional - so
 the reasoning path passes `REASONING_MAX_TOKENS` (8192) because the Anthropic API rejects a
 request without one. That cap is sized for three whole books, not for the fast model's phrase.
+
+**A key that cannot possibly work is refused locally, not by the provider.** `ChatOpenAI`
+raises only when a key is *absent*; any string otherwise builds a client happily. So a key of
+`"…"` - **the mask this very module returns** - was sent to OpenRouter, which answered
+`401 Missing Authentication header`. That message reads like a bug in this code rather than
+like a bad key, and the one value it could plausibly be is the preview the page itself shows.
+
+`config.key_problem` is a *shape* test, deliberately not a validity test: absent, the mask,
+too short to be real, or carrying the other provider's prefix. A wrong-but-well-formed key
+still reaches the provider, because only the provider knows whether it is real. Three places
+use it, and each is a different question:
+
+- `_select` refuses the provider and falls back to Ollama, logging the reason.
+- `llm._usable_key` raises before a client is built, so the failure stays local.
+- `SettingFieldSchema.problem` sends it to the page, which shows a `key unusable` badge. Only
+  for a **present** key: an empty Claude field is not broken, and flagging it put a red badge
+  on a page whose settings were fine - a provider chosen with no key is already reported by
+  the resolved card, because the server falls back to Ollama there.
+
+**A 401 is not "could not reach it".** `names_connection_failure` does not match it, so the raw
+body was dumped - from a server that answered. `names_auth_failure` matches the status and the
+body spellings (`Error code: 401` from OpenAI, `authentication_error` from Anthropic), and the
+message says the provider rejected the key and which box to fix. `provider_label` exists
+because `.capitalize()` turns `openrouter` into `Openrouter`, and the brand has its capital in
+the middle.
 
 **A failure message names the key of the provider that actually answered.** `explain_failure`
 takes the provider, derived from the built client's type by `client_provider` rather than

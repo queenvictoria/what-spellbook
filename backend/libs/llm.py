@@ -61,6 +61,31 @@ def names_connection_failure(error) -> bool:
     ))
 
 
+def names_auth_failure(error) -> bool:
+    """Whether the provider answered that the credential is not acceptable.
+
+    A 401 or 403 is the provider *replying*, so it is not a transport failure and must not be
+    reported as one. Kept separate for the advice: a connection failure is fixed by starting a
+    server or a network, an auth failure only by changing the key.
+
+    Matched on both the status and the body because the two spellings arrive by different
+    stacks: LangChain surfaces OpenAI's ``Error code: 401`` prefix, while the Anthropic client
+    says ``authentication_error``.
+    """
+    text = _text_of(error)
+    if "401" in text or "403" in text:
+        return True
+    return any(needle in text for needle in (
+        "unauthorized",
+        "authentication",
+        "invalid api key",
+        "incorrect api key",
+        "invalid_api_key",
+        "authentication_error",
+        "missing credentials",
+    ))
+
+
 def names_missing_model(error) -> bool:
     """Whether Ollama answered that the requested model is not present."""
     text = _text_of(error)
@@ -93,13 +118,26 @@ def explain_failure(error, *, model: str | None = None, purpose: str = "the mode
             f"Ollama is running but does not have the model '{model}'. Install it with: "
             f"ollama pull {model} - then retry."
         )
+    if not local and names_auth_failure(error):
+        # The provider answered, so the network is fine and something about the credential is
+        # not. Saying "could not reach it" here was actively misleading: a 401 arrives from a
+        # reachable server, and the raw body ("Missing Authentication header") reads like a bug
+        # in this code rather than like a key that is wrong.
+        named = f"'{model}'" if model else "the model"
+        key_env = config.provider_key_env(provider) or "the API key"
+        return (
+            f"{config.provider_label(provider)} rejected the API key, so {named} could not "
+            f"run. "
+            f"Check {key_env} on the Settings tab - it must be the whole key, pasted from the "
+            f"provider, not the masked preview this app shows. Then retry."
+        )
     if not local and names_connection_failure(error):
         # A remote provider is not something the user can start, so the advice is about the
         # two things they *can* change: the key and the network.
         named = f"'{model}'" if model else "the model"
         key_env = config.provider_key_env(provider) or "the API key"
         return (
-            f"Could not reach {named} at {provider}. Check that "
+            f"Could not reach {named} at {config.provider_label(provider)}. Check that "
             f"{key_env} is set and valid, and that the network allows the request."
         )
     if isinstance(error, TimeoutError) or "timed out" in _text_of(error):
@@ -167,7 +205,7 @@ def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = N
 
             llm = ChatOpenAI(
                 model=model,
-                api_key=_key(source, "OPENROUTER_API_KEY"),
+                api_key=_usable_key(provider, source),
                 base_url=config.OPENROUTER_BASE_URL,
                 temperature=0.3,
                 max_retries=2,
@@ -185,7 +223,7 @@ def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = N
 
             llm = ChatAnthropic(
                 model=model,
-                api_key=_key(source, "ANTHROPIC_API_KEY"),
+                api_key=_usable_key(provider, source),
                 temperature=0.3,
                 max_retries=2,
                 default_request_timeout=180,
@@ -205,9 +243,21 @@ def _build(selection: tuple[str, str], *, label: str, max_tokens: int | None = N
     return OllamaLLM(model=model, **({"num_predict": max_tokens} if max_tokens else {}))
 
 
-def _key(source, name: str) -> str:
-    """One provider's key from the effective environment, stripped of quotes and padding."""
-    return config._clean(source.get(name))
+def _usable_key(provider: str, source) -> str:
+    """One provider's key from the effective environment, refusing a value that cannot be one.
+
+    A guard rather than a formality, because the client libraries do not provide it:
+    ``ChatOpenAI`` raises on an *absent* key and accepts any string otherwise, so a mask
+    (``…``) or a placeholder builds a working client that fails at the provider with
+    ``401 Missing Authentication header``. Raising here instead keeps that failure local,
+    where the message can say which box is wrong.
+    """
+    name = config.PROVIDER_KEY_ENV[provider]
+    value = config._clean(source.get(name))
+    problem = config.key_problem(provider, value)
+    if problem is not None:
+        raise ValueError(problem)
+    return value
 
 
 def _local_fallback(label: str, model: str, source, error):

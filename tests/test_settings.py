@@ -132,7 +132,7 @@ def test_an_absent_field_leaves_the_environment_alone(clean_model_env):
 
 
 def test_a_pushed_model_decides_the_backend(clean_model_env):
-    merged = config.model_overrides({"reasoning_model": "vendor/model", "api_key": "k"})
+    merged = config.model_overrides({"reasoning_model": "vendor/model", "api_key": "sk-or-v1-" + "0" * 64})
     assert config.select_model(merged) == ("openrouter", "vendor/model")
 
 
@@ -150,7 +150,7 @@ def test_an_explicit_provider_beats_the_name(clean_model_env):
     """
     hf = "hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M"
     merged = config.model_overrides({
-        "reasoning_provider": "ollama", "reasoning_model": hf, "api_key": "k",
+        "reasoning_provider": "ollama", "reasoning_model": hf, "api_key": "sk-or-v1-" + "0" * 64,
     })
     assert config.select_model(merged) == ("ollama", hf)
 
@@ -158,7 +158,7 @@ def test_an_explicit_provider_beats_the_name(clean_model_env):
 def test_an_openrouter_provider_does_not_need_a_slash_in_the_name(clean_model_env):
     """The converse: a slashless name is legal on OpenRouter, and the provider is what says so."""
     merged = config.model_overrides({
-        "reasoning_provider": "openrouter", "reasoning_model": "somename", "api_key": "k",
+        "reasoning_provider": "openrouter", "reasoning_model": "somename", "api_key": "sk-or-v1-" + "0" * 64,
     })
     assert config.select_model(merged) == ("openrouter", "somename")
 
@@ -177,14 +177,72 @@ def test_a_remote_provider_without_its_key_falls_back_and_says_so(clean_model_en
 def test_each_remote_provider_needs_its_own_key(clean_model_env):
     """An OpenRouter key must not make a Claude model look runnable, or it is called with none."""
     openrouter_only = config.model_overrides({
-        "reasoning_provider": "claude", "api_key": "k", "ollama_model": "local:tag",
+        "reasoning_provider": "claude", "api_key": "sk-or-v1-" + "0" * 64, "ollama_model": "local:tag",
     })
     assert config.select_model(openrouter_only) == ("ollama", "local:tag")
 
     anthropic_too = config.model_overrides({
-        "reasoning_provider": "claude", "api_key": "k", "anthropic_api_key": "a",
+        "reasoning_provider": "claude", "api_key": "sk-or-v1-" + "0" * 64, "anthropic_api_key": "sk-ant-" + "0" * 40,
     })
     assert config.select_model(anthropic_too) == ("claude", config.ANTHROPIC_MODEL)
+
+
+def test_a_mask_is_not_a_key(clean_model_env, caplog):
+    """The bug behind `401 Missing Authentication header`, which read like a code fault.
+
+    `ChatOpenAI` raises only when a key is *absent*. A key of `"…"` — the mask this app returns
+    — builds a client happily and the provider then rejects the `Authorization` header, so the
+    user saw an authentication-header error rather than "this key is wrong".
+    """
+    merged = config.model_overrides({
+        "reasoning_provider": "openrouter", "api_key": "…", "ollama_model": "local:tag",
+    })
+    with caplog.at_level("WARNING"):
+        assert config.select_model(merged) == ("ollama", "local:tag")
+    assert "masked preview" in caplog.text
+
+
+def test_a_key_too_short_to_be_real_is_refused(clean_model_env, caplog):
+    merged = config.model_overrides({
+        "reasoning_provider": "openrouter", "api_key": "changeme",
+    })
+    with caplog.at_level("WARNING"):
+        assert config.select_model(merged)[0] == "ollama"
+    assert "too short" in caplog.text
+
+
+def test_a_key_from_the_wrong_provider_is_refused(clean_model_env, caplog):
+    """Two keys on one page is exactly how they get swapped."""
+    merged = config.model_overrides({
+        "reasoning_provider": "claude", "anthropic_api_key": "sk-or-v1-" + "0" * 64,
+    })
+    with caplog.at_level("WARNING"):
+        backend, _ = config.select_model(merged)
+    assert backend == "ollama"
+    assert "sk-ant-" in caplog.text
+
+
+def test_a_well_formed_key_is_accepted_without_being_validated(clean_model_env):
+    """Shape only: whether a key is *real* is the provider's answer, not ours to guess."""
+    merged = config.model_overrides({
+        "reasoning_provider": "openrouter", "api_key": "sk-or-v1-" + "0" * 64,
+    })
+    assert config.select_model(merged) == ("openrouter", config.OPENROUTER_MODEL)
+
+
+def test_the_claude_client_refuses_a_mask_before_calling_anything(clean_model_env, caplog):
+    """The guard is local, so the failure names the box rather than arriving as a 401.
+
+    ``ChatAnthropic`` would accept ``"…"`` as an api_key and fail at the provider with an
+    authentication error, which reads like a code fault. The guard turns it into a named,
+    actionable reason and falls back to the local client.
+    """
+    with caplog.at_level("WARNING"):
+        client = llm.build_llm(config.model_overrides({
+            "reasoning_provider": "claude", "anthropic_api_key": "…",
+        }))
+    assert type(client).__name__ == "OllamaLLM"
+    assert "masked preview" in caplog.text
 
 
 def test_an_unknown_provider_is_ignored_rather_than_used(clean_model_env, caplog):
@@ -217,7 +275,7 @@ def test_build_llm_honours_a_pushed_ollama_model(clean_model_env):
 
 def test_build_llm_honours_a_pushed_openrouter_model(clean_model_env):
     client = llm.build_llm(
-        config.model_overrides({"reasoning_model": "openai/gpt-4o-mini", "api_key": "k"})
+        config.model_overrides({"reasoning_model": "openai/gpt-4o-mini", "api_key": "sk-or-v1-" + "0" * 64})
     )
     assert type(client).__name__ == "ChatOpenAI"
     assert client.model_name == "openai/gpt-4o-mini"
@@ -225,34 +283,37 @@ def test_build_llm_honours_a_pushed_openrouter_model(clean_model_env):
 
 def test_build_llm_uses_the_pushed_key_not_the_environment_one(clean_model_env):
     """The key travels with the model, or a pushed remote model would be called with no key."""
-    clean_model_env.setenv("OPENROUTER_API_KEY", "env-key")
+    clean_model_env.setenv("OPENROUTER_API_KEY", "sk-or-v1-envkey" + "0" * 50)
     client = llm.build_llm(
-        config.model_overrides({"reasoning_model": "openai/gpt-4o-mini", "api_key": "pushed-key"})
+        config.model_overrides({
+            "reasoning_model": "openai/gpt-4o-mini",
+            "api_key": "sk-or-v1-pushedkey" + "0" * 50,
+        })
     )
-    assert client.openai_api_key.get_secret_value() == "pushed-key"
+    assert client.openai_api_key.get_secret_value() == "sk-or-v1-pushedkey" + "0" * 50
 
 
 def test_build_llm_builds_a_claude_client(clean_model_env):
     client = llm.build_llm(config.model_overrides({
         "reasoning_provider": "claude", "reasoning_model": "claude-sonnet-4-5",
-        "anthropic_api_key": "a-key",
+        "anthropic_api_key": "sk-ant-akey" + "0" * 40,
     }))
     assert type(client).__name__ == "ChatAnthropic"
     assert client.model == "claude-sonnet-4-5"
-    assert client.anthropic_api_key.get_secret_value() == "a-key"
+    assert client.anthropic_api_key.get_secret_value() == "sk-ant-akey" + "0" * 40
 
 
 def test_the_claude_client_always_carries_a_token_cap(clean_model_env):
     """Anthropic requires a cap where OpenRouter's is optional, so the reasoning path needs one."""
     client = llm.build_llm(config.model_overrides({
-        "reasoning_provider": "claude", "anthropic_api_key": "a-key",
+        "reasoning_provider": "claude", "anthropic_api_key": "sk-ant-akey" + "0" * 40,
     }))
     assert client.max_tokens == llm.REASONING_MAX_TOKENS
 
 
 def test_the_fast_claude_client_keeps_the_small_cap(clean_model_env):
     client = llm.build_fast_llm(config.model_overrides({
-        "fast_provider": "claude", "anthropic_api_key": "a-key",
+        "fast_provider": "claude", "anthropic_api_key": "sk-ant-akey" + "0" * 40,
     }))
     assert client.max_tokens == llm.FAST_MAX_TOKENS
 
@@ -275,7 +336,7 @@ def test_a_broken_openrouter_client_falls_back_to_the_pushed_local_model(clean_m
 
     monkeypatch.setattr(langchain_openai, "ChatOpenAI", lambda **kw: (_ for _ in ()).throw(RuntimeError("bad key")))
     merged = config.model_overrides({
-        "reasoning_model": "openai/gpt-4o-mini", "api_key": "k", "ollama_model": "pushed:local",
+        "reasoning_model": "openai/gpt-4o-mini", "api_key": "sk-or-v1-" + "0" * 64, "ollama_model": "pushed:local",
     })
     client = llm.build_llm(merged)
     assert type(client).__name__ == "OllamaLLM"
@@ -285,7 +346,7 @@ def test_a_broken_openrouter_client_falls_back_to_the_pushed_local_model(clean_m
 def test_the_fast_provider_falls_back_to_the_reasoning_one(clean_model_env):
     """The common case is one service for both, so naming it once must be enough."""
     merged = config.model_overrides({
-        "reasoning_provider": "claude", "anthropic_api_key": "a",
+        "reasoning_provider": "claude", "anthropic_api_key": "sk-ant-" + "0" * 40,
         "fast_model": "claude-haiku-4-5",
     })
     assert config.select_fast_model(merged) == ("claude", "claude-haiku-4-5")
@@ -293,7 +354,7 @@ def test_the_fast_provider_falls_back_to_the_reasoning_one(clean_model_env):
 
 def test_the_fast_provider_can_differ_from_the_reasoning_one(clean_model_env):
     merged = config.model_overrides({
-        "reasoning_provider": "claude", "anthropic_api_key": "a",
+        "reasoning_provider": "claude", "anthropic_api_key": "sk-ant-" + "0" * 40,
         "fast_provider": "ollama", "fast_model": "qwen3.5:4b",
     })
     assert config.select_model(merged) == ("claude", config.ANTHROPIC_MODEL)
@@ -308,7 +369,7 @@ def test_the_service_resolves_overrides_once(clean_model_env):
 
     svc = service.SpellbookService(
         FakeDB(), {}, backend=FakeLLM(),
-        overrides={"reasoning_model": "a/b", "api_key": "k", "fast_model": "c/d"},
+        overrides={"reasoning_model": "a/b", "api_key": "sk-or-v1-" + "0" * 64, "fast_model": "c/d"},
     )
     assert config.select_model(svc.model_env) == ("openrouter", "a/b")
     assert config.select_fast_model(svc.model_env) == ("openrouter", "c/d")
@@ -404,6 +465,32 @@ def test_put_settings_reports_the_same_model_health_does(tmp_path, monkeypatch, 
         client.get("/api/health").json()["model"]
 
 
+def test_the_payload_says_when_a_key_cannot_work(api, clean_model_env):
+    """So the box can say it, rather than a save looking fine and the next run failing."""
+    body = api.put("/api/settings", json={"api_key": "…"}).json()
+    field = next(f for f in body["fields"] if f["key"] == "api_key")
+    assert field["problem"] is not None
+    assert "masked preview" in field["problem"]
+
+
+def test_an_absent_key_is_not_reported_as_broken(api, clean_model_env):
+    """`problem` is "this stored key cannot work", not "this provider has no key".
+
+    The Claude field is empty for anyone using OpenRouter, so flagging absence put a red badge
+    on a page whose settings were entirely fine. A provider chosen *without* a key is reported
+    by the resolved card instead, because the server falls back to Ollama there.
+    """
+    body = api.get("/api/settings").json()
+    assert [f["problem"] for f in body["fields"] if f["key"].endswith("_key")] == [None, None]
+
+
+def test_the_payload_does_not_claim_a_well_formed_key_is_valid(api, clean_model_env):
+    """`problem` is "cannot work", not "will work" - only the provider can answer that."""
+    body = api.put("/api/settings", json={"api_key": "sk-or-v1-" + "0" * 64}).json()
+    field = next(f for f in body["fields"] if f["key"] == "api_key")
+    assert field["problem"] is None
+
+
 def test_put_settings_never_writes_a_file(api, tmp_path, monkeypatch):
     """The key is a credential, so the server must not keep a copy of it anywhere."""
     monkeypatch.chdir(tmp_path)
@@ -445,7 +532,7 @@ def test_clearing_a_key_drops_the_provider_to_the_fallback(api, clean_model_env)
     """A key that is gone cannot serve a remote provider, and saying so beats a silent swap."""
     api.put("/api/settings", json={
         "reasoning_provider": "claude", "reasoning_model": "claude-sonnet-4-5",
-        "anthropic_api_key": "a-key", "ollama_model": "local:tag",
+        "anthropic_api_key": "sk-ant-akey" + "0" * 40, "ollama_model": "local:tag",
     })
     body = api.put("/api/settings", json={"anthropic_api_key": ""}).json()
     assert body["reasoning_provider"] == "ollama"
@@ -472,17 +559,34 @@ def test_put_settings_rejects_an_unknown_field(api):
     assert api.put("/api/settings", json={"reasoning_modle": "a/b"}).status_code == 422
 
 
-def test_an_empty_push_forgets_everything(api, clean_model_env):
-    """Which is what Reset sends, so merging an empty push would make Reset a no-op.
+def test_reset_forgets_everything(api, clean_model_env):
+    """Which is what the Reset button sends, so it must clear rather than merge."""
+    api.put("/api/settings", json={"api_key": SECRET, "reasoning_provider": "openrouter"})
+    body = api.put("/api/settings", json={"reset": True}).json()
+    field = next(f for f in body["fields"] if f["key"] == "api_key")
+    assert field["value"] is None
+    assert body["reasoning_provider"] == "ollama"
 
-    A browser with nothing stored has no opinion to merge, so `{}` cannot mean "keep what you
-    have" - that would leave the server using values the page had just told it to forget.
+
+def test_an_empty_push_forgets_nothing(api, clean_model_env):
+    """The bug that made a configured server revert to Ollama on its own.
+
+    An empty body used to mean "forget everything", which collided with a page that genuinely
+    had nothing stored - and `localStorage` is per-origin, so merely opening the settings page
+    from a second dev server on another port sent `{}` and switched the model back to Ollama.
+    "No fields" now means "no change", and forgetting is the explicit `reset` flag.
     """
     api.put("/api/settings", json={"api_key": SECRET, "reasoning_provider": "openrouter"})
     body = api.put("/api/settings", json={}).json()
     field = next(f for f in body["fields"] if f["key"] == "api_key")
-    assert field["value"] is None
-    assert body["reasoning_provider"] == "ollama"
+    assert field["value"] == "sk-o…e999"
+    assert body["reasoning_provider"] == "openrouter"
+
+
+def test_reset_is_a_flag_and_not_a_setting(api, clean_model_env):
+    """It must never land in the override map as a key called `reset`."""
+    body = api.put("/api/settings", json={"reset": True}).json()
+    assert "reset" not in [f["key"] for f in body["fields"]]
 
 
 def test_put_settings_accepts_an_empty_push(api, clean_model_env):
@@ -522,6 +626,30 @@ def test_the_browser_store_owns_the_models_and_the_key():
     assert "readModelSettings" in source and "writeModelSettings" in source
 
 
+def test_a_browser_with_nothing_stored_does_not_push():
+    """`localStorage` is per-origin, so a second dev server is a second, empty store.
+
+    The page used to push whatever its own origin held on load, so opening Settings from the
+    other port sent `{}` - which meant "forget everything" - and reverted a configured server
+    to Ollama. The symptom was a setting that changed by itself, with the local model doing the
+    work after every provider had been set to a remote one.
+    """
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "frontend" / "app" / "screens" / "SettingsScreen.tsx"
+    ).read_text(encoding="utf-8")
+    assert "Object.keys(stored).length > 0" in source, "load() must not push from an empty store"
+    assert "? await api.saveSettings(stored)" in source
+
+
+def test_the_reset_button_says_reset_rather_than_sending_nothing():
+    source = (
+        Path(__file__).resolve().parent.parent
+        / "frontend" / "app" / "screens" / "SettingsScreen.tsx"
+    ).read_text(encoding="utf-8")
+    assert "saveSettings({ reset: true })" in source
+
+
 def test_the_page_only_pushes_what_was_changed():
     """The client half of the key-survival fix, checked at the source level.
 
@@ -545,6 +673,53 @@ def test_the_page_offers_the_provider_as_a_dropdown():
     ).read_text(encoding="utf-8")
     assert "field.choices ?" in source
     assert "<Select" in source
+
+
+# --- the environment file is the user's, not ours ---
+
+
+def test_the_env_template_is_committed_and_the_real_env_is_not():
+    """A documented template, because tooling has no business rewriting someone's `.env`.
+
+    This is a regression guard for a real mistake: a change to the model variables was made by
+    overwriting `.env` directly. It is gitignored, so nothing could restore it, and the user's
+    own values were silently replaced by documentation. `.env.example` is the file to edit; it
+    is tracked, reviewable, and safe to rewrite.
+    """
+    root = Path(__file__).resolve().parent.parent
+    assert (root / ".env.example").is_file(), "there must be a committed template to edit"
+
+    ignore = (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+    rules = [line.strip() for line in ignore if line.strip() and not line.startswith("#")]
+    assert ".env" in rules, "the real .env must stay untracked"
+
+
+def test_the_template_documents_the_variables_the_code_reads():
+    """A template that omits a variable is worse than none: it looks authoritative."""
+    root = Path(__file__).resolve().parent.parent
+    text = (root / ".env.example").read_text(encoding="utf-8")
+    wanted = {"CHARACTER", "LLM_PROVIDER", "LLM_MODEL", "OPENROUTER_API_KEY"}
+    wanted |= {setting.env for setting in config.MODEL_SETTINGS}
+    missing = sorted(name for name in wanted if name not in text)
+    assert not missing, f".env.example does not mention {missing}"
+
+
+def test_no_tooling_writes_the_env_file():
+    """Nothing in the codebase may open `.env` for writing.
+
+    Checked at the source level because the failure is destructive and silent: a script that
+    rewrites `.env` replaces untracked user configuration that no `git checkout` can bring back.
+    Reading it is fine - that is how the app loads its settings.
+    """
+    root = Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in list(root.glob("backend/**/*.py")) + list(root.glob("scripts/**/*.py")):
+        text = path.read_text(encoding="utf-8")
+        for marker in ('open(ENV_FILE, "w"', "open(ENV_FILE, 'w'",
+                       'ENV_FILE.write_text', '".env").write_text'):
+            if marker in text:
+                offenders.append(f"{path.relative_to(root)}: {marker}")
+    assert not offenders, f"something writes .env: {offenders}"
 
 
 def test_a_wrong_api_base_does_not_hide_the_way_to_fix_it():

@@ -1,5 +1,9 @@
 data
+# Your environment. Untracked and never rewritten by tooling - the committed template is
+# `.env.example`, which is where the documented variable names live.
 .env
+# A local variant, in case someone keeps one.
+.env.local
 .venv
 _retired/
 __pycache__/

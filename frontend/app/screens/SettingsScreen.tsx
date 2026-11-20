@@ -1,8 +1,17 @@
 import { useCallback, useEffect, useState } from "react"
-import { Check, Eye, EyeOff, Pin, RotateCcw, Save, X } from "lucide-react"
+import {
+  AlertTriangle,
+  Check,
+  Eye,
+  EyeOff,
+  Pin,
+  RotateCcw,
+  Save,
+  X,
+} from "lucide-react"
 
 import { api } from "@/api/client"
-import type { Settings, SettingField, SettingsPatch } from "@/api/types"
+import type { Settings, SettingField } from "@/api/types"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -57,13 +66,28 @@ export function SettingsScreen() {
    * The push is what makes the browser the source of truth rather than just a form: without
    * it, stored settings would only take effect after the user pressed Save again following
    * every reload or server restart.
+   *
+   * **A browser with nothing stored must not push.** An empty push means "forget everything"
+   * — that is what Reset sends — so opening this page from an origin with an empty
+   * `localStorage` silently reverted the server to its environment defaults. That is not a
+   * corner case: `localStorage` is per-origin, so a second dev server on another port (or the
+   * production build served from a different one) is a *different* store, and simply opening
+   * Settings there switched the model back to Ollama no matter what the first tab had saved.
+   * The symptom is a setting that reverts by itself, and a local model doing the work after
+   * every provider had been set to a remote one.
+   *
+   * So the push happens only when this browser actually has an opinion. Nothing stored means
+   * nothing to say, and the page shows the server's resolved values instead.
    */
   const load = useCallback(() => {
     api
       .settings()
       .then(async (definitions) => {
         const stored = readModelSettings()
-        const applied = await api.saveSettings(stored)
+        const hasStored = Object.keys(stored).length > 0
+        const applied = hasStored
+          ? await api.saveSettings(stored)
+          : definitions
         setSettings(applied)
         setDrafts(seed(definitions, stored))
         setTouched({})
@@ -83,12 +107,12 @@ export function SettingsScreen() {
    * An absent field means "no change", so only touched boxes are sent, plus a secret that has
    * been explicitly cleared (which sends `""` and is the Clear button's whole job).
    */
-  function current(): SettingsPatch {
+  function current(): StoredModelSettings {
     if (!settings) return {}
-    const values: SettingsPatch = {}
+    const values: StoredModelSettings = {}
     for (const field of settings.fields) {
       if (!touched[field.key]) continue
-      values[field.key as keyof SettingsPatch] = drafts[field.key] ?? ""
+      values[field.key as keyof StoredModelSettings] = drafts[field.key] ?? ""
     }
     return values
   }
@@ -109,7 +133,7 @@ export function SettingsScreen() {
       // diff: replacing would drop every untouched box, and the stored copy has to stay whole
       // because it is the one that survives a server restart.
       const stored: StoredModelSettings = { ...readModelSettings(), ...values }
-      for (const key of Object.keys(values) as (keyof SettingsPatch)[]) {
+      for (const key of Object.keys(values) as (keyof StoredModelSettings)[]) {
         if (!stored[key]) delete stored[key]
       }
       const kept = writeModelSettings(stored)
@@ -140,7 +164,7 @@ export function SettingsScreen() {
     setSaved(false)
     try {
       clearModelSettings()
-      setSettings(await api.saveSettings({}))
+      setSettings(await api.saveSettings({ reset: true }))
       load()
     } catch (e) {
       setSaveError(e)
@@ -364,11 +388,25 @@ function Field({
             set on the server
           </Badge>
         )}
-        {held && (
-          <Badge tone="verdant" title="A key is loaded on the server">
-            <Check className="h-3 w-3" />
-            key set
+        {/* A key that is present but cannot work is worse than none: the box looks satisfied
+            and the failure only appears on the next run, as a 401 from the provider. The
+            backend decides which is which, because only it sees the value in full. */}
+        {field.problem ? (
+          <Badge
+            tone="radiant"
+            title={field.problem}
+            className="border-red-400/50 bg-red-500/10 text-red-300"
+          >
+            <AlertTriangle className="h-3 w-3" />
+            key unusable
           </Badge>
+        ) : (
+          held && (
+            <Badge tone="verdant" title="A key is loaded on the server">
+              <Check className="h-3 w-3" />
+              key set
+            </Badge>
+          )
         )}
       </div>
 
@@ -400,9 +438,14 @@ function Field({
             autoComplete="off"
             spellCheck={false}
             placeholder={
-              held ? `Saved: ${held}. Leave empty to keep it.` : "Not set"
+              field.problem
+                ? "No usable key - paste the whole one"
+                : held
+                  ? `Saved: ${held}. Leave empty to keep it.`
+                  : "Not set"
             }
-            className="font-mono"
+            aria-invalid={field.problem !== null}
+            className={cn("font-mono", field.problem && "border-red-400/60")}
           />
         )}
         {field.secret && (
@@ -439,11 +482,18 @@ function Field({
 
       <p className="text-xs text-parchment/50">
         {field.help}
-        {held && (
+        {field.problem ? (
           <>
             {" "}
-            A key is in use: <code className="text-parchment/70">{held}</code>.
+            <span className="text-red-300">{field.problem}</span>
           </>
+        ) : (
+          held && (
+            <>
+              {" "}
+              A key is in use: <code className="text-parchment/70">{held}</code>.
+            </>
+          )
         )}
       </p>
     </div>

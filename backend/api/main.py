@@ -258,6 +258,18 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         for setting in config.MODEL_SETTINGS:
             value = config._clean(effective.get(setting.env)) or None
             resolved = in_effect.get(setting.key)
+            # Whether a *stored* secret cannot work, which is the one thing the page cannot
+            # see for itself: a key is masked on the way out, so a mask or a truncated paste
+            # looks like a loaded credential until the provider rejects it.
+            #
+            # Only when a value is present. "No key" is not a broken key - the Claude field is
+            # empty for anyone using OpenRouter, and flagging it would put a red badge on a
+            # page whose settings are fine. A provider chosen *with no key* is already reported
+            # by the resolved card, because the server falls back to Ollama there.
+            problem = None
+            if setting.secret and value:
+                owner = config.PROVIDER_BY_KEY_ENV.get(setting.env)
+                problem = config.key_problem(owner, value) if owner else None
             fields.append(schemas.SettingFieldSchema(
                 key=setting.key,
                 label=setting.label,
@@ -269,6 +281,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 choices=list(setting.choices) if setting.choices else None,
                 group=setting.group,
                 resolved=config.mask_secret(value) if setting.secret else resolved,
+                problem=problem,
             ))
         pinned = [
             setting.key for setting in config.MODEL_SETTINGS
@@ -304,11 +317,11 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         "not resent" as "cleared" wiped the credential on every save after the first. A blank
         string is a deliberate removal, which is how the Clear button forgets a key.
 
-        **A push with no fields at all means "forget everything"**, which is the one case where
-        merging and replacing must agree: a browser with nothing stored has no opinion to
-        merge, and both the first load of a fresh browser and the Reset button say so by
-        sending `{}`. Merging there would make Reset do nothing at all - the page would clear
-        its own copy and the server would go on using the values it was told to forget.
+        **Forgetting everything is ``reset``, not an empty body.** An empty push used to mean
+        "forget everything", which collided with a page that genuinely had nothing stored: the
+        settings page pushed whatever its own origin held, so opening it from a second dev
+        server - a different `localStorage` - sent `{}` and reverted a configured server to
+        Ollama. Merging is now unconditional, and only the Reset button sets the flag.
 
         **The service cache is dropped on every push.** A service holds the model client it was
         built with, so keeping them would mean the page saved a new model and the next
@@ -317,11 +330,10 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         shared); rebuilding only the model client would be marginally cheaper, and would be
         wrong the moment a second setting joined the cache key.
         """
-        supplied = request.supplied()
-        if supplied:
-            state["overrides"].update(supplied)
-        else:
+        if request.reset:
             state["overrides"].clear()
+        else:
+            state["overrides"].update(request.supplied())
         state["services"].clear()
         return settings_payload()
 

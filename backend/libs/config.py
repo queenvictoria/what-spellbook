@@ -169,6 +169,20 @@ PROVIDERS = ("openrouter", "claude", "ollama")
 # what makes "can this provider actually run" a single lookup rather than a chain of ifs.
 PROVIDER_KEY_ENV = {"openrouter": "OPENROUTER_API_KEY", "claude": "ANTHROPIC_API_KEY"}
 
+# The inverse, so a key field can say which provider it belongs to without a second table that
+# could disagree with this one.
+PROVIDER_BY_KEY_ENV = {env: name for name, env in PROVIDER_KEY_ENV.items()}
+
+# How a provider is spelled in a sentence. The wire names are lower-case because they are
+# setting values; a message that says "Openrouter" reads as a typo, and `.capitalize()` cannot
+# fix it because the brand has a capital in the middle.
+PROVIDER_LABELS = {"openrouter": "OpenRouter", "claude": "Claude", "ollama": "Ollama"}
+
+
+def provider_label(name: str) -> str:
+    """A provider's display name, falling back to the raw value for an unknown one."""
+    return PROVIDER_LABELS.get(name, name)
+
 # Each provider's default model, used when a provider is chosen but no name is given.
 PROVIDER_DEFAULT_MODEL = {
     "openrouter": OPENROUTER_MODEL,
@@ -335,12 +349,67 @@ def mask_secret(value: str | None) -> str | None:
     credential back out of the server. It is deliberately not a fixed-width redaction: the
     point is that a user can tell *which* key is loaded, and ``sk-o…e999`` does that where
     ``***`` does not.
+
+    A short value masks to a bare ellipsis, which is deliberately indistinguishable from the
+    "nothing here worth showing" case - and that collides with a real bug worth a guard.
     """
     if not value:
         return None
     if len(value) <= 8:
         return "…"
     return f"{value[:4]}…{value[-4:]}"
+
+
+# What a well-formed key looks like, per provider. Not a validity check - only the provider can
+# answer that - but enough to reject a value that cannot possibly be one, which is what turns a
+# confusing remote 401 into a sentence naming the box that is wrong.
+KEY_PREFIXES = {"openrouter": "sk-or-", "claude": "sk-ant-"}
+
+# A provider key shorter than this cannot be real. The shortest genuine-looking key is far
+# longer, so a mask (``…``), a placeholder (``changeme``) or a paste that lost most of itself is
+# caught here rather than by the provider with a message about an authentication header.
+MIN_KEY_LENGTH = 16
+
+
+def key_problem(name: str, value: str | None) -> str | None:
+    """Why ``value`` cannot be a usable key for provider ``name``, or ``None`` if it looks fine.
+
+    This exists because of a real failure that was nearly impossible to diagnose from the
+    message it produced. ``ChatOpenAI`` raises only when a key is *absent*; a key of ``"…"`` -
+    the mask this very module returns - builds a client happily, sends an ``Authorization``
+    header OpenRouter rejects, and the error the user sees is *"Missing Authentication
+    header"*. That reads like a bug in the code rather than like a bad key, and the mask is
+    the one value the page could plausibly have sent.
+
+    Deliberately a *shape* test, not a validity test: a wrong-but-well-formed key still has to
+    reach the provider, because only the provider knows whether it is real. The point is to
+    catch values that cannot be a key at all, while they can still be described precisely.
+    """
+    expected = KEY_PREFIXES.get(name)
+    text = (value or "").strip()
+    if not text:
+        return (
+            f"The {provider_label(name)} provider needs an API key and none is set. Add one on "
+            f"the Settings tab, or switch the provider to Ollama to run locally."
+        )
+    if text == "…" or "…" in text:
+        # The mask, or something copied out of the settings page's own preview.
+        return (
+            f"The {provider_label(name)} API key looks like the masked preview this app shows "
+            f"('{text}'), not a real key. Enter the full key on the Settings tab - the page "
+            f"never displays it in full, so it has to be pasted from the provider."
+        )
+    if len(text) < MIN_KEY_LENGTH:
+        return (
+            f"The {provider_label(name)} API key is too short to be real ({len(text)} characters). "
+            f"Paste the whole key on the Settings tab."
+        )
+    if expected and not text.startswith(expected):
+        return (
+            f"The {provider_label(name)} API key should start with '{expected}' but starts with "
+            f"'{text[:6]}'. Check it was not mixed up with another provider's key."
+        )
+    return None
 
 
 def select_book_count(env=None) -> int:
@@ -417,16 +486,22 @@ def _select(requested_provider: str | None, requested_model: str,
 
     if requested_provider:
         key_env = PROVIDER_KEY_ENV[requested_provider]
+        key = _clean(env.get(key_env))
         model = requested_model or PROVIDER_DEFAULT_MODEL[requested_provider]
-        if _clean(env.get(key_env)):
+        # The *shape* of the key, not only its presence. A key of ``"…"`` - which is the mask
+        # this module returns - passes a presence check, builds a client, and comes back from
+        # OpenRouter as "Missing Authentication header": a message that reads like a code bug
+        # rather than a bad key. See ``key_problem``.
+        problem = key_problem(requested_provider, key)
+        if problem is None:
             return requested_provider, model
-        # A remote provider with no key cannot work at all, so falling back is the only way to
-        # answer - and it is logged, because silently swapping models makes a missing key look
-        # like a backend failure.
+        # A remote provider whose key cannot work cannot answer at all, so falling back is the
+        # only thing left - and it is logged, because silently swapping models makes a bad key
+        # look like a backend failure.
         fallback = _clean(env.get("OLLAMA_MODEL")) or OLLAMA_MODEL
         logging.warning(
-            f"{label} is set to provider '{requested_provider}' but {key_env} is empty; "
-            f"using Ollama '{fallback}'."
+            f"{label} is set to provider '{requested_provider}' but {key_env} is unusable: "
+            f"{problem} Using Ollama '{fallback}'."
         )
         return "ollama", fallback
 

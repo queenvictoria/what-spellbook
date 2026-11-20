@@ -352,6 +352,11 @@ class SettingFieldSchema(BaseModel):
     # Which card the page puts this in. The table in ``config`` decides, so a new setting
     # appears somewhere sensible rather than wherever the renderer happened to stop.
     group: str = "Models"
+    # Why this value cannot work, when it demonstrably cannot - a masked preview, or a paste
+    # that lost most of itself. ``None`` means "looks usable", which is not "valid": only the
+    # provider can answer that, and pretending otherwise would reject real keys we cannot
+    # recognise.
+    problem: str | None = None
 
 
 class SettingsSchema(BaseModel):
@@ -398,6 +403,13 @@ class SettingsRequest(BaseModel):
     Extra keys are **forbidden**, so a misspelled field is a 422 rather than a push that
     reports success and changed nothing - invisible from the response, and the likeliest
     mistake this page can produce.
+
+    **Forgetting everything is ``reset``, not an empty body.** Overloading "no fields" to mean
+    both "I have nothing to say" and "throw it all away" is what let an empty tab revert a
+    configured server: ``localStorage`` is per-origin, so opening the settings page from a
+    second dev server on another port sent ``{}`` and quietly switched the model back to
+    Ollama. An explicit flag cannot be sent by accident, because nothing sends it except the
+    button that means it.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -409,10 +421,16 @@ class SettingsRequest(BaseModel):
     api_key: str | None = None
     anthropic_api_key: str | None = None
     ollama_model: str | None = None
+    # Throw away everything pushed so far and fall back to the environment. Only Reset sets it.
+    reset: bool = False
 
     def supplied(self) -> dict[str, str]:
-        """The fields the client actually sent, as wire key -> value (``None`` accepted)."""
-        return self.model_dump(exclude_unset=True)
+        """The fields the client actually sent, as wire key -> value (``None`` accepted).
+
+        ``reset`` is a control flag rather than a setting, so it is excluded - otherwise it
+        would land in the override map as a key named ``reset``.
+        """
+        return self.model_dump(exclude_unset=True, exclude={"reset"})
 
 
 class RunBooksSchema(BaseModel):

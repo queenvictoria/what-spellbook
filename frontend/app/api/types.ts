@@ -411,6 +411,12 @@ export interface SettingField {
    * beside a card confidently naming a model. Masked for a secret, exactly as `value` is.
    */
   resolved: string | null
+  /**
+   * Why this value cannot work, when it demonstrably cannot — a masked preview, or a paste that
+   * lost most of itself. `null` means "looks usable", which is not the same as "valid": only
+   * the provider can answer that.
+   */
+  problem: string | null
 }
 
 /**
@@ -455,6 +461,14 @@ export interface SettingsPatch {
   api_key?: string
   anthropic_api_key?: string
   ollama_model?: string
+  /**
+   * Throw away everything pushed so far and fall back to the server's environment.
+   *
+   * An explicit flag rather than an empty body, because "no fields" has to stay available to
+   * mean "no change": the settings page used to push its own (possibly empty) store on load,
+   * so an origin with nothing saved sent `{}` and reverted a configured server.
+   */
+  reset?: boolean
 }
 
 /**

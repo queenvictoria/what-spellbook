@@ -15,15 +15,15 @@ from backend.libs import config, llm
     ("env", "expected"),
     [
         # Nothing requested: the key decides, falling back to the local default.
-        ({"OPENROUTER_API_KEY": "k"}, ("openrouter", config.OPENROUTER_MODEL)),
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64}, ("openrouter", config.OPENROUTER_MODEL)),
         ({}, ("ollama", config.OLLAMA_MODEL)),
         # An OpenRouter id needs a key to be reachable.
-        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "anthropic/claude-sonnet-4.5"},
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL": "anthropic/claude-sonnet-4.5"},
          ("openrouter", "anthropic/claude-sonnet-4.5")),
         ({"LLM_MODEL": "anthropic/claude-sonnet-4.5"}, ("ollama", config.OLLAMA_MODEL)),
         # An Ollama name wins even when a key is present, which is the point of the
         # setting: keep a key in .env but run locally by default.
-        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "qwen2.5-coder:7b-instruct"},
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL": "qwen2.5-coder:7b-instruct"},
          ("ollama", "qwen2.5-coder:7b-instruct")),
         ({"LLM_MODEL": "qwen3:4b"}, ("ollama", "qwen3:4b")),
     ],
@@ -40,7 +40,7 @@ def test_select_model_tolerates_quotes_and_spacing(value):
 
 def test_blank_llm_model_falls_through_to_the_default():
     """A key present with no value must not be treated as a model named ''."""
-    assert config.select_model({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "   "}) == (
+    assert config.select_model({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL": "   "}) == (
         "openrouter", config.OPENROUTER_MODEL,
     )
     assert config.select_model({"LLM_MODEL": ""}) == ("ollama", config.OLLAMA_MODEL)
@@ -67,15 +67,15 @@ def test_a_remote_model_without_a_key_is_reported(caplog):
     [
         # Unset means "no separate fast model", so the main model answers instead. That is
         # what makes the setting optional rather than required.
-        ({"OPENROUTER_API_KEY": "k"}, ("openrouter", config.OPENROUTER_MODEL)),
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64}, ("openrouter", config.OPENROUTER_MODEL)),
         ({}, ("ollama", config.OLLAMA_MODEL)),
-        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "anthropic/claude-sonnet-4.5"},
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL": "anthropic/claude-sonnet-4.5"},
          ("openrouter", "anthropic/claude-sonnet-4.5")),
         # Set: the fast model is used, and it is independent of the main one.
-        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL": "anthropic/claude-sonnet-4.5",
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL": "anthropic/claude-sonnet-4.5",
           "LLM_MODEL_FAST": "deepseek/deepseek-v4-flash-0731"},
          ("openrouter", "deepseek/deepseek-v4-flash-0731")),
-        ({"OPENROUTER_API_KEY": "k", "LLM_MODEL_FAST": "qwen3:4b"},
+        ({"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL_FAST": "qwen3:4b"},
          ("ollama", "qwen3:4b")),
         # A remote fast model with no key cannot work, so it falls back and says so.
         ({"LLM_MODEL_FAST": "openai/gpt-4o-mini"}, ("ollama", config.OLLAMA_MODEL)),
@@ -87,7 +87,7 @@ def test_select_fast_model_routes_by_name(env, expected):
 
 def test_a_blank_fast_model_falls_through_to_the_main_one():
     """A key present with no value must not be treated as a model named ''."""
-    env = {"OPENROUTER_API_KEY": "k", "LLM_MODEL_FAST": "   "}
+    env = {"OPENROUTER_API_KEY": "sk-or-v1-" + "0" * 64, "LLM_MODEL_FAST": "   "}
     assert config.select_fast_model(env) == config.select_model(env)
 
 
@@ -116,7 +116,7 @@ def test_build_llm_honours_an_ollama_override(monkeypatch, requested, expected_t
 
 
 def test_build_llm_honours_an_openrouter_override(monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey" + "0" * 50)
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
     client = llm.build_llm()
     assert type(client).__name__ == "ChatOpenAI"
@@ -133,7 +133,7 @@ def test_build_llm_uses_the_local_default_without_a_key(monkeypatch):
 
 def test_a_broken_openrouter_client_falls_back_to_ollama(monkeypatch, caplog):
     """A bad key must not leave a remote model name pointed at a local server."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey" + "0" * 50)
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
 
     import langchain_openai
@@ -150,7 +150,7 @@ def test_a_broken_openrouter_client_falls_back_to_ollama(monkeypatch, caplog):
 
 def test_build_fast_llm_honours_the_fast_override(monkeypatch):
     """The fast model is a second client, not a second setting on the first."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey" + "0" * 50)
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
     monkeypatch.setenv("LLM_MODEL_FAST", "deepseek/deepseek-v4-flash-0731")
     client = llm.build_fast_llm()
@@ -160,7 +160,7 @@ def test_build_fast_llm_honours_the_fast_override(monkeypatch):
 
 def test_build_fast_llm_falls_back_to_the_main_model(monkeypatch):
     """Unset means the main model, so a project without the setting is unchanged."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey" + "0" * 50)
     monkeypatch.setenv("LLM_MODEL", "openai/gpt-4o-mini")
     monkeypatch.delenv("LLM_MODEL_FAST", raising=False)
     client = llm.build_fast_llm()
@@ -169,7 +169,7 @@ def test_build_fast_llm_falls_back_to_the_main_model(monkeypatch):
 
 def test_the_fast_client_caps_its_output(monkeypatch):
     """The answer is a phrase, so the call is bounded rather than left open-ended."""
-    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-testkey" + "0" * 50)
     monkeypatch.setenv("LLM_MODEL_FAST", "deepseek/deepseek-v4-flash-0731")
     client = llm.build_fast_llm()
     assert client.max_tokens == llm.FAST_MAX_TOKENS
@@ -243,6 +243,49 @@ def test_a_remote_failure_does_not_tell_you_to_start_ollama():
     )
     assert "ollama serve" not in message
     assert "anthropic/claude-sonnet-4.5" in message
+
+
+def test_a_rejected_key_is_not_reported_as_unreachable():
+    """A 401 arrives from a server that answered, so "could not reach" was misleading.
+
+    The raw body — "Missing Authentication header" — reads like a bug in this code, and the
+    user has no way to know the fix is on the Settings tab.
+    """
+    error = Exception(
+        "Error code: 401 - {'error': {'message': 'Missing Authentication header', 'code': 401}}"
+    )
+    message = llm.explain_failure(
+        error, model="deepseek/deepseek-v4.1-flash-1017", local=False, provider="openrouter",
+    )
+    assert "OpenRouter rejected the API key" in message
+    assert "OPENROUTER_API_KEY" in message
+    assert "could not run" in message
+
+
+def test_a_rejected_key_names_the_provider_that_rejected_it():
+    """Naming OpenRouter for a failed Claude request sends the user to the wrong box."""
+    error = Exception("Error code: 401 - invalid x-api-key")
+    message = llm.explain_failure(
+        error, model="claude-sonnet-4-5", local=False, provider="claude",
+    )
+    assert "ANTHROPIC_API_KEY" in message
+    assert "OPENROUTER_API_KEY" not in message
+
+
+@pytest.mark.parametrize("error_text", [
+    "Error code: 401 - Unauthorized",
+    "Error code: 403 - Forbidden",
+    "authentication_error: invalid x-api-key",
+    "OpenAIError: Missing credentials",
+])
+def test_auth_failures_are_recognised_across_clients(error_text):
+    """The status and the body spell it differently depending on the SDK."""
+    assert llm.names_auth_failure(Exception(error_text))
+
+
+def test_a_connection_failure_is_not_an_auth_failure():
+    """Kept apart because the advice is different: start the server vs change the key."""
+    assert not llm.names_auth_failure(ConnectionError("Failed to connect to Ollama."))
 
 
 def test_a_missing_model_is_told_apart_from_a_dead_server():
