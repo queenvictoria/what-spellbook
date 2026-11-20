@@ -29,6 +29,15 @@ Superseded choices, recorded so they are not reintroduced:
 - **Client-side-only RAG with ChromaJS.** Planned before the retrieval logic existed; the
   two-stage retrieval now needs the spell pool, the rules validity check and the cache in
   one place, and a browser cannot hold the 544-document index cheaply.
+- **Client-side-only RAG with Orama + Transformers.js, as a *migration* of the whole app.**
+  Proposed later, and re-reviewed in [MIGRATION-VALIDATION.md](./MIGRATION-VALIDATION.md).
+  The same rejection for the same reason, now measured: an exact-count eligibility lane
+  ("fetch all 3 cantrips") cannot be expressed as a single similarity search, 2,371 SRD
+  chunks collapse to 1,166 heading names (removing the anchors the rule matcher requires),
+  and the guide's document model is `{text, source, chunkIndex}` — which drops the metadata
+  every filter reads. Four of the guide's own files also do not build or run. What *is*
+  worth keeping from it is in §7 of that file: an Electron shell over the existing
+  `backend/api`, which needs no rewrite at all.
 - **GLM-4.7-flash.** Replaced by a configurable `LLM_MODEL`.
 - **Zustand / SentenceTransformers.js.** Never used; React state and Ollama embeddings
   cover the same ground.
