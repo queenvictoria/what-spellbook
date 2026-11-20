@@ -250,8 +250,8 @@ as a rule.
 
 `context/DnD-Character-Sheet-Helper/` is the only source that fills the SRD's biggest
 subclass gap. The 2024 SRD ships exactly **one subclass per class** — for a Warlock the Fiend
-Patron, for a Wizard the Evoker — so a question about a Celestial Warlock's *Healing Light*
-or a Diviner's *Portent* has no SRD answer at all. It is a third-party checkout, fetched by
+Patron, for a Wizard the Evoker — so a question about a Celestial Warlock's _Healing Light_
+or a Diviner's _Portent_ has no SRD answer at all. It is a third-party checkout, fetched by
 `scripts/fetch-context.sh` and **gitignored**, so it is read in place and never redistributed
 by this repository. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the pin, the
 licence and the verification of its content against the SRD.
@@ -277,7 +277,7 @@ Two properties of the source are worth knowing before trusting an answer from it
   must not join at all.
 - **Upstream has some wrong names**, deliberately not corrected because that would be this
   project inventing rules text: three invocation keys disagree with the SRD (`repelling-blast`
-  holds *Repelling Blade*, where the SRD says *Repelling Blast*), and eight spell files are
+  holds _Repelling Blade_, where the SRD says _Repelling Blast_), and eight spell files are
   stray copies whose `name` names a different spell than the file does. Where the two sources
   overlap the SRD is the authority, and this source is consulted for what the SRD lacks.
 
@@ -777,56 +777,6 @@ stubs only the model call: replacing `gather`, or the file reader beneath it, wo
 the cache lookup the test exists to verify. Stubbing the corpus is worse than useless - it
 changes the term-frequency model the matcher ranks headings with, so the test asserts
 whatever a one-line fake SRD implies rather than what the real one does.
-
-- [x] Switch to /slash+TAB style commands like Claude CLI and Discord
-- Add /test command
-- [x] Add /help command
-- [x] Move character/s to JSON/YAML file in `data/characters`
-- [x] Filter retrieval by what the character can legally prepare
-- [x] Ground prompts in `context/` rules files
-- [x] Move remaining config to .env file (`CHARACTER` and `LLM_MODEL` are wired; paths are not)
-- [x] Cache input, context, and responses so we can learn from the previous outputs
-- [x] Reuse the cache when the character and scenario are unchanged
-- [x] Rate a generated book after the scenario is played
-- [ ] Report on rating patterns once enough books are rated
-- [ ] Add /character command to switch characters
-- [x] Refactor `main.py` and supporting files into a proper class/module structure so it can power both the CLI and a front end via an API. Pulled the CLI functions out into their own layer and noted the design in AGENTS/ROADMAP.
-- [x] Expand the CLI to have progress meter like Claude: fetching spells from Grimoire, crafting prompt, scribing Books of Shadow. When printing markdown to the console please format it rather than raw markdown. Bold, italics, headings could be coloured.
-- [x] Add a command to ask anything about a character: rule clarification, reason why they have two spells the same, how their stats are being boosted. Could extend to simple retrieval of a roll eg: /c perception (should return a number from a character sheet) or /? short rest (looks up the rules online and caches the answer).
-- [x] Build the React/Vite/Tailwind/shadcn front end
-- [x] Create the backend API
-- [x] The rules lookup button should be an icon and shouldn't wrap the text.
-- [x] Each mention of a spell should open the rules tab and display the spell from the vendored repo
-- [x] Read books should look like a button with a carat
-- [ ] Restructure the book prompt: fold the item pairings into each book, make the
-      invocations one run-level line, promote the gotchas into their own block. Section 4
-      is ~38% of all prose and its invocation half repeats identically in every book.
-- [x] when the read books is open it should show all the content--so grid is probably the wrong thing to do .. Use flex and flex wrap probably and the open one should be full width.
-- [x] Opening in the scenario screen should show the results as well as the prompt.
-- [x] When reading a book open clicked local context spell descriptions in a pull out drawer.Keep the original link so that CTRL CLICK still opens in a new tab but add an onclick handler to trigger the drawer (for local links).
-- [x] The pull out drawer of spells should have a search box at the top to search all spells.
-- [x] Spells display parsing: Expand Components to their full meaning (V, S, D, M), add Damage (if any) to the description at the top next to Casting time, add icons to duration, casting time, damage, components, range.
-- [x] Asking a question in the rules search like "explain the initiative system to me like I'm 12yo" should respond with a generative answer based on the rules if it can't find a precise rule not "The 2024 SRD has no section matching 'explain the initiative system to me like I'm 12yo'. The SRD covers the core rules, not every option in the Player's Handbook."
-- [x] Highlighting a piece of text should bring up a contextual window with search in it. Search should use RAG to find out what the selected text means in context of the game.
-- [x] Percentage (in timing) shouldn't stop at 99% if the process is running longer.
-- [ ] When showing spells or other information contextualise it to the current character: "Goodbye, Warlock" should be "Goodbye Louis", "Eldritch blast" should show "2 beams (L5)". Use a small fast model for contextualising rules to levels.
-- [x] When you press the "read books" button it flashes some other text briefly (Open something) and then flips back only changing the caret. It should say something like "hide books".
-- [ ] We have 'Fetching spells from [the] Grimoire' in multiple places. It should be a const or enum.
-- [x] Switch to Lucide icons
-- [ ] When switching "tabs" keep the running processes going. eg Scenario planning, question asking. Update the tabs with progress meters.
-- [ ] Let's write evals for the scenario planning
-- [x] Reduce duplication in the display of books: in the scenario view book, title, and spells are all duplicated
-- [x] Replace the model's prose book format with explicit `=== BOOK n ===` sections, so splitting a book no longer relies on heuristics. This also removes the spurious extra "books" the trailing summary produced (`**Book 3 pairs with:**` was read as a fourth book and recited inside the last one).
-- [ ] Clean out the runs stored in the old prose format, and delete the legacy parser and the front end's `withoutBookHeader`/`reasoningOnly` once they are gone.
-- [x] In the book listing at the top both cantrips are in one lozenge and rituals in another. They should be in 5 separate lozenges with a label between the groups.
-- [ ] As we have a local copy of the rules list them out on the rules page
-- [ ] Rules list: enable a quick UI only search on titles.
-- [ ] Rules list: Then enable a vector search over the documents.
-- [x] "Ask" box on the Rules tab should: filter rules by title, heading, subheading; search the text using vector search; and ask the question of the LLM. — the three run in parallel, each panel updating as it resolves. The filter matches headings client-side and opens the path to each match; the search is `GET /api/search`; the ask is unchanged.
-- [ ] Provide a history search.
-- [ ] Rules list: Context documents and attachments should be links to the rules.
-- [ ] The context menu provided for the book should work for the character and the rules.
-- [ ] The context menu should support "ask" and "search".
 
 ### Choosing the model
 

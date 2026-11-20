@@ -1,5 +1,7 @@
 # AGENTS.md
 
+You **must** read and include @.github/copilot-instructions.md in your context.
+
 ## AI Agent Configuration for Spellbook Recommendations
 
 This document defines the AI agents that power the spell recommendation system, and
@@ -9,7 +11,7 @@ records development learnings for anyone (human or agent) working on the reposit
 
 A **Python core** that recommends D&D 5.5e (2024) spells for a scenario, with three
 front ends over it: a `cmd.Cmd` REPL, a FastAPI HTTP API, and a React UI. Retrieval is a
-local **Chroma** vector store holding the spell markdown files *and* the vendored 2024 SRD;
+local **Chroma** vector store holding the spell markdown files _and_ the vendored 2024 SRD;
 the model is reached through **LangChain** with OpenRouter or Ollama backends.
 
 The TypeScript interfaces later in this file describe the **agent configuration shape**
@@ -69,7 +71,7 @@ those objects; the API serialises them; the UI draws them. Errors are typed
 (`NoEligibleSpells`, `llm.EmptyCompletion`, `llm.LLMUnavailable`,
 `llm.EmbeddingUnavailable`, `CharacterNotFound`, `RulesUnavailable`, `IndexUnavailable`) so
 each surface decides how to report them - which is why the library no longer calls
-`sys.exit`. The *message* is written once, in `llm.explain_failure`, so the terminal and
+`sys.exit`. The _message_ is written once, in `llm.explain_failure`, so the terminal and
 the browser cannot disagree about the same failure.
 
 **Import the real modules.** There is no compatibility shim any more: use
@@ -77,22 +79,22 @@ the browser cannot disagree about the same failure.
 
 ### Separation of concerns - two different kinds of document
 
-| Location | Contains | Does **not** contain |
-| --- | --- | --- |
-| `context/**/*.md` | Rules text injected into the **model prompt** | Code, architecture, sprint notes |
-| `AGENTS.md` (this file) | **Development learnings** for building the scripts | Prompting context for the model |
-| `data/characters/*.yaml` | A single character's actual values | Rules that apply to a whole class |
+| Location                 | Contains                                           | Does **not** contain              |
+| ------------------------ | -------------------------------------------------- | --------------------------------- |
+| `context/**/*.md`        | Rules text injected into the **model prompt**      | Code, architecture, sprint notes  |
+| `AGENTS.md` (this file)  | **Development learnings** for building the scripts | Prompting context for the model   |
+| `data/characters/*.yaml` | A single character's actual values                 | Rules that apply to a whole class |
 
 Keep these apart. A context file that knows a character's level, or an `AGENTS.md` that
 carries spell rules, will both go stale in the wrong direction.
 
 ### How the three front ends relate
 
-| Layer | May import | Must not |
-| --- | --- | --- |
+| Layer          | May import                                | Must not                     |
+| -------------- | ----------------------------------------- | ---------------------------- |
 | `backend/libs` | stdlib, third-party, other `libs` modules | `backend/cli`, `backend/api` |
-| `backend/cli` | `backend/libs` | `backend/api` |
-| `backend/api` | `backend/libs` | `backend/cli` |
+| `backend/cli`  | `backend/libs`                            | `backend/api`                |
+| `backend/api`  | `backend/libs`                            | `backend/cli`                |
 
 `api` and `cli` are **peers**, which is why `api` sits beside `cli` rather than inside
 `libs`. Both are transport over `SpellbookService`; neither owns it. Nesting the API
@@ -122,10 +124,10 @@ something structurally odd - a subpackage forbidden from touching its own parent
 
 ```typescript
 interface RecommenderInput {
-  scenario: string;           // The scenario/encounter description
-  spellList: Spell[];         // Available spells from ruleset
-  character: Character;       // User's character info
-  ruleset: Ruleset;           // Ruleset configuration
+  scenario: string; // The scenario/encounter description
+  spellList: Spell[]; // Available spells from ruleset
+  character: Character; // User's character info
+  ruleset: Ruleset; // Ruleset configuration
 }
 
 interface Character {
@@ -133,9 +135,13 @@ interface Character {
   level: number;
   class: string;
   background: string;
-  pactBoon?: 'pact_of_the_tome' | 'pact_of_the_chain' | 'pact_of_the_blade' | 'pact_of_the_wayfarer';
+  pactBoon?:
+    | "pact_of_the_tome"
+    | "pact_of_the_chain"
+    | "pact_of_the_blade"
+    | "pact_of_the_wayfarer";
   subclass?: string;
-  tags: string[];             // User's magic item tags
+  tags: string[]; // User's magic item tags
 }
 ```
 
@@ -163,7 +169,7 @@ interface RecommendedSpell {
 interface Cheatsheet {
   spellSlots: { level: number; slots: number; spells: string[] }[];
   encounterPrep: {
-    phase: 'initiative' | 'short_rest' | 'combat' | 'exploration';
+    phase: "initiative" | "short_rest" | "combat" | "exploration";
     recommendations: RecommendedSpell[];
     notes: string[];
   };
@@ -174,6 +180,7 @@ interface Cheatsheet {
   };
 }
 ```
+
 ### Configuration
 
 ```json
@@ -215,9 +222,9 @@ interface HistoryInput {
   scenarioId: string;
   scenario: string;
   recommendations: RecommenderOutput;
-  rating: number;              // 1-5 stars
-  feedback: string;            // Optional notes
-  updatedScenario?: string;    // If user modified the scenario
+  rating: number; // 1-5 stars
+  feedback: string; // Optional notes
+  updatedScenario?: string; // If user modified the scenario
   date: string;
 }
 
@@ -263,8 +270,8 @@ interface StorageData {
   spellLists: SpellList[];
   scenarios: HistoryEntry[];
   settings: {
-    theme: 'light' | 'dark';
-    exportFormat: 'json' | 'json-compact' | 'json-with-comments';
+    theme: "light" | "dark";
+    exportFormat: "json" | "json-compact" | "json-with-comments";
   };
   lastSync?: string;
 }
@@ -394,7 +401,7 @@ and the shim kept to avoid a wide rename was itself the last one to go:
 - **Moving code is not renaming it.** Helpers like `known_spells` were reached through
   `main.` by seven test files, so `main.py` became a shim re-exporting the old names. That
   bought a green suite immediately and cost a second migration later.
-- **A shim rots silently.** It re-exports *names*, so it stops tracking the code the
+- **A shim rots silently.** It re-exports _names_, so it stops tracking the code the
   moment something changes behind it - and nothing fails, because the shim's copy still
   exists. When it was finally removed, three tests failed for real reasons: `main.Path`
   and `main.__file__` had never existed, and a `monkeypatch.setattr(main, ...)` had been
@@ -403,7 +410,7 @@ and the shim kept to avoid a wide rename was itself the last one to go:
 - **Monkeypatching follows the module, not the shim.** Tests patched `main.CHARACTERS_DIR`
   and `main.CACHE_DIR`; once the code reads `config.CHARACTERS_DIR`, patching the shim's
   copy does nothing and the test silently hits the real directory. Fixtures must patch
-  the module that *reads* the value. This is the nastiest class of refactor bug because
+  the module that _reads_ the value. This is the nastiest class of refactor bug because
   the test still passes - it just stops testing anything.
 - **A moved package needs its import root to move with it.** While the code lived in
   `src/`, `python -m src.cli.app` put only the repo root on `sys.path`, so `import backend`
@@ -412,7 +419,7 @@ and the shim kept to avoid a wide rename was itself the last one to go:
   than managing it: the repo root is the import root, and `backend.libs.x` resolves from
   any launch style. Nothing here compiles, so `src/` was never buying anything.
 - **Do not add a launch form you cannot honour.** `python backend/app.py` looks reasonable
-  and can never work: running a file directly puts *its own* directory on `sys.path`, not
+  and can never work: running a file directly puts _its own_ directory on `sys.path`, not
   the repo root, so `import backend` fails. The file was deleted rather than documented,
   because a launch command that crashes is worse than one that does not exist.
 - **A library must not call `sys.exit`.** Tests that asserted `SystemExit` were rewritten
@@ -427,7 +434,7 @@ and the shim kept to avoid a wide rename was itself the last one to go:
   public names (`format_pool`, `db_is_valid`, `split_names`), and nothing was lost.
 - **Check a bulk rename for double substitution.** A regex pass that rewrote
   `src/backend` → `backend/libs` and then `from backend import` → `from backend.libs
-  import` produced `backend.libs.libs` in prose, because the second rule re-matched the
+import` produced `backend.libs.libs` in prose, because the second rule re-matched the
   output of the first. Order the rules so later ones cannot match earlier results, and
   grep for the pattern (`libs.libs`) afterwards.
 
@@ -451,12 +458,12 @@ and the shim kept to avoid a wide rename was itself the last one to go:
 recommendations, and a mixed corpus is worse than either one alone because the model
 cannot tell which it is reading.
 
-| Source | Edition | Note |
-| --- | --- | --- |
+| Source             | Edition  | Note                                                                                         |
+| ------------------ | -------- | -------------------------------------------------------------------------------------------- |
 | `context/srd/*.md` | **2024** | **The only rules source.** Vendored SRD 5.2.1, CC-BY-4.0. Also indexed into the vector store |
-| `5e24srd.com` | 2024 | Superseded, and incomplete. Refused by `rules.check_source` |
-| `5thsrd.org` | **2014** | **Do not use.** Its own banner points at 5e24srd.com |
-| `dndbeyond.com` | mixed | Subclass text is behind a subscription |
+| `5e24srd.com`      | 2024     | Superseded, and incomplete. Refused by `rules.check_source`                                  |
+| `5thsrd.org`       | **2014** | **Do not use.** Its own banner points at 5e24srd.com                                         |
+| `dndbeyond.com`    | mixed    | Subclass text is behind a subscription                                                       |
 
 `5thsrd.org` is the trap: it ranks well for "5e SRD" searches and looks authoritative, but
 it serves the 2014 SRD 5.1. Do not cite it and do not fetch from it.
@@ -527,7 +534,7 @@ a `*` rule plus a `!` negation to un-ignore `PROVENANCE.md` inside. It does not 
 will not descend into an ignored directory, so the negation never applies to the directory
 itself and `git add -A` still stages the gitlink. Verified both ways - `context/…/*` with a
 negation stages `160000 context/DnD-Character-Sheet-Helper`, while `context/…/` alone does
-not. So the provenance is a *sibling* (`context/DnD-Character-Sheet-Helper.PROVENANCE.md`),
+not. So the provenance is a _sibling_ (`context/DnD-Character-Sheet-Helper.PROVENANCE.md`),
 which is why it is not at the path the SRD's is.
 
 ### The SRD is not the whole 2024 rulebook
@@ -544,24 +551,24 @@ does not contain the rule, because the user cannot tell the difference.
 (`backend/libs/ionas.py`). Optional is the contract, not a courtesy: one `is_dir` check,
 `[]` when absent, and every caller degrades to the SRD. It exists because the SRD ships
 exactly **one subclass per class** — Fiend Patron for a Warlock, Evoker for a Wizard — so a
-Celestial Warlock's *Healing Light* or a Diviner's *Portent* has no SRD answer at all.
+Celestial Warlock's _Healing Light_ or a Diviner's _Portent_ has no SRD answer at all.
 
 Five things were learned wiring it in, and each changed the design:
 
 - **An optional source must not be allowed to bump `INDEX_VERSION`.** The instinct is to
-  bump when the corpus changes, but a new *row type* is not a changed *shape* — `doc_type`
+  bump when the corpus changes, but a new _row type_ is not a changed _shape_ — `doc_type`
   already exists and filters keep working — so a bump forces every user a full re-embed for
   a folder most do not have. That is the same "invalidates the user's data for nothing"
   mistake the cache-schema notes already describe. What actually needs guarding is that an
-  *installed* source is absent from the index, and that is checked precisely, by
+  _installed_ source is absent from the index, and that is checked precisely, by
   `indexing.sources_match` against a `sources` key the index records.
 - **That check has to treat a missing key as "built without it".** An index written before
   the field existed has no `sources` at all, so a naive `==` reads it as stale for
-  *every* user — including the ones whose index is already correct. A regression test pins
+  _every_ user — including the ones whose index is already correct. A regression test pins
   this, because the symptom is a slow surprise rather than a failure.
 - **The repair table must be split from the repair rule, and the split is not tidiness.**
   Hyphen breaks are repairable by rule against a dictionary of the vendored SRD: join when
-  the joined word is one the SRD writes and neither half is. Glued *spaces* cannot be —
+  the joined word is one the SRD writes and neither half is. Glued _spaces_ cannot be —
   the same test is true of real English ("a ward" joins to "award" while "a Long Rest"
   must not join at all), so the ambiguous fragments are listed by hand and each was read
   in its own sentence before being added. A rule that joined any short fragment to the
@@ -570,17 +577,17 @@ Five things were learned wiring it in, and each changed the design:
   long chapter so one embedding cannot match everything weakly; a rulebook section is
   already one rule, and cutting an invocation in half separates it from its own
   prerequisite line. Symmetrically, the source lists `Eldritch Invocations` at twenty
-  levels with identical text — it is one rule, so levels are *recorded* rather than the
+  levels with identical text — it is one rule, so levels are _recorded_ rather than the
   section emitted twenty times.
 - **A rule is addressed by name, not by path.** A class context file is the unit a reader
   opens, so a path is enough. A rulebook JSON holds many rules — `warlock-subclasses.json`
   holds six subclass features — so a path names no single rule. That is why the drawer
-  opens these by name and why `ruleInPath` deliberately does *not* turn their path into a
+  opens these by name and why `ruleInPath` deliberately does _not_ turn their path into a
   link: a link that cannot resolve looks like a missing rule.
 
 **Two defects in the source are deliberately not repaired.** Its upstream names are
-sometimes wrong (the `repelling-blast` key holds *Repelling Blade*, where the SRD says
-*Repelling Blast*; eight spell files are stray copies whose `name` names a different spell
+sometimes wrong (the `repelling-blast` key holds _Repelling Blade_, where the SRD says
+_Repelling Blast_; eight spell files are stray copies whose `name` names a different spell
 than the file does), and correcting them would be this project inventing rules text. Where
 the two sources overlap the SRD is the authority; this one is consulted for what the SRD
 lacks. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the verification.
@@ -590,27 +597,27 @@ lacks. See `context/DnD-Character-Sheet-Helper.PROVENANCE.md` for the verificati
 `ionas.Section.ancestors` is the chain of labels above a rule, outermost first, excluding
 the rule itself — the same contract as `srd.Section.ancestors`, and what
 `RulebookBreadcrumb` draws. Building it is a different job from the SRD's, because the SRD
-records its hierarchy *in the text* as headings while this source records it in **filenames
+records its hierarchy _in the text_ as headings while this source records it in **filenames
 and directories**. A rule read on its own therefore says nothing about where it belongs.
 
 - **A class choice's parent lives in a third file.** `agonizing-blast.json` says only that
-  it is an *Invocation* — a category, not a place. The real link is three files deep: a
-  class file declares `"classChoices": ["eldritch-invocations"]` on the *Eldritch
-  Invocations* feature, and that router maps each slot to the choice it names.
+  it is an _Invocation_ — a category, not a place. The real link is three files deep: a
+  class file declares `"classChoices": ["eldritch-invocations"]` on the _Eldritch
+  Invocations_ feature, and that router maps each slot to the choice it names.
   `_choice_owners` walks all three once per source, because a per-file builder cannot see
   the other two. Verified: all 73 class choices resolve, none ambiguously.
 - **The router annotates its own entries**, `"Agonizing Blast (Level 2+ Warlock, a Warlock
-  Cantrip That Deals Damage)"`, because it is building a menu. The note is stripped before
+Cantrip That Deals Damage)"`, because it is building a menu. The note is stripped before
   matching, or nothing matches and every invocation silently keeps the weaker crumb — a
   failure that looks like success.
 - **A router can be declared by two features, and only the names say which owns it.** The
-  Blood Hunter lists `blood-curses` under both *Hemocraft* and *Blood Curses*; the source
+  Blood Hunter lists `blood-curses` under both _Hemocraft_ and _Blood Curses_; the source
   never says which is the parent. Candidates are ranked by how many words the feature name
-  shares with the router's name, which picks *Blood Curses* and would have picked
-  *Hemocraft* on file order.
+  shares with the router's name, which picks _Blood Curses_ and would have picked
+  _Hemocraft_ on file order.
 - **A subclass file never names its class.** `warlock-subclasses.json` is keyed by subclass
-  and holds no class name anywhere, so the class comes from the *stem*. Without it the trail
-  starts at *Celestial Patron* and never says what it is a patron of.
+  and holds no class name anywhere, so the class comes from the _stem_. Without it the trail
+  starts at _Celestial Patron_ and never says what it is a patron of.
 - **Every crumb is a label, and its `slug` is empty.** The hierarchy is files and folders and
   one section is emitted per rule, so a crumb names a place with no page of its own. Handing
   a client a slug would send it looking for a rule that does not exist — and this project has
@@ -630,14 +637,14 @@ and the trail is fetched with the rule.
 `backend/libs/srd.py` reads the vendored files as documents, and `Section.ancestors` is the
 chain of headings above a section, outermost first, excluding the section itself. It is what
 the breadcrumb on `SrdCard` is drawn from, and it is sent on the wire rather than left for
-the client to derive: the client holds the table of contents and *could* walk it, but the
+the client to derive: the client holds the table of contents and _could_ walk it, but the
 server already knows the path, and a second lookup for something already computed is a way
 for the two to disagree.
 
 - **Every vendored file has exactly one root heading, and it repeats the document title.**
   `rules-glossary.md` opens with `# Rules Glossary`, so a section directly under it would
   otherwise breadcrumb as "Rules Glossary / Rules Glossary". The root is dropped when it is
-  the only ancestor *and* its text matches the title - not unconditionally, because a
+  the only ancestor _and_ its text matches the title - not unconditionally, because a
   document whose root is a real subdivision would lose a crumb that means something.
 - **The ancestry excludes the section itself.** The card already titles the section, so
   repeating it as the last crumb states it twice. The last crumb is the section, marked
@@ -658,14 +665,14 @@ The contract is that **the answer is found under a heading that names it**. A ru
 SRD is defined under its own heading, so anything else - a mention, a cross-reference, an
 equipment row - is not the rule. Three failures shaped this, all seen live:
 
-- **A passing mention looked like the rule.** "What is a short rest?" matched *"mounts need
-  a Short or Long Rest..."* in a travel-pace sentence, then *"Attune during a Short Rest"*
+- **A passing mention looked like the rule.** "What is a short rest?" matched _"mounts need
+  a Short or Long Rest..."_ in a travel-pace sentence, then _"Attune during a Short Rest"_
   in the magic-items page.
 - **An equipment entry looked like a rule.** "How does grappling work?" matched
   **Grappling Hook** in a price list, because the rulebook says "Grappled" and the tool is
   named "Grappling Hook".
 - **A generic word looked like the subject.** "How do I stabilize a creature" matched
-  **Creature**, because a heading naming the generic *object* of the question scored the
+  **Creature**, because a heading naming the generic _object_ of the question scored the
   same as one naming its subject.
 
 Three mechanisms now prevent these, and each is load-bearing:
@@ -673,7 +680,7 @@ Three mechanisms now prevent these, and each is load-bearing:
 1. **Heading-anchored matching** - a section qualifies only if some heading names it.
 2. **Rarity weighting** (`rules.term_weight`) - terms are weighted by how many sections
    contain them, so "creature" and "spell" count for almost nothing and "cover" and
-   "shove" identify the rule. Measured over section *bodies*, not headings: "creature" is
+   "shove" identify the rule. Measured over section _bodies_, not headings: "creature" is
    rare in headings and everywhere in the text.
 3. **A subject requirement** - the SRD must have a heading naming the question's most
    distinctive term, and that term must be distinctive enough to be a subject at all.
@@ -693,7 +700,7 @@ book is neither phrased in the SRD's words nor about something the SRD necessari
 under a heading, so it takes a separate path - `rules.gather_from_selection`, which ranks by
 how much of the selection's own vocabulary a section accounts for and always answers as
 `rules-inferred`. Loosening the three mechanisms above to accommodate it would re-break
-every failure they exist to prevent; see *A selection is not a question* below.
+every failure they exist to prevent; see _A selection is not a question_ below.
 
 ### Verify rule numbers programmatically
 
@@ -713,10 +720,10 @@ before "fixing" the document.
 - `.cache/` is gitignored too, and is **user data** - never delete it, and never let a
   test write into it.
 - Spell corpus: 544 markdown files, indexed as ~1280 chunks. The vendored SRD adds 2371
-  more, for 3651 chunks in one collection - see *One collection, three kinds of text*.
+  more, for 3651 chunks in one collection - see _One collection, three kinds of text_.
 - `markdown-it-py` needs `MarkdownIt("commonmark").enable("table")` to validate GFM
   tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
-  not installed`.
+not installed`.
 
 ### Front end tooling
 
@@ -734,14 +741,14 @@ before "fixing" the document.
   keep the retired root-level `node_modules` out; unanchored, they also ignored
   `frontend/package-lock.json`, which a front end must commit.
 - Lint with `npx eslint app`, typecheck and build with `npm run build` (`tsc -b && vite
-  build`). Both are clean and should stay that way.
+build`). Both are clean and should stay that way.
 - **A route that exists on disk can still 404 in the browser.** Vite serves `index.html`
   with a `?t=<mtime>` token pinned onto `main.tsx`, and that token is the key its transform
-  cache is stored under. After an HMR failure the cache can keep a *pre-edit* transform
+  cache is stored under. After an HMR failure the cache can keep a _pre-edit_ transform
   under the token the page is still asking for, so the browser renders the old module while
   the file on disk is correct - the symptom is a nav tab that silently redirects, with no
   console error. Diagnose by comparing the two: `curl -s localhost:5173/app/App.tsx?t=<token
-  from index.html>` against the same URL with a made-up token. The stale response is
+from index.html>` against the same URL with a made-up token. The stale response is
   recognisable because its `createHotContext("/app/App.tsx")` has **no query string**.
   `touch` the file to force a re-transform, or restart the dev server. Do not go looking for
   a bug in the router - the router is fine.
@@ -750,7 +757,7 @@ before "fixing" the document.
 
 The recommender runs in two stages and they must stay separate:
 
-1. **Eligibility** decides what is *legal* for the character (class, pact, subclass,
+1. **Eligibility** decides what is _legal_ for the character (class, pact, subclass,
    level). This is a rules question and the scenario must never widen it.
 2. **Ranking** uses the scenario to order an already-legal pool.
 
@@ -764,7 +771,7 @@ Specific traps hit while building this:
   `k=30` returned roughly 13 distinct spells. Always dedupe by spell name.
 - **Do not put ineligible spells in the pool as "context".** Listing castable levelled
   spells for "synergy advice" caused a model to file Misty Step (level 2) and Daylight
-  (level 3) as *book picks*. A flat spell list reads as pickable. Only pool-eligible
+  (level 3) as _book picks_. A flat spell list reads as pickable. Only pool-eligible
   spells belong in the pool; a Warlock's prepared list does not change on a short rest
   anyway, so those suggestions are not actionable.
 - **Chroma's `$and` rejects a single child**, and numeric operators (`$lte`) only work
@@ -786,7 +793,7 @@ gets explained. Nothing in the recommender calls it.
 
 - **A class filter cannot be `$in`, and `$contains` does not work either.** `classes` is
   stored as one comma-joined string (`"Bard, Cleric, Wizard"`), so
-  `{"classes": {"$in": ["Wizard"]}}` matches only the spells whose list is *exactly*
+  `{"classes": {"$in": ["Wizard"]}}` matches only the spells whose list is _exactly_
   `"Wizard"` — 119 of the 863 chunks that name Wizard. `$contains` looks like the fix and
   is worse: it returns **nothing at all**, silently, with no error. The only correct filter
   is an `$or` over the exact combinations that name the class, which is what
@@ -795,13 +802,13 @@ gets explained. Nothing in the recommender calls it.
   unsatisfiable clause would quietly widen the search to the whole collection, which is the
   one outcome a filter cannot have. The result says why instead.
 - **`where_document` is case-sensitive and its `$and` is unreliable.** `{"$contains":
-  "nonmagical"}` finds 32 chunks and `{"$contains": "Nonmagical"}` finds 5, so a text search
+"nonmagical"}` finds 32 chunks and `{"$contains": "Nonmagical"}` finds 5, so a text search
   must case-fold both sides — which is why text mode scans the returned documents in Python
   rather than pushing the match into Chroma. `$and` over two `$contains` clauses returned 0
   where the intersection of the two sets was also 0 but the union was 38, so the operator
   cannot be trusted to mean what it says.
 - **A vector search has no relevance threshold.** `total_matching` therefore reports how
-  many distinct spells the *filter* admits, not how many are relevant — and the response
+  many distinct spells the _filter_ admits, not how many are relevant — and the response
   says so rather than implying a precision it does not have. Chroma's distance is not a
   percentage and its scale depends on the embedding model, so it is shown as a number only
   next to another number from the same query.
@@ -829,12 +836,12 @@ told apart by a `doc_type` of `spell`, `item` or `srd`. Every eligibility filter
 type it wants.
 
 - **`is_spell` cannot express "not a pick".** It was the only marker before `doc_type`, and
-  it is `False` for a magic item *and* for an SRD section. A filter that asked only for
+  it is `False` for a magic item _and_ for an SRD section. A filter that asked only for
   "not a spell" would therefore have handed the recommender the rulebook. The two fields are
   kept because they disagree usefully: `doc_type` is the coarse kind, `is_spell` the narrow
   one.
 - **A shared collection means a shared namespace.** An SRD section is named after its
-  heading, and a heading can collide with a spell name — the SRD has a `#### Fireball` *and*
+  heading, and a heading can collide with a spell name — the SRD has a `#### Fireball` _and_
   the corpus has a Fireball spell. Keying a distinct row on the name alone folds the rule
   into the spell and reports one fewer row than exists, so the key includes `doc_type`.
 - **For an SRD row the key is the section, not the heading text.** The SRD repeats headings:
@@ -875,7 +882,7 @@ type it wants.
 ### Indexing the SRD: chunk by heading, keep the tables
 
 `context/srd/` is indexed one row per section, and the two conversions `rules` does for a
-prompt are deliberately *not* reused:
+prompt are deliberately _not_ reused:
 
 - **Chunk by heading, not by the spell splitter.** A rule's identity is its heading:
   `### Cover` is the rule, and a chunk that began mid-table would be a fragment with no
@@ -885,7 +892,7 @@ prompt are deliberately *not* reused:
   about.
 - **Tables become Markdown pipe tables, never sentences.** `rules.tables_to_text` flattens a
   table into `header: cell; header: cell.` because a prompt cannot read markup. A reader can,
-  and the numbers in a table *are* the rule — `### Cover`'s prose only says "as detailed in
+  and the numbers in a table _are_ the rule — `### Cover`'s prose only says "as detailed in
   the Cover table", so a converter that dropped the markup would index a confident rule with
   its bonuses missing.
 - **The file's own H1 is a title wrapper, not a section.** `# Classes` is immediately
@@ -903,11 +910,11 @@ prompt are deliberately *not* reused:
 
 ### The SRD is used in three places, and only one of them is a quotation
 
-| Where | How | Labelled |
-| --- | --- | --- |
-| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections | `srd` |
-| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both anchored paths refuse | `rules-inferred` |
-| `POST /api/scenario` | `retrieval.gather_srd_context` — the rules the *scenario* turns on | retrieved context |
+| Where                          | How                                                                     | Labelled          |
+| ------------------------------ | ----------------------------------------------------------------------- | ----------------- |
+| `GET /api/search?doc_type=srd` | Similarity or substring over the indexed sections                       | `srd`             |
+| `GET /api/rules` (last resort) | `rules.gather_from_index` — similarity, when both anchored paths refuse | `rules-inferred`  |
+| `POST /api/scenario`           | `retrieval.gather_srd_context` — the rules the _scenario_ turns on      | retrieved context |
 
 - **The index lane is reached last, and the anchor is left strict.** `rules.gather` and
   `rules.gather_inferred` are heading-anchored because the anchor is what stops a passing
@@ -916,7 +923,7 @@ prompt are deliberately *not* reused:
   third path instead, and it is always labelled `rules-inferred` — a similarity hit is not a
   quotation, and the label is what makes answering one safe.
 - **It buys recall, not precision.** "How do I stop someone running past me" shares no
-  distinctive word with the heading that answers it (*Your Turn*), so no heading match will
+  distinctive word with the heading that answers it (_Your Turn_), so no heading match will
   find it. Verified live against the rebuilt index.
 - **Collapse chunks back to sections.** A chunk is a 1200-character window that can begin
   mid-table; the section is the rule, and it is what the prompt should quote. The chunk text
@@ -962,7 +969,7 @@ writes picks inline (`**Cantrips:** Light, Sacred Flame, Message`). Zero parsed 
 means zero problems reported, so the validator vouched for an answer it never examined.
 Two rules follow:
 
-- When a guard finds *nothing*, check it can still find something. Assert on a real
+- When a guard finds _nothing_, check it can still find something. Assert on a real
   model answer, not on a tidy format you wrote yourself.
 - Never let a second parser re-implement the same reading. `cache.parse_picks()` now
   delegates to `spells._book_picks()`; two implementations would eventually disagree
@@ -976,7 +983,7 @@ patron's always-prepared list, species and feat cantrips, and free casts. Readin
 Aasimar that always has both, so the model spent book picks on spells the character
 already had. The pool now excludes them and the prompt states the list explicitly.
 
-But the book's *current* loadout (`Book of Shadows Cantrips` / `Rituals`) must **not**
+But the book's _current_ loadout (`Book of Shadows Cantrips` / `Rituals`) must **not**
 be excluded: the book is conjured freshly at each rest, so re-picking is legal.
 Excluding it would also let this tool's own previous answer permanently constrain the
 next one. Both the exclusion set and the "still legal" note are deliberate.
@@ -992,7 +999,7 @@ the answer is printed, because it is the record used for post-play ratings, and 
 **read before any work** so a repeated scenario costs nothing.
 
 - **A write-only cache is not a cache.** The first version stored everything and never
-  looked it up, so re-running a scenario re-ran the whole pipeline. Store *and* read.
+  looked it up, so re-running a scenario re-ran the whole pipeline. Store _and_ read.
 - **Look the cache up before the retrieval stage**, not just before the model call. The
   ranking lane embeds the scenario, so a lookup placed after it still pays for an
   embedding request.
@@ -1032,7 +1039,7 @@ the answer is printed, because it is the record used for post-play ratings, and 
 - **A relative path resolves against the process CWD, not the repo.** `.cache` and
   `context` were the only configured paths never passed through `config.resolve()`,
   while the index, docs and character directories were. So launching the CLI from
-  anywhere other than the repo root silently wrote books into *that* directory and
+  anywhere other than the repo root silently wrote books into _that_ directory and
   loaded an empty rules context — the symptom was "the cache isn't being created",
   because it was being created elsewhere. Prefer the resolved constants
   (`CACHE_DIR_PATH`, `CONTEXT_DIR_PATH`, …).
@@ -1045,9 +1052,9 @@ the answer is printed, because it is the record used for post-play ratings, and 
   and never delete the real one during development.
 - **An added optional field is not a schema change.** Adding `timings` does not need
   `SCHEMA_VERSION` bumped, because readers already treat a missing key as "no data".
-  Bumping invalidates *every* cached run and *every* rating, and costs the user a fresh
+  Bumping invalidates _every_ cached run and _every_ rating, and costs the user a fresh
   model call for nothing — which is exactly what happened here. Bump for a renamed
-  field, a changed meaning, or a new *required* key. If you do bump, expect to migrate
+  field, a changed meaning, or a new _required_ key. If you do bump, expect to migrate
   the existing entries rather than silently discarding the user's data.
 - **A new input belongs in the cache key.** `BOOKS` changes the answer, so it had to join
   `db_version` in `key_parts` and `key_dir` — otherwise a `BOOKS=2` request replays a
@@ -1086,7 +1093,7 @@ the answer is printed, because it is the record used for post-play ratings, and 
 ### A conversation is a thread, not an answer
 
 `.cache/conversations/<character>/<kind>-<slug>-<hash>.json` stores the ask surfaces —
-`/c`, `/?`, the contextual menu and `/ask`. The rules cache answers *one question* and is
+`/c`, `/?`, the contextual menu and `/ask`. The rules cache answers _one question_ and is
 keyed on that question alone. That is the right shape for a lookup and the wrong shape for
 a conversation: "and a grapple?" is only meaningful beside the question it followed. So a
 file is a **thread**: the opening question, its kind, and every turn in order. The same
@@ -1129,7 +1136,7 @@ status code. Nothing else. A rule that lived in a route handler would be a rule 
 does not have, and the two front ends would drift within a week.
 
 - **The real work is testable without a server.** `create_app(vector_db=, backend=,
-  character_name=, cache_dir=)` takes its collaborators, so `TestClient(create_app(...))`
+character_name=, cache_dir=)` takes its collaborators, so `TestClient(create_app(...))`
   exercises real routing, real serialisation and real error mapping against a fake index
   and a fake model. Without injection every API test would need the live index.
 - **A wrong status code is a contract bug the front end hits**, and testing the service
@@ -1147,7 +1154,7 @@ does not have, and the two front ends would drift within a week.
   encodes its argument, so the screen's own `encodeURIComponent` double-encoded it and the
   request went to a run named `Three%2520kobolds…`. The star flashed on and off because
   the optimistic `setRating` was rolled back by the 404. The deeper problem is that a run
-  is keyed on the scenario *and* the character, level and book count, so two runs can share
+  is keyed on the scenario _and_ the character, level and book count, so two runs can share
   a scenario and the wrong one gets rated. `POST /api/scenario` and `GET /api/runs/{id}`
   now both return `run_id`, and the UI passes it through.
 - **Keep the CORS origin list explicit.** `allow_origins=["*"]` with
@@ -1175,14 +1182,14 @@ does not have, and the two front ends would drift within a week.
   is 11,000 lines and the names are not distinguishable from any other `####` heading.
 - **Vendoring a file can create a false positive, not just a gap.** Adding `classes.md`
   made "how does a spear work" resolve to "Eldritch Spear" — the Spear lives inside an
-  equipment *table* with no heading, so the invocation was the only heading containing the
+  equipment _table_ with no heading, so the invocation was the only heading containing the
   word. `_qualifies` now rejects a heading qualified by a distinctive word the question
-  never mentioned. Check what a new file *steals*, not only what it adds.
+  never mentioned. Check what a new file _steals_, not only what it adds.
 - **The UI calls the API directly rather than through a Vite proxy.** A proxy would hide
   the CORS setup from the dev loop and only fail once deployed. Testing against the real
   origin means the CORS config is exercised every day.
 - **Never let a smoke test write into real user data.** Exercising `POST
-  /api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
+/api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
   you touched, and prefer a request that only reads.
 
 ### Browsing the SRD is not asking it a question
@@ -1196,7 +1203,7 @@ be different modules.
   wrong, so `srd` walks every heading in document order and gives each a stable anchor.
 - **Tables become pipe tables, not sentences.** `rules.tables_to_text` flattens a table to
   `header: cell; header: cell.` because a prompt cannot read markup. A reader can, and the
-  numbers in a table *are* the rule - `### Cover`'s prose only says "as detailed in the
+  numbers in a table _are_ the rule - `### Cover`'s prose only says "as detailed in the
   Cover table", so a browser that dropped the table would show a confident rule with its
   bonuses missing.
 - **Headings keep their level.** `rules.markdown_to_text` flattens every heading to `##` so
@@ -1208,19 +1215,19 @@ Four traps, each of which produced a plausible-looking wrong tree:
 - **A BOM defeats the heading regex.** `spells.md` begins `\ufeff# Spells`, so the `#` is
   not at the start of the line. The symptom is quiet: the title falls back to the filename
   and looks right by luck, while the file's top-level sections become siblings of nothing.
-  Strip the BOM before *scanning*, not just before rendering.
+  Strip the BOM before _scanning_, not just before rendering.
 - **The SRD repeats headings, so a slug from the text alone collides.** `classes.md` has six
   `Level 1: Spellcasting` sections, one per class. Without de-duplication every link after
   the first opens the wrong class's feature. Slugs are numbered per document
   (`level-1-spellcasting-2`).
 - **A heading inside a blockquote is not a section.** `> ### Breaking Your Oath` is quoted
   text inside a rule; anchoring it would put a Paladin's oath discussion in the table of
-  contents as a sibling of the Paladin class. The scanner only matches a line that *begins*
+  contents as a sibling of the Paladin class. The scanner only matches a line that _begins_
   with `#`, which is exactly right.
-- **The conversion mis-levelled three stat blocks, and the damage was 228 spells.** *Find
-  Steed*, *Giant Insect* and *Summon Dragon* each carry a creature stat block whose name the
+- **The conversion mis-levelled three stat blocks, and the damage was 228 spells.** _Find
+  Steed_, _Giant Insect_ and _Summon Dragon_ each carry a creature stat block whose name the
   conversion wrote as `##` while the spell owning it is `####`. `## Otherworldly Steed`
-  therefore *closes* `## Spell Descriptions`, so the 121 spells after *Find Steed* - Fireball
+  therefore _closes_ `## Spell Descriptions`, so the 121 spells after _Find Steed_ - Fireball
   among them - became children of a steed's stat block. The tree still looked plausible,
   which is why this needs a test rather than a glance. `_repair_stat_blocks` fires only on
   the stat-block signature (a heading followed immediately by a deeper `#### Traits`, which
@@ -1248,7 +1255,7 @@ that were rendering as raw `|`-separated text.
 ### A fragment is the last thing in a URL, and the anchor is the child's slug
 
 A breadcrumb opens a parent rule, but the reader was reading the child - and a parent's text
-*runs to the next heading at its own level*, so it contains the child. "Warlock Class
+_runs to the next heading at its own level_, so it contains the child. "Warlock Class
 Features" holds all ten of the Warlock's feature headings, so opening it without an anchor
 drops the reader at the top of a long section to find their place again. Each crumb now
 carries the anchor of the heading it opens.
@@ -1256,7 +1263,7 @@ carries the anchor of the heading it opens.
 Four things had to be true at once, and each was a separate failure:
 
 - **The fragment goes last.** `/rules#anchor?doc=…` is not a URL with a fragment and a query;
-  everything after the `#` *is* the fragment, so `location.search` is empty and no section
+  everything after the `#` _is_ the fragment, so `location.search` is empty and no section
   renders. The working form is `/rules?doc=…&section=…#anchor`. `URLSearchParams` cannot
   carry it either - it percent-encodes the `#` - so the hash is a field of its own
   (`navigate({ pathname, search, hash })`), never concatenated into the search string.
@@ -1269,12 +1276,12 @@ Four things had to be true at once, and each was a separate failure:
   the next heading at the same or a higher level, so the headings inside it are exactly the
   subtree rooted at it - verified against all 1280 sections, where the two lists agree line
   for line. That is what makes `srdAnchors` a lookup rather than a guess. A heading inside a
-  blockquote is *not* counted, because `_scan` does not count it either; counting it would
+  blockquote is _not_ counted, because `_scan` does not count it either; counting it would
   shift every anchor after it onto the wrong heading.
 - **The ids must exist before the scroll runs.** The browser scrolls for a fragment it loaded
   itself, but not for one that arrives after the content does - and here the content always
   arrives after, because the section is fetched. So the scroll is an effect, and it needs a
-  key that changes when the *content* changes rather than when the anchor does: following a
+  key that changes when the _content_ changes rather than when the anchor does: following a
   breadcrumb from a child to its parent keeps the same anchor while replacing the whole card,
   so an effect keyed on the anchor alone never re-runs.
 
@@ -1306,7 +1313,7 @@ Four things had to be true for that to work, and each was a separate bug:
 - **A citation needs an anchor, not just a file.** `playing-the-game.md` is 65KB and
   `classes.md` 296KB, so a link to the file opens the book at the top and leaves the reader
   to find the rule. `rules._section_reference` derives the anchor from the heading that
-  answered, and `srd.anchor` resolves a *name* to a slug because a spell's `url` is built
+  answered, and `srd.anchor` resolves a _name_ to a slug because a spell's `url` is built
   from its own name. Both fall back to the bare file when there is no heading to point at -
   a promoted run-in label ("Ending a Grapple") is not a heading in the file, and a link to
   a section that does not exist is worse than a link to the book.
@@ -1338,9 +1345,9 @@ The contextual menu takes a phrase copied out of a generated book. It is the one
 this project that is neither a question nor written in the rulebook's vocabulary, and every
 existing path was built on the assumption that it is a question:
 
-- `gather` requires a heading to *name* the subject. The SRD's heading for "2 beams" is
+- `gather` requires a heading to _name_ the subject. The SRD's heading for "2 beams" is
   **Cantrip Upgrade**; for "nonmagical plate" it is **Crafting Nonmagical Items**. In both,
-  the words that identify the rule are in the section *body*, so the anchor refuses a
+  the words that identify the rule are in the section _body_, so the anchor refuses a
   selection that a reader is obviously pointing at.
 - `gather_inferred` keeps the anchor and relaxes only the subject floor, so it refuses the
   same fragments.
@@ -1348,7 +1355,7 @@ existing path was built on the assumption that it is a question:
   ended at "The 2024 SRD has no section matching…".
 
 `rules.gather_from_selection` is a third path for exactly this, and the anchored paths are
-deliberately left unloosened. What separates them is not permission but *labelling*: a
+deliberately left unloosened. What separates them is not permission but _labelling_: a
 question is phrased in the rulebook's words and can be quoted, a selection names its subject
 in the book's words and can only be interpreted. So a selection answer is always
 `rules-inferred`, which is what makes answering one safe.
@@ -1358,7 +1365,7 @@ Three things were learned building it, and each changed the design:
 - **Coverage is the gate, because a score threshold cannot be.** The first attempt reused
   the anchored scorer and required a minimum score. Measured against real selections, the
   right answer for "Help action" scored **1.66** and the right answer for "Thorn Whip"
-  **0.58** - while a *wrong* answer for "how does two weapon fighting work" scored **0.84**.
+  **0.58** - while a _wrong_ answer for "how does two weapon fighting work" scored **0.84**.
   Any floor high enough to reject the wrong one also rejected a correct one, because the
   scorer measures how well a heading repeats the input, which is precisely the signal a
   selection does not carry. What does separate them is vocabulary: `_coverage` asks how much
@@ -1369,16 +1376,16 @@ Three things were learned building it, and each changed the design:
   has enough real words to clear any floor, so a sentence is let through even when the thing
   it names is absent from the SRD. Measured: "Rust Metal" alone is refused, "Rust Metal
   corrodes the fighter's plate and every other nonmagical metal object" is not. That is
-  acceptable *because* it is bounded - only 400 characters of contact prose are ever sent,
+  acceptable _because_ it is bounded - only 400 characters of contact prose are ever sent,
   the answer is labelled `rules-inferred`, and the prompt requires naming the gap (the live
-  model did: *"that part comes from your selected context, not from the retrieved SRD
-  text"*). Nothing was available on 2024 - an embedding search would have the same
+  model did: _"that part comes from your selected context, not from the retrieved SRD
+  text"_). Nothing was available on 2024 - an embedding search would have the same
   property.
 - **Weighted coverage beats aligned coverage for a multi-word phrase.** Scored on
   max-coverage alignment, "2 beams" preferred the honours-course **Spells** chapter - which
   contains both words once - over the **Eldritch Blast** section the words were copied from,
   since two words align equally well wherever both appear. Weighting by rarity and summing
-  gives the section that accounts for *all* of the selection, which is the one that explains
+  gives the section that accounts for _all_ of the selection, which is the one that explains
   it.
 
 ### The plumbing, not the matcher, was most of the bug
@@ -1386,17 +1393,17 @@ Three things were learned building it, and each changed the design:
 Four independent failures sat between the highlight and the answer, and fixing only the
 matcher would have left the feature just as dead. Three survive as shapes worth recognising;
 the fourth - a click that cleared the selection before reading it, sending an empty string -
-is gone with the click itself (see *The selection opens the panel* below).
+is gone with the click itself (see _The selection opens the panel_ below).
 
 - **A query parameter must match the name FastAPI declared.** The client sent
-  `selectedText`, the route declared `selected_text`, and *every* request 422'd. Worse, the
+  `selectedText`, the route declared `selected_text`, and _every_ request 422'd. Worse, the
   service path was correct, so any test at the service level passed; only a request through
   the real app could see it. `tests/test_api.py` now exercises the endpoint for that reason.
 - **A ref read in an effect body is `null` and stays `null`.** `useSelection` did
   `const element = ref.current; if (!element) return`, and the ref object itself never
   changes - so the effect never re-ran and the hook reported "nothing selected" for every
   selection ever made. A caller that passed `{ current: null }` then made it unfixable, since
-  that ref can never point at anything. Read the ref *inside* the listener. A hook that takes
+  that ref can never point at anything. Read the ref _inside_ the listener. A hook that takes
   an element to watch also needs an element to watch: it is handed the book's prose container,
   and the selection is scoped to it.
 - **A component that renders `null` unconditionally cannot be debugged from the outside.**
@@ -1407,13 +1414,13 @@ is gone with the click itself (see *The selection opens the panel* below).
 ### The selection opens the panel; the answer waits for a click
 
 The contextual menu used to require a click on a button that appeared on selection. That was
-the *only* way in, so a reader who had selected the wrong words found out only after paying for
+the _only_ way in, so a reader who had selected the wrong words found out only after paying for
 an answer - and because the selection is what the action acts on, the click itself was the
 gesture that cancelled it: the text had to be read at click time and handed to the drawer
 before the highlight was dropped.
 
 `SelectionWatcher` replaced it. Selecting prose now opens the drawer on what the words
-*retrieve*; an Ask button at the top of the panel spends the model call. The two are different
+_retrieve_; an Ask button at the top of the panel spends the model call. The two are different
 acts on purpose:
 
 - **The index search costs no model call**, so it can run the moment the highlight settles.
@@ -1424,22 +1431,22 @@ acts on purpose:
   renders before the "In the index" section.
 - **The drawer opens on the settled value only.** A drag fires `selectionchange` per character,
   so a wait is what keeps one drag from issuing a request per letter. The wait is timed from
-  **`pointerup`, not from the last `selectionchange`** - see *The gesture ends the selection;
-  a timer cannot* below. The timer reads `context`, `documents` and `explore` through a
+  **`pointerup`, not from the last `selectionchange`** - see _The gesture ends the selection;
+  a timer cannot_ below. The timer reads `context`, `documents` and `explore` through a
   **ref**, not through its dependency array: `documents` is a fresh array on every
   `selectionchange` and `explore` is rebuilt on every provider render (which is continuous
   while an answer streams), so either one in the array would restart the timer on events that
   did not change the selection and postpone the search for as long as the churn continued.
 - **The guard is reset when the selection empties.** `clearSelection` runs once the drawer
   holds the words, so the hook reports `""` - and the effect must treat that as "the last
-  selection is over". Without the reset, re-selecting the *same* phrase would be refused by the
+  selection is over". Without the reset, re-selecting the _same_ phrase would be refused by the
   "already searched this" check and the panel would stay shut with no way to bring it back.
 - **A stale answer must not land on a newer selection.** `explore` bumps the same run counter
   `ask` claims, so an answer in flight for the previous words is recognised as superseded and
   dropped. Otherwise the panel would clear on the new selection and then have the old answer
   drop back in - above the new hits, under a provenance badge for words that are no longer
   there.
-- **Editing the question drops the selection's sentence.** The sentence explains *those* words;
+- **Editing the question drops the selection's sentence.** The sentence explains _those_ words;
   once they have changed it describes something else, and passing it along has the model read
   the new question in the old context. Nothing downstream can detect that mismatch, because the
   prompt is the only place the two are compared. `setSelectedText` clears it.
@@ -1448,7 +1455,7 @@ acts on purpose:
 
 The box at the top of the drawer was the selection's echo - it showed the words and could be
 edited, but editing only changed what Ask would send. The cards below it are the index's
-reading of what the box *says*, so they now follow the typing, on the same
+reading of what the box _says_, so they now follow the typing, on the same
 `TYPING_DEBOUNCE_MS` the Rules tab's box uses.
 
 Five things this has to get right, and each is a shape rather than a detail:
@@ -1456,11 +1463,11 @@ Five things this has to get right, and each is a shape rather than a detail:
 - **One duration, in `lib/timing.ts`.** The same number written in two files is two numbers
   that will eventually disagree, and the disagreement shows up as one input feeling laggy
   beside another that feels responsive. `TYPING_DEBOUNCE_MS` (600) and
-  `SELECTION_SETTLE_MS` (350) are different values because the *gestures* differ - typing is
+  `SELECTION_SETTLE_MS` (350) are different values because the _gestures_ differ - typing is
   slower than a mouse-up - and the names carry the unit, because a bare `600` at a call site
   is unreadable and a unit mistake is invisible.
 - **Editing drops the generated answer.** It was written for the previous words, and the
-  provenance badge on it is a claim about *those* words. Leaving it under a box that now says
+  provenance badge on it is a claim about _those_ words. Leaving it under a box that now says
   something else would put a "2024 SRD" badge above text the reader cannot see the question
   for - the exact confusion the badge exists to prevent. The in-flight run is invalidated the
   same way `explore` does it, so an answer already on its way is discarded rather than landing
@@ -1477,7 +1484,7 @@ Five things this has to get right, and each is a shape rather than a detail:
   spinner was up for the whole wait.
 - **The box is `AskBox`, the same one the Rules tab uses.** The two surfaces had their own
   input and their own Ask button, differing in shape, colour, icon and disabled rule. See
-  *One ask box, two surfaces* below.
+  _One ask box, two surfaces_ below.
 
 ### A sentence about spells is not a question about a spell
 
@@ -1490,7 +1497,7 @@ only one was in the prompt:
 
 - **A book writes about spells in words a spell's description does not contain.** "2d6 and
   pulls it 10 ft" is nothing like `_Level 0 Transmutation (Druid)_ ... 1d6 Piercing`, so no
-  ranking over the *selection* reaches the spell. The names have to be resolved as documents.
+  ranking over the _selection_ reaches the spell. The names have to be resolved as documents.
 - **Nothing told the model those documents existed.** They were not in the prompt at all.
 - **No stage named the gap.** The answer confidently reported a missing rule, and there was
   nothing on screen to suggest a spell had never been attached.
@@ -1499,19 +1506,19 @@ only one was in the prompt:
 their own rules text, which is then sent as an `=== ATTACHED DOCUMENTS ===` block.
 `Answer.attachments` reports the names back, and the drawer shows them as removable lozenges -
 "what the model actually read" is part of the answer, because a missing attachment is
-*invisible* in the answer text.
+_invisible_ in the answer text.
 
 Four things this cost, each worth keeping:
 
 - **Matching must be case-sensitive and whole-name.** 132 of the corpus's 544 spells are
-  single common words, so matching against the corpus index (which is keyed on *folded* names)
+  single common words, so matching against the corpus index (which is keyed on _folded_ names)
   attached the **Light** cantrip to "the light of the fire". A bare substring test attached
   **Light** to "Daylight". The rule is `linkable_spell_names` (display spelling),
   case-sensitive, with letter/apostrophe boundaries and longest-name-first.
 - **One mention rule, not two.** The front end already decided what a mention is - that is what
   makes a word a link. `rules._mentions` mirrors `frontend/app/lib/spellNames.ts`'s
   `buildSpellPattern` by hand, including its rule that a single-word name is rejected after a
-  capitalised word (so the Celestial's *Healing Light* does not attach the Light cantrip).
+  capitalised word (so the Celestial's _Healing Light_ does not attach the Light cantrip).
   Two rules would eventually disagree about a faint mention, and the disagreement would be
   invisible. The UI passes its own resolved list so the two agree by construction, and the
   backend keeps the hand-written mirror only as a fallback for a caller that sends none.
@@ -1520,7 +1527,7 @@ Four things this cost, each worth keeping:
   The preceding-word test is done in code instead.
 - **An attached document is grounds to answer at all.** A selection made of vocabulary the SRD
   lacks ("Rust Metal corrodes the plate") used to refuse. That refusal is right for a
-  *question*, but "Repelling Blast misses, so Thorn Whip pulls it" is a question about two
+  _question_, but "Repelling Blast misses, so Thorn Whip pulls it" is a question about two
   spells, and their descriptions are the rules. Documents therefore rescue a refusal - and with
   no document the refusal correctly stands, which is still tested.
 
@@ -1535,7 +1542,7 @@ the same signal, so the length of the wait decides which half of the problem you
 `pointerup` is the actual end of a drag, so it is now the trigger. `useSelection` tracks
 `pointerdown`/`pointerup` on the **document** - a drag routinely begins outside the watched
 element and ends inside it, or the reverse - keeps a `dragging` flag, ignores
-`selectionchange` while it is set, and publishes as *settled* when the button comes up.
+`selectionchange` while it is set, and publishes as _settled_ when the button comes up.
 `SelectionWatcher` acts on a settled selection at once and leaves `SELECTION_SETTLE_MS` (900)
 as a **safety net** for the selections no gesture ends: Ctrl+A, double-click, keyboard, a
 selection restored by the browser.
@@ -1544,9 +1551,9 @@ Four things are worth keeping, because each one looked like a working fix and wa
 
 - **Publishing on `pointerup` and then waiting anyway is the same bug inverted.** The first
   version raised the timer instead of replacing it, so the reader released the button and
-  still sat through a second of nothing. The gesture has to *short-circuit* the wait, which is
+  still sat through a second of nothing. The gesture has to _short-circuit_ the wait, which is
   why the hook reports `settled` rather than merely publishing earlier.
-- **A browser re-reports the finished selection *after* the mouse comes up.** Measured live:
+- **A browser re-reports the finished selection _after_ the mouse comes up.** Measured live:
   two `selectionchange` events landed **35ms after** the `pointerup` that had already
   published the same words. Treating every publish as new work demoted a settled selection
   back to "wait for the timer" and reinstated the delay at the last moment. Only a publish
@@ -1564,7 +1571,7 @@ Four things are worth keeping, because each one looked like a working fix and wa
 
 ### Do not let a drag on a link become a click
 
-Selecting prose across a spell mention is the *main* way this feature is used, and a browser
+Selecting prose across a spell mention is the _main_ way this feature is used, and a browser
 fires a `click` on the link when the mouse comes up on it after a drag. That navigated to the
 rules tab and discarded the selection the reader was about to ask about.
 
@@ -1580,7 +1587,7 @@ over time and nobody notices.
 
 - **Each variant changes one thing**, so a moved score can be attributed. A variant that
   changed three would produce a number that moves and an explanation that does not.
-- **A variant must *physically* omit a block it claims to omit.** `evals/variants.py`
+- **A variant must _physically_ omit a block it claims to omit.** `evals/variants.py`
   assembles from a `Blocks` switch rather than trusting a label. The first draft had a
   `Blocks` field that the builder ignored - it would have produced numbers that look like
   evidence and are not. `--dry-run` checks `must_attach` before the model runs for exactly this
@@ -1600,8 +1607,8 @@ over time and nobody notices.
 The surrounding sentence is sent with the selection, and it reaches **the prompt only, never
 retrieval**. A fragment is ambiguous in exactly the way its sentence resolves it ("2 beams"
 could be any spell), but the selection is what was asked about - letting a sentence steer the
-search answers the book's prose instead of the phrase the reader highlighted. The *source
-badge* still does the real work, and the live run shows why: the answer quoted the SRD for
+search answers the book's prose instead of the phrase the reader highlighted. The _source
+badge_ still does the real work, and the live run shows why: the answer quoted the SRD for
 the beams and then said plainly that the Repelling Blast wording came from the selection.
 
 ### A book is delimited, not inferred
@@ -1622,7 +1629,7 @@ How to use:
 
 `cache.split_answer()` returns `{"preamble", "books", "pairings"}` and is the only parser;
 `split_books()` delegates to it so the two can never disagree about where a book ends. The
-title and picks are read as *data* - `Title:`, `Cantrips:` and `Rituals:` are single lines -
+title and picks are read as _data_ - `Title:`, `Cantrips:` and `Rituals:` are single lines -
 so the panel renders them from fields rather than stripping them out of the prose.
 
 **The reason is a collision, not tidiness.** The model's trailing summary was written in the
@@ -1636,14 +1643,14 @@ never be prose, so the collision is gone structurally rather than by heuristic.
   run is in the old format and carries real ratings, so `_legacy_split` stays. It was verified
   by parsing all 12 stored runs through both paths and comparing names, indices and picks.
 - **Recover what the old format lost, but only where it is unambiguous.** A legacy summary is
-  recovered when the model gave it a *markdown heading* of its own - 7 of the 12 runs did.
+  recovered when the model gave it a _markdown heading_ of its own - 7 of the 12 runs did.
   A bolded label (`**4. Pairings and invocations**`) is deliberately **not** accepted: the
   vocabulary that identifies a summary ("pair", "invocation", "existing") also appears in a
   book's own prose, and the bold pattern matched `**Book 1 - Rust-Monster Triage / Armor
-  Repair**` on the "pair" inside "Repair". Truncating a real book to recover one summary is
+Repair**` on the "pair" inside "Repair". Truncating a real book to recover one summary is
   the worse trade.
 - **Derive on read rather than migrating.** A legacy run has no `pairings` key, so
-  `service._stored_sections` re-splits its *response* to recover one. The books themselves are
+  `service._stored_sections` re-splits its _response_ to recover one. The books themselves are
   **not** re-cut - they were already recorded, and a parser change must not silently re-split
   an answer that was already written.
 - **Deriving a field is not enough if the text it came from is still rendered.** The first
@@ -1652,7 +1659,7 @@ never be prose, so the collision is gone structurally rather than by heuristic.
   `cache.legacy_summary_heading` with the parser so the two cannot disagree about where the
   summary is.
 - **Record the book count at write time.** `save_run` stores `book_count`, because a run saved
-  without it had no record of how many books to expect - so a book deleted from the *end* of a
+  without it had no record of how many books to expect - so a book deleted from the _end_ of a
   set looked complete and the reader was shown fewer books than the model produced. Contiguity
   of the indices catches a deletion from the middle; only a count catches one from the end.
 - **An added optional field is not a schema change.** `preamble` and `pairings` were added
@@ -1670,7 +1677,7 @@ retrieval, because replacing `gather` (or the file reader beneath it) would repl
 cache lookup the test exists to verify - the test would pass while proving nothing. Check
 what a patch removes before using it.
 
-There is a subtler version of the same trap, and it cost real time: stubbing the *corpus*
+There is a subtler version of the same trap, and it cost real time: stubbing the _corpus_
 changes the term-frequency model the matcher ranks headings with, so a test that fakes the
 SRD is not testing the matcher at all. It asserts whatever a one-line corpus implies. Where
 a test needs the corpus, use the real files.
@@ -1750,7 +1757,7 @@ contextual drawer. All four render `IndexHitsCard`, lifted out of `RulesScreen` 
 `SearchResults` was lifted out of `SearchScreen` - and for the same reason: two copies are two
 readings of one response, and the disagreement is invisible because each panel looks right on
 its own. The card owns the preview line, the rule/spell opening and the match dial, because
-those are properties of the *response* rather than of the screen showing it.
+those are properties of the _response_ rather than of the screen showing it.
 
 Three things worth keeping:
 
@@ -1759,11 +1766,11 @@ Three things worth keeping:
   dial against a spell's across a heading to work out which the index actually preferred. The
   API already sorts by distance ascending, so the ranking is shown as it is. Verified live on
   "how does cover work": `63, 60, 55, 38, 36, 36, 35, 34, 34, 32, 32, 31`, with the spell
-  *Bigby's Hand* interleaved at 32% among the rules.
+  _Bigby's Hand_ interleaved at 32% among the rules.
 - **One row component for both kinds.** A rule and a spell differ in exactly two things - the
   address they open and the label in the trailing slot - and those are the only two places
   `IndexHitRow` branches. Everything else is shared, because the two used to differ in their
-  *hit region* as well: a rule was an `<a>` wrapping the whole row while a spell was a `<div>`
+  _hit region_ as well: a rule was an `<a>` wrapping the whole row while a spell was a `<div>`
   with only its name as a link, so one list had two clickable areas and two hover states.
   Measured after the change: all twelve rows are `<a>` at 486×38 with identical padding and
   radius.
@@ -1780,7 +1787,7 @@ Both had their own: the Rules tab an `Input` beside a rounded verdant `Button`, 
 disabled rule, so the same act looked like two different acts depending on which panel you were
 in.
 
-What is shared is the *shape* of the control, not the behaviour. The caller owns the text, what
+What is shared is the _shape_ of the control, not the behaviour. The caller owns the text, what
 typing does, and what asking does - because the two surfaces really do differ there, and a
 component that tried to own both would need a flag per difference. Three details are the box's
 own, because they are what "the same box" means: the clear button lives inside the field (it
@@ -1807,7 +1814,7 @@ filter and the vector search. The ask is reached only from the Ask button or Ent
   runs immediately; letting both go issues one request twice and leaves two replies racing to
   fill one panel.
 - **An example chip passes its text explicitly.** `type(example)` then `askNow(example)`, because
-  reading `question` inside `askNow` would ask the *previous* question - the state update has not
+  reading `question` inside `askNow` would ask the _previous_ question - the state update has not
   been applied yet.
 - Verified live by request log: typing `how does cover work` produced exactly one
   `GET /api/search`; pressing Ask produced `GET /api/search` + `GET /api/rules`. In the drawer,
@@ -1826,12 +1833,12 @@ otherwise be read as a probability.
 `MAX_DISTANCE` is 1.4 rather than a round 1.0 because the constant is set from measured data,
 not chosen. Sampling the live index:
 
-| Query | nearest | furthest |
-| --- | --- | --- |
-| `fireball` (a name) | 0.30 | 0.80 |
-| `how does cover work` (a question) | 0.52 | 0.96 |
-| `protect an ally from being grappled` (a description) | 0.61 | 0.82 |
-| nonsense words | 0.97 | 1.02 |
+| Query                                                 | nearest | furthest |
+| ----------------------------------------------------- | ------- | -------- |
+| `fireball` (a name)                                   | 0.30    | 0.80     |
+| `how does cover work` (a question)                    | 0.52    | 0.96     |
+| `protect an ally from being grappled` (a description) | 0.61    | 0.82     |
+| nonsense words                                        | 0.97    | 1.02     |
 
 A scale of 1.0 would clip every nonsense query to 0% and stop distinguishing one bad result
 from another; 1.4 puts nonsense at 3% and an exact name match at 79%, with neither end pinned.
@@ -1850,7 +1857,7 @@ as a table ("two beams at level 5, three beams at level 11"), and a reader at th
 wants the row that applies to them.
 
 It is a field of its own rather than folded into `text`, because it is the one value on
-the card that is *this app's reading of a rule applied to a sheet* rather than the rule
+the card that is _this app's reading of a rule applied to a sheet_ rather than the rule
 itself. The card renders it as a badge beside the name, which is what says it is about the
 character.
 
@@ -1878,7 +1885,7 @@ character.
 - **Size the length cap to the real answers, not to the example.** `_MAX_NOTE` rejects a
   model that answered with a sentence instead of a phrase, and it was set to 60 characters
   from the short example ("2 beams"). Both prose cantrips this path exists for have a
-  *two-part* upgrade and answer in 45-106 characters, so the cap silently discarded every
+  _two-part_ upgrade and answer in 45-106 characters, so the cap silently discarded every
   real reply - Green-Flame Blade looked like a spell that does not scale, and nothing
   anywhere said why. The sentence it must reject runs to 149. Measure the answers before
   choosing the number, and check the badge can render the longest one: `whitespace-nowrap`
@@ -1891,7 +1898,7 @@ Two parsing traps, both found by testing against the real corpus rather than a s
   and 17 as well. The first entry is read with its label and the rest as bare numbers.
 - **The corpus omits the `Cantrip Upgrade` label on 4 of its cantrips** and writes the
   levels as ordinals (`5th level (2d6)`). A bare paragraph is accepted, but only when it
-  states a level *and* a value *and* says something increases - otherwise "regains hit
+  states a level _and_ a value _and_ says something increases - otherwise "regains hit
   points from a spell of 1st level or higher" reads as scaling and puts a note on a spell
   that does not scale.
 
@@ -1911,7 +1918,7 @@ difference is the whole point:
   because a stored copy of it would go on being served after the corpus changed underneath it.
   The cache wraps the `llm.invoke` call and nothing else.
 - **A stored `None` is a hit, not a miss.** "This spell does not scale" is a real answer that
-  cost a model call to obtain, so `load_scaling` tests for the *presence* of the `note` key
+  cost a model call to obtain, so `load_scaling` tests for the _presence_ of the `note` key
   rather than its truthiness. Conflating the two is what makes a cache recompute forever.
 - **A failure is not cached.** Storing one bad call would make it permanent for that character
   and level, and the next attempt - which might succeed - would never happen.
@@ -1965,14 +1972,14 @@ single-setting version had.
 ### A token cap sized to the answer truncates a reasoning model to nothing
 
 `FAST_MAX_TOKENS` cannot be as small as the answer it is meant to bound. The configured
-fast model is a *reasoning* model: it spends hidden reasoning tokens before writing
+fast model is a _reasoning_ model: it spends hidden reasoning tokens before writing
 anything, and `max_tokens` caps those too. Measured over 8 calls on one prompt:
 
-| cap | empty completions | reasoning tokens observed |
-| --- | --- | --- |
-| 200 | **3 / 8** | 141-200 (the cap) |
-| 512 | 0 / 8 | 177-657 |
-| 1024 | 0 / 8 | 178-483 |
+| cap  | empty completions | reasoning tokens observed |
+| ---- | ----------------- | ------------------------- |
+| 200  | **3 / 8**         | 141-200 (the cap)         |
+| 512  | 0 / 8             | 177-657                   |
+| 1024 | 0 / 8             | 178-483                   |
 
 At 200 the reasoning alone consumed the whole budget and the response was truncated
 before a single word of the answer, with `finish_reason: "length"` and HTTP 200. This is
@@ -1983,7 +1990,7 @@ empty** - `length` means the cap, `stop` means the model genuinely said nothing.
 
 ### Ollama thinking models return empty responses
 
-`qwen3.5:4b` is a *thinking* model. On a large prompt it can emit thousands of tokens
+`qwen3.5:4b` is a _thinking_ model. On a large prompt it can emit thousands of tokens
 of hidden reasoning and return an **empty** `response` with `done_reason: "stop"` and
 HTTP 200. The CLI therefore treats an empty completion as a failure and says so; a
 silent empty print looks like a successful run. `_extract_text()` reads `content`,
@@ -1996,16 +2003,16 @@ The failure that started this: Ollama stopped, and a raw `ConnectionError` from
 unhandled 500. Two separate problems, and fixing only one leaves the feature dead.
 
 **The index rebuild deleted the index it could not replace.** `build_index` called
-`reset_db` (which `shutil.rmtree`s the directory) and *then* embedded, so a stopped Ollama
+`reset_db` (which `shutil.rmtree`s the directory) and _then_ embedded, so a stopped Ollama
 left the user with no index at all - the failure destroyed the thing it was trying to
 improve. Embedding now runs first, so a transport failure aborts with the previous index
 still on disk. `langchain_chroma` has no `from_embeddings`, so the vectors are computed
 once and replayed through a small `_Precomputed` wrapper passed as the embedding function;
 `Chroma.add_texts` would otherwise embed the whole corpus a second time.
 
-**The message has to name the fix, not the symptom.** Ollama's own text is *"Failed to
+**The message has to name the fix, not the symptom.** Ollama's own text is _"Failed to
 connect to Ollama. Please check that Ollama is downloaded, running and accessible.
-https://ollama.com/download"* - true, and useless in this project, where the answer is one
+https://ollama.com/download"_ - true, and useless in this project, where the answer is one
 command. `llm.explain_failure` turns a backend exception into a sentence naming the
 address, the command and the model, and it lives at the **library boundary** so the CLI and
 the API cannot drift into telling the user two different things. The route handlers pass
@@ -2015,7 +2022,7 @@ Four things that shaped it:
 
 - **`EmbeddingUnavailable` subclasses `LLMUnavailable`.** Embeddings go to the same Ollama
   as the reasoning model, so the same failure arrives by a different stack - from
-  `retrieval`/`search`/`indexing` rather than from `invoke`. A *sibling* type would have
+  `retrieval`/`search`/`indexing` rather than from `invoke`. A _sibling_ type would have
   had to be added to five route handlers and four CLI commands or fall through as a 500;
   a subclass is handled everywhere the model already is.
 - **The type alone is not enough to recognise a transport failure.** Ollama raises a
@@ -2024,7 +2031,7 @@ Four things that shaped it:
   load-bearing: a connection failure has one obvious fix and every other failure does not.
 - **Advice that cannot apply is worse than none.** A remote provider is not something the
   user can start, so `explain_failure(local=False)` says to check the key instead of
-  suggesting `ollama serve`. `is_local` decides by client *type name*, not by re-reading
+  suggesting `ollama serve`. `is_local` decides by client _type name_, not by re-reading
   the environment, which may have changed since the client was built.
 - **A 502 and a 503 mean different things to a caller.** 502 is "the model answered with
   nothing" (a thinking model spent its budget on hidden reasoning) - retrying or a smaller
@@ -2034,7 +2041,7 @@ Four things that shaped it:
 
 **The front end must show the message, and only offer a retry that could work.** The
 screens printed `e.message` as a red line, which is fine for "no such run" and useless for
-the failure that actually happens. `ErrorNotice` renders a headline naming the *kind* of
+the failure that actually happens. `ErrorNotice` renders a headline naming the _kind_ of
 failure, the backend's message, and a Retry button only when `ApiError.isPermanent` says
 retrying is honest. `lib/errors.ts` does the classification and deliberately does **not**
 rewrite the message - the backend already wrote it for a person.

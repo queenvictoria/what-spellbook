@@ -7,6 +7,21 @@
     "/^python - <<'PY'\nimport re, pathlib\np = pathlib\\.Path\\(\"backend/libs/cache\\.py\"\\)\ns = p\\.read_text\\(\\)\ns = s\\.replace\\(\"def _slug\\(text: str, \\*, max_length: int = 60\\) -> str:\", \"def slug\\(text: str, \\*, max_length: int = 60\\) -> str:\"\\)\ns = s\\.replace\\(\"_slug\\(\", \"slug\\(\"\\)\np\\.write_text\\(s\\)\nprint\\(s\\.count\\(\"slug\\(\"\\)\\)\nPY\ngrep -n \"slug\" backend/libs/cache\\.py \\| head -20$/": {
       "approve": true,
       "matchCommandLine": true
-    }
+    },
+    "git status": true,
+    "git branch": true,
+    "git worktree": true,
+    "git log": true,
+    "git diff": true,
+    "echo": true,
+    "head": true
+  },
+  "github.copilot.chat.codeGeneration.useInstructionFiles": true,
+  "files.watcherExclude": {
+    "**/.git/objects/**": true,
+    "**/.git/subtree-cache/**": true,
+    "**/node_modules/*/**": true,
+    "**/.venv/**": true,
+    "**/dist/**": true
   }
 }
