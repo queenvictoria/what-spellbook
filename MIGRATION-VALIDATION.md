@@ -20,6 +20,7 @@ commands and their raw results are recorded so they can be re-run.
 | Fatal on first command | `npm install` fails outright with the guide's pinned versions |
 | Prior decision | This repo already rejected this approach, in writing, for reasons that still hold |
 | What is worth keeping | 2 of 13 steps — see [Steps worth doing](#steps-worth-doing) |
+| What the review did find | A real index defect: **544 content-free rows**, fixed — see [Defect found while validating](#defect-found-while-validating) |
 
 The plan is not "ambitious but correct". Four of its own files do not compile or do not
 run, one of its central invariants is impossible per the library's own documentation, it
@@ -265,7 +266,49 @@ against a fixture file that does not exist. A backend that returns one correct c
 of five passes. Recall alone cannot detect the loss of a *filter*, and the filter is the
 product. This test is not a gate; it is a smoke test presented as one.
 
-## 6. Steps worth doing
+## 6. Defect found while validating
+
+Validating the plan against the live index turned up a real defect that has nothing to do
+with the migration, and it is fixed on this branch.
+
+Measured, the index held **4,674 rows of which 544 carried no content** — one per spell
+page. `_spell_documents` injects an authoritative `Spell Name: <name>` line into each page's
+body (six corpus files are named after a different spell than they contain, so the body is
+the only place the real name can live). But `MarkdownHeaderTextSplitter` splits on `#`, and
+the injected line sits *above* the page's own heading — so it became a chunk of its own,
+containing nothing but the name:
+
+```
+chunks for Fireball: 4
+--- chunk 0 len=20: 'Spell Name: Fireball'
+--- chunk 1 len=830: '#Level3 #Evocation ( #Sorcerer, #Wizard) ...'
+--- chunk 2 len=689: 'Spells > Fireball ...'
+--- chunk 3 len=655: 'Fireball (spell) ...'
+```
+
+Every one was an embedded row eligible to return as a search hit that shows a spell's name
+and no text — a plausible-looking result that answers nothing. The fix folds the line into
+the first real chunk, which keeps the name in the body the mis-named-file fix needs it in.
+Measured after: 544 stubs → **0**, spell rows 1,280 → 736, every row still carrying its
+level and doc type.
+
+This is why the review is worth doing even though the verdict is negative. The guide's
+document model would have flattened these rows into `{text, source, chunkIndex}` and lost
+the *evidence* — no count, no `doc_type`, no name — while leaving the defect in place.
+
+`INDEX_VERSION` is bumped to 5, because `ensure_db` only rebuilds when `db_is_valid`
+rejects what is on disk, and `sources_match` compares the *shape* of the rows — removing
+rows is not a shape change, so the version is the only guard that reaches an existing index.
+The tradeoff the surrounding comments warn about was weighed: the cost is a rebuild plus one
+fresh model call per character (`db_version` joins the run cache key), while the benefit is
+retiring 544 dead rows. Runs are not deleted — `cache.load_runs` globs every version — so
+history and ratings survive and stay readable.
+
+Coverage added in `tests/test_indexing.py`: 12 tests, where the module previously had none
+of its own. The last of them asserts the defect against the real 544-file corpus, because a
+row-count defect is invisible in a single-page fixture.
+
+## 7. Steps worth doing
 
 Two of the guide's 13 steps are worth keeping, and they are worth keeping *because* they do
 not depend on the migration:
@@ -280,7 +323,7 @@ not depend on the migration:
 
 Everything else is either a rewrite of working code or the deletion of recorded user data.
 
-## 7. If a client-side deployment is genuinely required
+## 8. If a client-side deployment is genuinely required
 
 The requirement the guide appears to be serving is *"deploy as a static Vercel PWA **and**
 an offline Electron desktop app"*. That is achievable without deleting the backend, and
@@ -343,4 +386,17 @@ du -sh /tmp/probe/.hfcache/Xenova/all-MiniLM-L6-v2/onnx/model_quantized.onnx   #
 
 # §5 existing suite
 .venv/bin/python -m pytest --collect-only   # 1251 tests collected
+
+# §6 the 544 content-free rows, in the index as it was before the fix
+.venv/bin/python - <<'PY'
+from backend.libs import config
+import chromadb
+col = chromadb.PersistentClient(path=str(config.DB_DIR_PATH)).get_collection("langchain")
+d = col.get(include=["documents"])
+stub = [t for t in d["documents"]
+        if t.strip().startswith("Spell Name:") and len(t.strip().split("\n")) == 1]
+print("total:", len(d["documents"]), "name-only rows:", len(stub))
+PY
+# -> total: 4674 name-only rows: 544   (before INDEX_VERSION 5)
+# -> `_spell_documents` over the real corpus now reports 736 rows and 0 stubs
 ```

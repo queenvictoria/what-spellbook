@@ -712,8 +712,10 @@ before "fixing" the document.
 - `data/` is gitignored, so the character sheet and the Chroma index are untracked.
 - `.cache/` is gitignored too, and is **user data** - never delete it, and never let a
   test write into it.
-- Spell corpus: 544 markdown files, indexed as ~1280 chunks. The vendored SRD adds 2371
-  more, for 3651 chunks in one collection - see *One collection, three kinds of text*.
+- Spell corpus: 544 markdown files, indexed as 736 chunks. The vendored SRD adds 2371
+  more and the optional second rulebook 1023, for 4130 rows in one collection - see *One
+  collection, three kinds of text*. (Was 4674 before `INDEX_VERSION` 5: 544 of those rows
+  were the injected `Spell Name:` line, each a chunk containing nothing else.)
 - `markdown-it-py` needs `MarkdownIt("commonmark").enable("table")` to validate GFM
   tables; the `gfm-like` preset fails with `ModuleNotFoundError: Linkify enabled but
   not installed`.
@@ -760,7 +762,7 @@ Specific traps hit while building this:
   and 2 level 1 rituals, so those lanes are fetched exhaustively from Chroma metadata
   (`db.get(where=...)`), not by vector search. Relying on similarity would silently
   omit legal options.
-- **One chunk is not one spell.** The index holds 1280 chunks for 544 spells, so a raw
+- **One chunk is not one spell.** The index holds 736 chunks for 544 spells, so a raw
   `k=30` returned roughly 13 distinct spells. Always dedupe by spell name.
 - **Do not put ineligible spells in the pool as "context".** Listing castable levelled
   spells for "synergy advice" caused a model to file Misty Step (level 2) and Daylight
@@ -771,7 +773,20 @@ Specific traps hit while building this:
   on numeric metadata. Hence `build_where()` unwrapping one clause, and `level` stored
   as an `int` rather than a tag string.
 - **Bump `INDEX_VERSION` when metadata changes.** Without the guard a stale index keeps
-  serving old fields and every metadata filter silently returns nothing.
+  serving old fields and every metadata filter silently returns nothing. It is also the only
+  guard that can retire a *row*: `sources_match` compares the shape of the metadata, so
+  removing 544 content-free rows was invisible to it and the version was the only thing that
+  could make an existing index rebuild. The cost is a rebuild and one fresh model call per
+  character (`db_version` joins the run cache key); runs are not deleted, only no longer
+  replayed. See the comment above `INDEX_VERSION`.
+- **An injected line above a page's own heading becomes its own chunk.** The spell name is
+  written into the body as `Spell Name: <name>` because six corpus files are named after a
+  different spell than they contain, and `MarkdownHeaderTextSplitter` splits on `#` - so the
+  line landed in a chunk containing nothing else. One per page: **544 of 4,674 rows**, every
+  one an embedded row that could return as a hit showing a name and no text. It is now folded
+  into the first real chunk. A count that looks wrong is the only symptom this class of defect
+  has, which is why `tests/test_indexing.py` asserts on the real corpus and not only on a
+  fixture.
 - **`Collection.get(include=["embeddings"])` returns a numpy array.** `not payload[...]`
   raises `ValueError: truth value of an array ... is ambiguous`, which an `except` will
   swallow — making the validator always report "invalid" and rebuild every launch. Use

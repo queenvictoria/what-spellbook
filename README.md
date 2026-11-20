@@ -417,16 +417,27 @@ dropped, because a filter must never widen the search.
 
 #### One collection, three kinds of text
 
-The index holds the spell corpus, the 22 magic items that share its directory, and the
-vendored 2024 SRD — 3651 chunks in total, of which 1274 are rulebook sections. They share a
-collection because they are searched together: a reader asking "what does cover do" wants
-the rule _and_ the spells that grant it.
+The index holds the spell corpus, the 22 magic items that share its directory, the
+vendored 2024 SRD, and the optional second rulebook — 4130 rows in total, of which 1274 are
+SRD sections and 956 are rules from the second source. They share a collection because they
+are searched together: a reader asking "what does cover do" wants the rule _and_ the spells
+that grant it.
 
-They are not interchangeable, so every row carries a `doc_type` of `spell`, `item` or `srd`,
-and every eligibility filter names the type it wants. Before `doc_type` existed the only
-marker was `is_spell`, which cannot distinguish "not a spell" from "not a spell _and_ not a
-pick" — an SRD row is `is_spell=False` exactly like a magic item, so a filter that asked only
-for "not a spell" would have handed the recommender the rulebook.
+Every row is a chunk, and one chunk is not one document: 544 spell pages are split into 736
+rows, because a long spell description needs more than one embedding. The name of each page
+is written into its own body text as well as its metadata, since six corpus files are named
+after a different spell than they contain.
+
+> `INDEX_VERSION` 5 removed 544 rows that carried no content at all — the injected
+> `Spell Name:` line sat above each page's own heading, so the heading splitter cut it into
+> a chunk of its own. The index was 4674 rows before that, and 544 of them could be returned
+> as a search hit showing a name and no text.
+
+They are not interchangeable, so every row carries a `doc_type` of `spell`, `item`, `srd` or
+`ionas-politis`, and every eligibility filter names the type it wants. Before `doc_type`
+existed the only marker was `is_spell`, which cannot distinguish "not a spell" from "not a
+spell _and_ not a pick" — an SRD row is `is_spell=False` exactly like a magic item, so a
+filter that asked only for "not a spell" would have handed the recommender the rulebook.
 
 `doc_type` and `spells_only` overlap, and the rule is that **an explicit `doc_type` wins
 outright**: `all` means the whole collection, and omitting the parameter leaves the choice to
