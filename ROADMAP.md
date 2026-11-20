@@ -19,7 +19,7 @@ one place.
 | CLI | `cmd.Cmd` REPL + `rich` | `/slash` + TAB commands, formatted output, progress |
 | API | FastAPI + uvicorn | Typed schemas, dependency injection, OpenAPI for free |
 | Front end | React + Vite + Tailwind v4 + shadcn-style components | Fast dev loop, typed API client |
-| Vector store | ChromaDB (embedded, single collection) | Local, no server; 544 spells, 22 items and the vendored SRD as chunks |
+| Vector store | ChromaDB (embedded, single collection) | Local, no server; 544 spells, 22 items, the vendored SRD and the optional second rulebook as 4130 rows |
 | Embeddings | Ollama (`nomic-embed-text`) | Local, free, no network dependency |
 | LLM | OpenRouter or Ollama via `LLM_MODEL` | Swappable; the model is configuration, not architecture |
 | Rules source | Vendored SRD 5.2.1 in `context/srd/` | Works offline, is diffable, is CC-BY-4.0 so it can be redistributed, and is indexed into the vector store |
