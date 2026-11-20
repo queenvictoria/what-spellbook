@@ -1,3 +1,5 @@
+import { apiBase } from '@/lib/browserSettings'
+
 import type {
   Answer,
   Book,
@@ -17,16 +19,12 @@ import type {
   SearchFacetsResponse,
   SearchParams,
   SearchResult,
+  Settings,
+  SettingsPatch,
   Spell,
   SrdDocument,
   SrdSection,
 } from './types'
-
-/**
- * The backend base URL. `VITE_API_BASE` lets a build point somewhere else; the default
- * is the dev server, which is what anyone running `npm run dev` wants.
- */
-const BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000'
 
 /**
  * An error carrying the status code, because the code is what callers act on:
@@ -49,16 +47,20 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  // Resolved per request rather than once at module load, so changing the API base in
+  // Settings takes effect on the next call instead of needing a reload. It is a
+  // localStorage read, which is synchronous and cheap.
+  const base = apiBase()
   let response: Response
   try {
-    response = await fetch(`${BASE}${path}`, {
+    response = await fetch(`${base}${path}`, {
       ...init,
       headers: { 'Content-Type': 'application/json', ...init?.headers },
     })
   } catch {
     // fetch only rejects on a transport failure, and "the backend is not running" is
     // the overwhelmingly likely cause in development. Saying so saves a debugging loop.
-    throw new ApiError(0, `Could not reach the API at ${BASE}. Is it running?`)
+    throw new ApiError(0, `Could not reach the API at ${base}. Is it running?`)
   }
 
   if (!response.ok) {
@@ -309,6 +311,24 @@ export const api = {
   /** Every class, school and level the index holds, with counts. */
   searchFacets: () => request<SearchFacetsResponse>('/api/search/facets'),
   run: (id: string) => request<RunBooks>(`/api/runs/${encodeURIComponent(id)}`),
+
+  /**
+   * The model settings, for the settings page.
+   *
+   * The API key comes back masked, never in full — it is the credential the *server* uses,
+   * so the response is not a way to read it out of the backend.
+   */
+  settings: () => request<Settings>('/api/settings'),
+
+  /**
+   * Save any of the settings, leaving the rest untouched.
+   *
+   * Only the supplied fields are written, so a form that changed one box does not have to
+   * resend the others. Saving rebuilds the backend's model client, so the next request uses
+   * the new value.
+   */
+  saveSettings: (patch: SettingsPatch) =>
+    request<Settings>('/api/settings', { method: 'PUT', body: JSON.stringify(patch) }),
 
   rate: (
     id: string,

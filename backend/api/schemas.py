@@ -14,7 +14,7 @@ instead of being spread across the route handlers.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class BookSchema(BaseModel):
@@ -323,6 +323,71 @@ class CharacterSchema(BaseModel):
     name: str
     sheet: dict
     text: str
+
+
+class SettingFieldSchema(BaseModel):
+    """One editable setting: its value, its label, and where the value came from.
+
+    ``source`` is not decoration. With three layers ``.env``, the settings file and the
+    launch environment - a value can be set and still not be the one in use, so the page has
+    to be able to say which layer won. Without it, a user whose save "did nothing" has no way
+    to find out that the process was started with the variable set.
+    """
+
+    key: str
+    label: str
+    help: str
+    # The effective value, or null when unset. A secret is a mask, never the value itself.
+    value: str | None = None
+    secret: bool = False
+    # launch | saved | env | default
+    source: str = "default"
+
+
+class SettingsSchema(BaseModel):
+    """Everything the settings page needs to render, in one response.
+
+    The *effective* model is sent alongside the fields because it is the answer to the
+    question the page actually asks - "what will my next recommendation use?" - and it cannot
+    be derived from the fields alone: a model name that contains a slash means OpenRouter only
+    when a key is present, and otherwise falls back to Ollama.
+    """
+
+    fields: list[SettingFieldSchema] = Field(default_factory=list)
+    reasoning_model: str | None = None
+    reasoning_backend: str | None = None
+    fast_model: str | None = None
+    fast_backend: str | None = None
+    # Where the file lives, so the page can tell the user what it edits and why it is gitignored.
+    settings_file: str = ""
+    # False when the file cannot be written, so the page can say so before the user types.
+    writable: bool = True
+
+
+class SettingsRequest(BaseModel):
+    """A partial update, keyed by wire name.
+
+    Every field is ``None`` by default, and ``None`` means *unchanged* - which is the whole
+    reason this is not a dict of ``str``. An empty string is a deliberate "clear this", and
+    collapsing the two would make it impossible to save one box without wiping the others.
+
+    Extra keys are **forbidden**, so a misspelled field is a 422 rather than a save that
+    reports success and changed nothing. That is the failure this page is most likely to
+    produce, and it is invisible from the response: ``{"reasoning_model": "x"}`` and
+    ``{"reasoning_modle": "x"}`` both answer 200 without help, but only one of them did
+    anything.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reasoning_model: str | None = None
+    fast_model: str | None = None
+    api_key: str | None = None
+    ollama_model: str | None = None
+
+    def changed(self) -> dict[str, str]:
+        """Only the fields the caller actually sent, so an absent box is left alone."""
+        return self.model_dump(exclude_unset=True)
 
 
 class RunBooksSchema(BaseModel):

@@ -843,3 +843,49 @@ internal reasoning and return an empty response, so the CLI reports an empty
 completion as a failure rather than printing nothing. For local work a slightly
 larger non-thinking model gives more reliable structured output
 (`LLM_MODEL=qwen2.5-coder:7b-instruct`).
+
+### Settings, and the three layers that set these values
+
+The **Settings** tab edits the four names above — the reasoning model, the fast model, the
+OpenRouter key and the local Ollama name — without an editor. They are saved to
+`.settings.json` at the repo root, which is gitignored because it can hold the API key.
+
+The values live on the _server_, not in the browser, and that is not a preference:
+
+- The model is chosen when the backend builds a client, so a copy in `localStorage` would be
+  decorative — the page could save and show it while the next recommendation used `.env`.
+- The API key is the credential the **server** uses to call the provider. There is no
+  authentication in front of this API, so a browser copy would be readable by anything on the
+  page and would be sent back on every request. `GET /api/settings` returns it **masked**,
+  never in full.
+
+Three layers can set the same name, and the order is what makes a saved value trustworthy:
+
+| Layer | Wins when | Example |
+| --- | --- | --- |
+| The launch environment | always | `LLM_MODEL=qwen3.5:4b python -m backend` |
+| `.settings.json` | nothing at launch set it | saving a model on the Settings tab |
+| `.env` | nothing above set it | the checkout's default |
+
+A one-off on the command line therefore beats the page, which is the point: an override that
+a saved file silently defeats is worse than no override. Because a save can succeed and still
+not be the value in use, the page labels each field with **where its value came from**
+(`from the shell`, `saved here`, `from .env`, `default`) rather than leaving that to be
+guessed at.
+
+```bash
+curl -s localhost:8000/api/settings                       # values, each with its source
+curl -sX PUT localhost:8000/api/settings \
+  -H 'Content-Type: application/json' -d '{"reasoning_model":"qwen3.5:4b"}'
+```
+
+Saving drops the backend's cached model client, so the next request uses the new value. Only
+the fields present in the request are written, so changing one box cannot clear the others;
+an empty string is a deliberate "forget this".
+
+The one setting the browser _does_ own is the **API address**. It has to be known before a
+request can be made, so it cannot be fetched from the API it points at — it is stored in
+`localStorage` and read per request, with `VITE_API_BASE` as the build-time default. The
+card on the Settings tab is rendered even when the settings request fails, because a wrong
+address is the usual reason it fails and that card is the only place to repair it.
+

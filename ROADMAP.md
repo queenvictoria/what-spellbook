@@ -103,10 +103,17 @@ one place.
       the discretion of the user. eg DnD-Character-Sheet-Helper. Or load your own
       markdown files and homebrew content
 - [ ] Add a homebrew connector
-- [ ] Create user settings page with localstorage for API keys and models
-      — nothing reads `localStorage` today; the model and key come from `.env` via
-      `config.select_model()` / `select_fast_model()`, and the API base is a build-time
-      `VITE_API_BASE`. A settings page has to reach the backend, not just the browser.
+- [x] Create user settings page with localstorage for API keys and models
+      — the page is `frontend/app/screens/SettingsScreen.tsx` (Settings tab). The models and
+      the key are **not** in `localStorage` and cannot be: `llm._build()` reads them when it
+      constructs a client, and the key is the credential the *server* uses, so a browser copy
+      would be both decorative and readable by anything on the page. They are saved to
+      `.settings.json` at the repo root (gitignored, user data like `.env`) and layered
+      between `.env` and the launch environment by `config.env_view()` — a one-off
+      `LLM_MODEL=…` still wins, and `GET /api/settings` returns the key **masked**. Each field
+      reports which layer supplied its value, because a save can succeed and still not be the
+      value in use. `localStorage` holds the one setting that has to be known before a request
+      exists: the API base address.
 - [ ] Add image upload for a character
 - [ ] Add character importer and switcher
       — `GET /api/characters` and `service_for(name)` already exist and the UI never calls
@@ -194,11 +201,11 @@ Detailed notes are in [ARCHITECTURE.md](./ARCHITECTURE.md) and [AGENTS.md](./AGE
 
 - CLI REPL with `/slash` + TAB completion, formatted markdown, and a live progress line.
 - FastAPI backend with typed schemas and explicit error mapping.
-- React UI: scenario, history, character and rules screens.
+- React UI: scenario, history, character, rules and settings screens.
 
 ### Tests
 
-- 657 pytest tests, including every API endpoint and error mapping.
+- 1319 pytest tests, including every API endpoint and error mapping.
 
 ## Next
 

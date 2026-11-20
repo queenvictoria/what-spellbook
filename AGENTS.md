@@ -1938,6 +1938,85 @@ Measured live: the first `Booming Blade` request took 1.9s and wrote one entry; 
 three took 0.01s each. A level 11 sheet and a second character each missed and wrote their
 own entry, which is the key working.
 
+### A settings page must reach the backend, not the browser
+
+The roadmap said "user settings page with localstorage for API keys and models", and the
+localstorage half is wrong - not as a preference, but because two of those settings cannot
+work from a browser at all:
+
+- **The model is chosen on the server.** `llm._build()` resolves `(backend, model)` and
+  constructs a client when a `SpellbookService` is made. A browser copy would be decorative:
+  the page could save it, show it back and report success, and the next recommendation would
+  still use whatever `.env` held. That is the worst shape a settings page can have, because
+  everything on screen says it worked.
+- **The key is the server's credential.** There is no authentication in front of the API, so
+  anything the browser holds is readable by any script on the page and is sent back on every
+  request. `GET /api/settings` returns it **masked** (`settings.mask`), never in full.
+
+So the page is a form over `.settings.json` at the repo root - gitignored, because it can
+hold a key - and the one setting that *is* the browser's is the API base address, which has
+to be known before a request can be made and so cannot be fetched from the server it points
+at. `frontend/app/lib/browserSettings.ts` owns that one and nothing else.
+
+**Three layers now set the same name, and the order is the whole design.** `config.env_view()`
+merges them, and `config._LAUNCH_ENV` is the trick that makes it possible: `load_dotenv` does
+not overwrite an existing variable, so once `.env` is merged into `os.environ` a shell
+variable and a file variable are indistinguishable. Snapshotting `os.environ` *before* the
+merge keeps the two apart:
+
+| Wins | Source | Why |
+| --- | --- | --- |
+| 1 | the launch environment | `LLM_MODEL=… python -m backend` is a statement about this run |
+| 2 | `.settings.json` | the user's saved choice, which is what the page edits |
+| 3 | `.env` | the hand-edited default |
+
+A saved file that silently defeats a documented one-off override is worse than no override,
+which is why layer 1 beats layer 2 rather than the other way round.
+
+Five things were learned building it, and each changed the design:
+
+- **A save can succeed and still not be the value in use.** With three layers that is not an
+  edge case, it is the expected outcome whenever the server was started with the variable set
+  - and nothing in the merged value reveals it. `config.setting_source()` names the winning
+  layer (`launch` / `saved` / `env` / `default`) and the page labels every field with it.
+  Without that, "I saved it and nothing changed" has no visible explanation.
+- **The service cache has to be dropped on save, or the page lies.** `service_for` memoises a
+  service per character, and a service holds the client it was built with - so a saved model
+  would be reported back by `GET /api/settings` (which re-reads the file) while the next
+  recommendation used the old client. Rebuilding is cheap because the vector index is shared;
+  rebuilding only the model client would be marginally cheaper and would be wrong the moment
+  a second setting joined the cache key.
+- **An unknown field must be rejected, not ignored.** `SettingsRequest` sets
+  `extra="forbid"`, because a misspelled key otherwise answers 200 and changes nothing -
+  invisible from the response, and the likeliest mistake this page can produce.
+- **`None` and `""` are different statements.** An absent field is *unchanged* so a form that
+  edited one box cannot wipe the others; an empty string is a deliberate "forget this". That
+  is why the request model is typed fields rather than a dict, and why `update` merges rather
+  than replaces.
+- **A secret field cannot be diffed against the value that was sent.** The first version
+  compared each box to the fetched value and skipped secrets - which made the key
+  **unwritable**: the Save button stayed disabled however much was typed, with nothing on
+  screen to say why. Comparing a typed key to a mask would call every save a change, and
+  including an untouched box would write `""` over the stored key. The answer is an explicit
+  *touched* set: untouched means absent, touched means write exactly what is in the box, and
+  touch-then-empty is a deliberate clear. After a save the box is emptied and the touched set
+  reset, because the response carries only a mask and putting that in the field would make the
+  next save write the mask as the key.
+
+Two smaller ones, both about a page that edits configuration having to be honest:
+
+- **A rejected save must not half-apply.** `update` validates every field before writing
+  anything, so a bad model name cannot leave a good key already stored.
+- **A failed fetch must still offer the fix.** The API-address card renders even when
+  `GET /api/settings` fails, because a wrong address is the commonest reason it fails and that
+  card is the only place to repair it - a screen that returned just the error would be
+  unreachable exactly when it is needed. `tests/test_settings.py` pins this at the source
+  level, since the symptom is a blank screen rather than a wrong value.
+
+The file is written to a sibling and `os.replace`d, so the reader - `config.env_view` while a
+client is being built - never sees a torn file, and `load()` never raises: a hand-edited typo
+must leave the `.env` defaults in force rather than stop the app.
+
 ### Choosing the model: one setting, inferred backend
 
 `LLM_MODEL` picks the reasoning model for both backends. Which backend it means is

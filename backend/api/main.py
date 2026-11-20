@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Query
@@ -53,6 +54,7 @@ from backend.libs import (
     rules,
     search,
     service,
+    settings as settings_store,
     spellstats,
     spells,
     srd,
@@ -222,6 +224,80 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         """Sheet names available on disk, for a character picker."""
         directory = config.resolve(config.CHARACTERS_DIR)
         return sorted(p.stem for p in directory.glob("*.yaml"))
+
+    # --- settings ---
+
+    def settings_payload() -> schemas.SettingsSchema:
+        """The editable settings, each with its value, label and effective source."""
+        saved = settings_store.load()
+        fields = []
+        for setting in settings_store.EDITABLE:
+            value = config._clean(config.env_view().get(setting.env)) or None
+            fields.append(schemas.SettingFieldSchema(
+                key=setting.key,
+                label=setting.label,
+                help=setting.help,
+                # A secret is masked, always - including when the value came from .env, so the
+                # response is never a way to read the key back out of the server.
+                value=settings_store.mask(value) if setting.secret else value,
+                secret=setting.secret,
+                source=config.setting_source(setting.env),
+            ))
+        reasoning_backend, reasoning_model = config.select_model()
+        fast_backend, fast_model = config.select_fast_model()
+        return schemas.SettingsSchema(
+            fields=fields,
+            reasoning_model=reasoning_model,
+            reasoning_backend=reasoning_backend,
+            fast_model=fast_model,
+            fast_backend=fast_backend,
+            settings_file=str(settings_store.path()),
+            writable=_settings_writable(),
+        )
+
+    @app.get("/api/settings", response_model=schemas.SettingsSchema, tags=["settings"])
+    def get_settings():
+        """The model settings, for the settings page.
+
+        Values are returned rather than only echoed back on a write, because the page has to
+        show what is *currently* in use - which after a hand-edit of ``.env``. A saved key is
+        masked; see ``settings.mask``.
+        """
+        return settings_payload()
+
+    @app.put("/api/settings", response_model=schemas.SettingsSchema, tags=["settings"])
+    def put_settings(request: schemas.SettingsRequest):
+        """Save any of the supplied settings, leaving the rest untouched.
+
+        Only the fields present in the body are written, so a page that changed one box does
+        not need to resend the others - and cannot accidentally clear them.
+
+        **The service cache is dropped on a successful save.** A service holds the model
+        client it was built with, so keeping them would mean the page saved a new model and
+        the next recommendation used the old one - the page would look broken while doing
+        exactly what it said. Services are rebuilt on the next request, which is cheap (the
+        vector index is shared); rebuilding only the model client would be marginally
+        cheaper, and would be wrong the moment a second setting joined the cache key.
+        """
+        try:
+            settings_store.update(request.changed())
+        except settings_store.SettingsError as e:
+            raise _error(400, str(e))
+        except settings_store.SettingsUnavailable as e:
+            raise _error(500, str(e))
+
+        state["services"].clear()
+        return settings_payload()
+
+    def _settings_writable() -> bool:
+        """Whether the settings file can be written, without writing one.
+
+        Checked with the file's *directory* rather than the file, because a fresh install has
+        no file yet and the useful question is "could a save succeed" - a read-only checkout
+        is the case worth reporting before the user has typed anything.
+        """
+        directory = settings_store.path().parent
+        return os.access(directory, os.W_OK)
 
     # --- generation ---
 

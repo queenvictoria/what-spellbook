@@ -6,8 +6,9 @@ import { HistoryScreen } from "@/screens/HistoryScreen"
 import { RulesScreen } from "@/screens/RulesScreen"
 import { ScenarioScreen } from "@/screens/ScenarioScreen"
 import { SearchScreen } from "@/screens/SearchScreen"
+import { SettingsScreen } from "@/screens/SettingsScreen"
 import { cn } from "@/lib/utils"
-import { BookOpen, Clock, GraphStarIcon, Waypoints, User } from "lucide-react"
+import { BookOpen, Clock, GraphStarIcon, Settings, Waypoints, User } from "lucide-react"
 
 const NAV = [
   { to: "/scenario", label: "Scenario", icon: Waypoints },
@@ -61,6 +62,24 @@ export function App() {
               <GraphStarIcon className="ml-1 inline h-4 w-4 text-parchment/60 transition-colors group-hover:text-parchment" />
               <span className="hidden sm:inline">Search</span>
             </NavLink>
+            {/* Settings sits after Search, which is pushed right by `ml-auto`, so the two
+                group together at the end rather than splitting the main nav. */}
+            <NavLink
+              key="settings"
+              to="/settings"
+              className={({ isActive }) =>
+                cn(
+                  "rounded-md px-3 py-1.5 text-sm transition-colors",
+                  "flex gap-1 items-center justify-center",
+                  isActive
+                    ? "bg-void-800 text-parchment"
+                    : "text-parchment/60 hover:text-parchment",
+                )
+              }
+            >
+              <Settings className="h-4 w-4" />
+              <span className="hidden sm:inline ml-2">Settings</span>
+            </NavLink>
           </nav>
         </div>
       </header>
@@ -78,6 +97,7 @@ export function App() {
           <Route path="/character" element={<CharacterScreen />} />
           <Route path="/rules" element={<RulesScreen />} />
           <Route path="/search" element={<SearchScreen />} />
+          <Route path="/settings" element={<SettingsScreen />} />
           <Route path="*" element={<Navigate to="/scenario" replace />} />
         </Routes>
       </main>

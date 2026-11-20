@@ -379,6 +379,56 @@ export interface Health {
   cache_dir: string
 }
 
+/** Where an effective setting came from, so the page can name the layer that won. */
+export type SettingSource = 'launch' | 'saved' | 'env' | 'default'
+
+/**
+ * One editable setting.
+ *
+ * `value` is the *effective* value, not what is saved: with three layers — `.env`, the saved
+ * file and the launch environment — a value can be stored and still not be the one in use.
+ * `source` is what makes that visible, because without it a save that "did nothing" has no
+ * explanation on screen. A `secret` value is a mask, never the key itself.
+ */
+export interface SettingField {
+  key: string
+  label: string
+  help: string
+  value: string | null
+  secret: boolean
+  source: SettingSource
+}
+
+/**
+ * Everything the settings page renders, in one response.
+ *
+ * The resolved model and backend are sent alongside the fields because they answer the
+ * question the page is really asked — "what will my next run use?" — and cannot be derived
+ * from the fields: a name containing a slash means OpenRouter only while a key is present,
+ * and otherwise falls back to Ollama.
+ */
+export interface Settings {
+  fields: SettingField[]
+  reasoning_model: string | null
+  reasoning_backend: string | null
+  fast_model: string | null
+  fast_backend: string | null
+  settings_file: string
+  writable: boolean
+}
+
+/**
+ * A partial update: only the fields present are written, so changing one box cannot clear
+ * the others. An empty string is a deliberate "forget this", which is why an omitted field
+ * is `undefined` and not `''`.
+ */
+export interface SettingsPatch {
+  reasoning_model?: string
+  fast_model?: string
+  api_key?: string
+  ollama_model?: string
+}
+
 /**
  * One third-party source and the attribution it requires.
  *

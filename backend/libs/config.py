@@ -9,6 +9,7 @@ working directory, so the package behaves the same however it is launched.
 from __future__ import annotations
 
 import logging
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -18,7 +19,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 # Pull OPENROUTER_API_KEY (and friends) out of the untracked .env file at the repo root.
 ENV_FILE = ROOT / ".env"
+
+# Snapshot the *launching* environment before .env is merged into it, so the two can be
+# told apart afterwards. ``load_dotenv`` does not overwrite an existing variable, so after
+# the merge a variable set in the shell and one read from .env look identical in
+# ``os.environ`` - and they need different precedence. See ``env_view``.
+_LAUNCH_ENV = dict(os.environ)
+
 load_dotenv(ENV_FILE)
+
+# Settings saved from the Settings page: a small JSON file holding the same four values that
+# used to be edited in .env by hand. Beside .env rather than inside it, because this file is
+# rewritten by the API while .env is the hand-edited default, and it is gitignored for the
+# same reason .env is - a saved API key is user data, not configuration to commit.
+SETTINGS_FILE = ".settings.json"
+SETTINGS_FILE_PATH = ROOT / SETTINGS_FILE
 
 # Set up basic configuration for logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -102,8 +117,6 @@ def select_port(name: str, default: int, env=None) -> int:
     outside 1-65535 cannot bind, and failing at bind time with a clear message beats
     failing here with a stack trace.
     """
-    import os
-
     env = os.environ if env is None else env
     raw = _clean(env.get(name))
     if not raw:
@@ -129,8 +142,6 @@ def dev_origins(env=None) -> list[str]:
     how it was opened, and those are distinct origins to a browser, so both spellings of
     the configured port are allowed. ``CORS_ORIGINS`` adds anything else.
     """
-    import os
-
     env = os.environ if env is None else env
     port = select_port("FRONTEND_PORT", FRONTEND_PORT, env)
 
@@ -155,6 +166,68 @@ def _clean(value) -> str:
     return (value or "").strip().strip('"').strip("'").strip()
 
 
+def env_view(base=None) -> dict[str, str]:
+    """The environment the model settings are read from: launch env, then file, then .env.
+
+    Three sources, and the order is the whole design. The settings page exists so the usual
+    way to change a model is a form rather than an editor, but a saved value must not be
+    able to override a deliberate one-off::
+
+        LLM_MODEL=qwen3.5:4b python -m backend
+
+    is a statement about *this* run, and the command line is checked before the file for the
+    same reason ``os.environ`` already wins over ``.env``. So the precedence is:
+
+    1. **An environment variable set where the process was launched.** Deliberate and
+       per-invocation; beats everything, because a one-off override that a saved file
+       silently defeats is worse than no override at all.
+    2. **The settings file.** The user's saved choice, which is what the page edits.
+    3. **``.env``.** The hand-edited default, and where these values lived before the page.
+
+    Only the editable names are consulted from the settings file, so a stray key in it can
+    never become configuration.
+
+    ``base`` replaces the launch-environment source, which is what a test needs to exercise
+    precedence without touching the real environment. The settings file is still read, so a
+    test can save a value and then show that ``base`` wins over it.
+    """
+    # Imported here rather than at module scope because ``settings`` imports this module back
+    # for the file path, and a cycle at import time would break both.
+    from . import settings as settings_store
+
+    launch = _LAUNCH_ENV if base is None else base
+    saved = settings_store.load()
+
+    merged = dict(os.environ)      # .env, already merged in by load_dotenv
+    merged.update(saved)           # the settings file beats .env
+    for name in settings_store.BY_ENV:
+        value = launch.get(name)
+        if value is not None:
+            merged[name] = value   # a launched variable beats the file
+    return merged
+
+
+def setting_source(name: str, base=None) -> str:
+    """Where ``name``'s effective value comes from: ``launch``, ``saved``, ``env`` or ``default``.
+
+    The precedence in :func:`env_view` is invisible from the value alone: a model saved on
+    the settings page and the same model set in ``.env`` look identical once merged, so a
+    user whose edit appears to do nothing has no way to find out why. Naming the winner is
+    the difference between "the page is broken" and "this run overrode it on the command
+    line" - and it is the page's job to say which, because only the server knows.
+    """
+    from . import settings as settings_store
+
+    launch = _LAUNCH_ENV if base is None else base
+    if _clean(launch.get(name)):
+        return "launch"
+    if name in settings_store.load():
+        return "saved"
+    if _clean(os.environ.get(name)):
+        return "env"
+    return "default"
+
+
 def select_book_count(env=None) -> int:
     """Return how many books to ask the model for, from ``BOOKS``.
 
@@ -162,8 +235,6 @@ def select_book_count(env=None) -> int:
     failing a whole run over it would be worse than using a sane number. The clamp is
     reported so a silently ignored setting cannot look like it worked.
     """
-    import os
-
     env = os.environ if env is None else env
     raw = _clean(env.get("BOOKS"))
     if not raw:
@@ -206,9 +277,7 @@ def select_model(env=None) -> tuple[str, str]:
     is nothing to fall back to but Ollama, so that is reported rather than silently
     swapping models.
     """
-    import os
-
-    env = os.environ if env is None else env
+    env = env_view() if env is None else env
 
     requested = _clean(env.get("LLM_MODEL"))
     api_key = _clean(env.get("OPENROUTER_API_KEY"))
@@ -238,11 +307,9 @@ def select_fast_model(env=None) -> tuple[str, str]:
 
     Unset means "no separate fast model", and the main model is used instead - so the
     setting is optional and a project without it behaves exactly as before. Routing is
-    the same name-based inference ``select_model`` uses, and for the same reason.
+    the     same name-based inference ``select_model`` uses, and for the same reason.
     """
-    import os
-
-    env = os.environ if env is None else env
+    env = env_view() if env is None else env
 
     requested = _clean(env.get("LLM_MODEL_FAST"))
     if not requested:
