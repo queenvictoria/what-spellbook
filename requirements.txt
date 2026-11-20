@@ -5,9 +5,7 @@ langchain-classic==1.0.8
 langchain-community==0.4.2
 langchain-core==1.7.0
 langchain-ollama==1.1.0
-langchain-openrouter==*
 langchain-openai==1.7.2
-langchain-protocol==0.0.20
 langchain-text-splitters==1.1.3
 langgraph==1.2.17
 langgraph-checkpoint==4.3.0
@@ -16,9 +14,9 @@ langgraph-sdk==0.4.9
 langsmith==0.14.12
 markdown-it-py==4.2.0
 ollama==0.6.3
-python-dotenv==*
+python-dotenv==1.2.4
 PyYAML==6.0.3
-watchdog==*
+watchdog==7.1.0
 rich==15.0.0
 
 # API. fastapi brings starlette; uvicorn was already present for the dev server.
