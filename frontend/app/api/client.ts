@@ -1,9 +1,12 @@
-import { apiBase } from '@/lib/browserSettings'
+import { apiBase, readCharacter } from '@/lib/browserSettings'
 
 import type {
   Answer,
   Book,
   Character,
+  CharacterEntry,
+  CharacterImport,
+  CharacterParse,
   ClassContext,
   ClassContextFile,
   Conversation,
@@ -53,9 +56,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const base = apiBase()
   let response: Response
   try {
+    const headers = new Headers(init?.headers)
+    if (!(typeof FormData !== 'undefined' && init?.body instanceof FormData)) {
+      headers.set('Content-Type', 'application/json')
+    }
     response = await fetch(`${base}${path}`, {
       ...init,
-      headers: { 'Content-Type': 'application/json', ...init?.headers },
+      headers,
     })
   } catch {
     // fetch only rejects on a transport failure, and "the backend is not running" is
@@ -110,37 +117,77 @@ export const api = {
    */
   licensing: () => request<LicenceSource[]>('/api/licensing'),
 
-  characters: () => request<string[]>('/api/characters'),
+  characters: () => request<CharacterEntry[]>('/api/characters'),
 
   character: (name?: string) =>
-    request<Character>(`/api/character${query({ name })}`),
+    request<Character>(`/api/character${query({
+      name: name ?? readCharacter() ?? undefined,
+    })}`),
+
+  importCharacter: (sheet: CharacterImport) =>
+    request<CharacterEntry>('/api/characters', {
+      method: 'POST',
+      body: JSON.stringify(sheet),
+    }),
+
+  parseCharacterPdf: (file: File) => {
+    const body = new FormData()
+    body.append('file', file)
+    return request<CharacterParse>('/api/characters/parse-pdf', {
+      method: 'POST',
+      body,
+    })
+  },
 
   askCharacter: (question: string, character?: string, threadId?: string) =>
     request<Answer>(
-      `/api/character/ask${query({ question, character, thread_id: threadId })}`,
+      `/api/character/ask${query({
+        question,
+        character: character ?? readCharacter() ?? undefined,
+        thread_id: threadId,
+      })}`,
     ),
 
   sheetKeys: () => request<string[]>('/api/sheet-keys'),
 
   /** Generate, or replay the stored run for the same scenario, character and book count. */
   scenario: (scenario: string, character?: string) =>
-    request<Generation>('/api/scenario', {
+    request<Generation>(`/api/scenario${query({
+      character: character ?? readCharacter() ?? undefined,
+    })}`, {
       method: 'POST',
-      body: JSON.stringify({ scenario, character }),
+      body: JSON.stringify({
+        scenario,
+        character: character ?? readCharacter() ?? undefined,
+      }),
     }),
 
   /** The cached run for a scenario, or null. A miss is normal, not an error. */
   cached: (scenario: string, character?: string) =>
-    request<Generation | null>(`/api/cached${query({ scenario, character })}`),
+    request<Generation | null>(`/api/cached${query({
+      scenario,
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   ask: (scenario: string, question: string, character?: string, threadId?: string) =>
-    request<Answer>(`/api/ask${query({ scenario, character })}`, {
+    request<Answer>(`/api/ask${query({
+      scenario,
+      character: character ?? readCharacter() ?? undefined,
+    })}`, {
       method: 'POST',
-      body: JSON.stringify({ question, character, thread_id: threadId }),
+      body: JSON.stringify({
+        question,
+        character: character ?? readCharacter() ?? undefined,
+        thread_id: threadId,
+      }),
     }),
 
-  rules: (question: string, threadId?: string) =>
-    request<Answer>(`/api/rules${query({ question, thread_id: threadId })}`),
+  rules: (question: string, threadId?: string, character?: string) =>
+    request<Answer>(`/api/rules${query({
+      question,
+      thread_id: threadId,
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   /**
    * Explain a phrase selected from a book's prose.
@@ -157,10 +204,13 @@ export const api = {
     context?: string,
     documents: string[] = [],
     threadId?: string,
+    character?: string,
   ) => {
     const params = new URLSearchParams({ selected_text: selectedText })
     if (context) params.set('context', context)
     if (threadId) params.set('thread_id', threadId)
+    const selectedCharacter = character ?? readCharacter()
+    if (selectedCharacter) params.set('character', selectedCharacter)
     // Repeated, not comma-joined: the backend declares it as a list query parameter, and a
     // joined value would resolve as one document named "Thorn Whip, Repelling Blast".
     for (const document of documents) params.append('document', document)
@@ -175,7 +225,10 @@ export const api = {
    * and the server's configured character is used.
    */
   spell: (name: string, character?: string) =>
-    request<Spell>(`/api/spell${query({ name, character })}`),
+    request<Spell>(`/api/spell${query({
+      name,
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   /**
    * One Eldritch Invocation's rules.
@@ -184,7 +237,10 @@ export const api = {
    * 2024 SRD does not publish them - the text comes from our own class context.
    */
   invocation: (name: string, character?: string) =>
-    request<Spell>(`/api/invocation${query({ name, character })}`),
+    request<Spell>(`/api/invocation${query({
+      name,
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   /**
    * Every name the prose may mention, used to decide which mentions to link.
@@ -259,7 +315,9 @@ export const api = {
     request<IonasSection>(`/api/ionas/${encodeURIComponent(name)}`),
 
   history: (character?: string) =>
-    request<RunSummary[]>(`/api/history${query({ character })}`),
+    request<RunSummary[]>(`/api/history${query({
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   /**
    * Every stored ask/chat conversation, newest first.
@@ -270,13 +328,18 @@ export const api = {
    */
   conversations: (kind?: ConversationKind, character?: string) =>
     request<ConversationSummary[]>(
-      `/api/conversations${query({ kind, character })}`,
+      `/api/conversations${query({
+        kind,
+        character: character ?? readCharacter() ?? undefined,
+      })}`,
     ),
 
   /** One stored conversation, every turn in order. */
   conversation: (reference: string, character?: string) =>
     request<Conversation>(
-      `/api/conversations/${encodeURIComponent(reference)}${query({ character })}`,
+      `/api/conversations/${encodeURIComponent(reference)}${query({
+        character: character ?? readCharacter() ?? undefined,
+      })}`,
     ),
 
   /**
@@ -310,7 +373,10 @@ export const api = {
 
   /** Every class, school and level the index holds, with counts. */
   searchFacets: () => request<SearchFacetsResponse>('/api/search/facets'),
-  run: (id: string) => request<RunBooks>(`/api/runs/${encodeURIComponent(id)}`),
+  run: (id: string, character?: string) =>
+    request<RunBooks>(`/api/runs/${encodeURIComponent(id)}${query({
+      character: character ?? readCharacter() ?? undefined,
+    })}`),
 
   /**
    * The model settings, for the settings page.
@@ -334,7 +400,9 @@ export const api = {
     id: string,
     body: { score: number; book?: string; notes?: string; outcome?: string },
   ) =>
-    request<Book[]>(`/api/runs/${encodeURIComponent(id)}/rate`, {
+    request<Book[]>(`/api/runs/${encodeURIComponent(id)}/rate${query({
+      character: readCharacter() ?? undefined,
+    })}`, {
       method: 'POST',
       body: JSON.stringify(body),
     }),

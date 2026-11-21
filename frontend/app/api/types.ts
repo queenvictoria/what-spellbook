@@ -366,9 +366,35 @@ export interface IonasCrumb {
 }
 
 export interface Character {
+  /** The sheet's own `Name`, for display. Usually the stem in different case (`Lois`/`lois`). */
   name: string
+  /**
+   * The filename stem, which is what `?name=` accepts and what a picker selects by.
+   *
+   * Its own field because matching a remembered choice against `name` would fail the moment a
+   * sheet's title and its filename disagreed, and the symptom would be a picker that silently
+   * selects nothing.
+   */
+  id: string
   sheet: Record<string, unknown>
   text: string
+}
+
+/** One sheet on disk, as the character picker needs it. */
+export interface CharacterEntry {
+  id: string
+  name: string
+}
+
+export interface CharacterImport {
+  filename: string
+  content: string
+  overwrite?: boolean
+}
+
+export interface CharacterParse {
+  suggested_filename: string
+  content: string
 }
 
 export interface Health {

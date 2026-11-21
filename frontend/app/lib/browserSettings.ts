@@ -21,6 +21,7 @@ export const BUILD_API_BASE = import.meta.env.VITE_API_BASE ?? 'http://localhost
 
 const API_BASE_KEY = 'what-loadout.apiBase'
 const MODELS_KEY = 'what-loadout.models'
+const CHARACTER_KEY = 'what-loadout.character'
 
 /** The model settings a user has stored in this browser. */
 export interface StoredModelSettings {
@@ -86,6 +87,28 @@ export function hasApiBaseOverride(): boolean {
 /** Save an override, or clear it by passing null/blank. Returns whether it was stored. */
 export function writeApiBase(value: string | null): boolean {
   return write(API_BASE_KEY, value)
+}
+
+/**
+ * The character last chosen on the Character tab, or null when none has been.
+ *
+ * Stored here rather than on the server for the same reason as everything else in this file:
+ * which sheet a reader is looking at is a property of *them*, not of the process. A second
+ * browser should be free to look at a different character without changing the first one's
+ * screen, and a server-side value would make the choice global.
+ *
+ * `null` is a real answer and is deliberately distinct from "the server's default": it means
+ * this browser has no opinion, so the server's `CHARACTER` / `--character` decides. That is
+ * what keeps a fresh checkout working with no interaction.
+ */
+export function readCharacter(): string | null {
+  const saved = read(CHARACTER_KEY)
+  return saved ? saved.trim() : null
+}
+
+/** Remember the chosen character, or forget it by passing null/blank. */
+export function writeCharacter(value: string | null): boolean {
+  return write(CHARACTER_KEY, value)
 }
 
 /** The model settings stored in this browser, or an empty object when none are. */

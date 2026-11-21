@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.main import create_app
-from backend.libs import cache, characters, llm, rules
+from backend.libs import cache, character_import, characters, config, llm, rules
 
 from conftest import BOOKS_ANSWER, FakeDB, FakeLLM
 
@@ -108,6 +108,115 @@ def test_character_returns_the_sheet(api):
     assert body["name"] == "Lois"
     assert body["sheet"]["Class"] == "Warlock"
     assert "Class: Warlock" in body["text"]
+    assert body["id"] == "lois"
+
+
+def test_character_import_writes_and_lists_a_sheet(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CHARACTERS_DIR", str(tmp_path / "characters"))
+    client = TestClient(create_app(cache_dir=tmp_path / "cache"))
+
+    response = client.post("/api/characters", json={
+        "filename": "mira.yaml",
+        "content": "Name: Mira\nClass: Wizard\nCurrent Level: 3\n",
+    })
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "mira", "name": "Mira"}
+    assert (tmp_path / "characters" / "mira.yaml").read_text(encoding="utf-8").startswith(
+        "Name: Mira"
+    )
+    assert client.get("/api/characters").json() == [{"id": "mira", "name": "Mira"}]
+
+
+def test_character_import_refuses_to_replace_without_opt_in(tmp_path, monkeypatch):
+    directory = tmp_path / "characters"
+    directory.mkdir()
+    (directory / "mira.yaml").write_text("Name: Mira\nClass: Wizard\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CHARACTERS_DIR", str(directory))
+    client = TestClient(create_app(cache_dir=tmp_path / "cache"))
+
+    response = client.post("/api/characters", json={
+        "filename": "mira.yaml",
+        "content": "Name: Mira\nClass: Cleric\n",
+    })
+
+    assert response.status_code == 409
+    assert "already exists" in response.json()["detail"]
+    assert "Wizard" in (directory / "mira.yaml").read_text(encoding="utf-8")
+
+
+def test_character_import_can_replace_when_explicitly_requested(tmp_path, monkeypatch):
+    directory = tmp_path / "characters"
+    directory.mkdir()
+    (directory / "mira.yaml").write_text("Name: Mira\nClass: Wizard\n", encoding="utf-8")
+    monkeypatch.setattr(config, "CHARACTERS_DIR", str(directory))
+    client = TestClient(create_app(cache_dir=tmp_path / "cache"))
+
+    response = client.post("/api/characters", json={
+        "filename": "mira.yaml",
+        "content": "Name: Mira Updated\nClass: Cleric\n",
+        "overwrite": True,
+    })
+
+    assert response.status_code == 201
+    assert response.json() == {"id": "mira", "name": "Mira Updated"}
+    assert "Cleric" in (directory / "mira.yaml").read_text(encoding="utf-8")
+
+
+def test_character_import_rejects_invalid_yaml_and_path_names(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "CHARACTERS_DIR", str(tmp_path / "characters"))
+    client = TestClient(create_app(cache_dir=tmp_path / "cache"))
+
+    malformed = client.post("/api/characters", json={
+        "filename": "bad.yaml",
+        "content": "Class: [unclosed\n",
+    })
+    traversal = client.post("/api/characters", json={
+        "filename": "../outside.yaml",
+        "content": "Name: Outside\n",
+    })
+
+    assert malformed.status_code == 422
+    assert "Invalid YAML" in malformed.json()["detail"]
+    assert traversal.status_code == 422
+    assert not (tmp_path / "outside.yaml").exists()
+
+
+def test_pdf_character_parse_returns_an_unsaved_review_preview(tmp_path, monkeypatch):
+    backend = FakeServiceLLM()
+
+    def parsed(content, *, filename, model):
+        assert content == b"%PDF-1.7 sample"
+        assert filename == "lois.pdf"
+        assert model is backend
+        return "lois", {"Name": "Lois"}, "Name: Lois\n"
+
+    app = create_app(vector_db=FakeDB(), backend=backend, character_name="lois",
+                     cache_dir=tmp_path / "cache")
+    client = TestClient(app)
+    monkeypatch.setattr(character_import, "parse_character_pdf", parsed)
+
+    response = client.post(
+        "/api/characters/parse-pdf",
+        files={"file": ("lois.pdf", b"%PDF-1.7 sample", "application/pdf")},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "suggested_filename": "lois.yaml",
+        "content": "Name: Lois\n",
+    }
+
+
+def test_pdf_character_parse_rejects_wrong_file_extension(api):
+    response = api.post(
+        "/api/characters/parse-pdf",
+        files={"file": ("lois.txt", b"not a pdf", "text/plain")},
+    )
+
+    assert response.status_code == 422
+    assert "Choose a PDF" in response.json()["detail"]
+
 
 
 def test_character_lookup_is_exact_and_does_not_call_the_model(api):
@@ -1320,4 +1429,3 @@ def test_the_source_endpoints_report_absence_rather_than_failing(api, tmp_path, 
         assert "not installed" in missing.json()["detail"]
     finally:
         ionas.clear_cache()
-

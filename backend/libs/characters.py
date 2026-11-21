@@ -9,7 +9,9 @@ validator all agree about what a character owns.
 from __future__ import annotations
 
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 
 import yaml
@@ -55,6 +57,78 @@ KNOWN_SOURCE_LABELS = {
 
 class CharacterNotFound(FileNotFoundError):
     """Raised when no sheet matches the requested name."""
+
+
+class CharacterAlreadyExists(FileExistsError):
+    """Raised when an import would replace a sheet without explicit permission."""
+
+
+def import_character(filename: str, content: str, characters_dir=None,
+                     overwrite: bool = False) -> tuple[str, dict]:
+    """Validate and save an imported YAML sheet, returning its stem and parsed data.
+
+    The import target is user data, so an existing sheet is never replaced unless the
+    caller explicitly opts in. Replacements are written atomically so a failed upload
+    cannot leave a truncated sheet behind.
+    """
+    if (
+        not filename
+        or Path(filename).name != filename
+        or "/" in filename
+        or "\\" in filename
+        or not filename.lower().endswith(".yaml")
+    ):
+        raise ValueError("Choose a YAML file with a .yaml extension.")
+
+    stem = Path(filename).stem
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", stem):
+        raise ValueError(
+            "The filename must start with a letter or number and contain only "
+            "letters, numbers, dots, underscores or hyphens."
+        )
+    if len(content.encode("utf-8")) > 1_000_000:
+        raise ValueError("Character sheets must be no larger than 1 MB.")
+
+    try:
+        data = yaml.safe_load(content)
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid YAML: {e}") from e
+    if not isinstance(data, dict) or not all(isinstance(key, str) for key in data):
+        raise ValueError("A character sheet must contain a mapping with text keys.")
+
+    directory = config.resolve(characters_dir or config.CHARACTERS_DIR)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{stem}.yaml"
+
+    if overwrite:
+        temporary_path = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=directory,
+                prefix=f".{stem}.",
+                suffix=".yaml.tmp",
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(temporary.name)
+                os.chmod(temporary_path, 0o600)
+                temporary.write(content)
+            os.replace(temporary_path, path)
+        finally:
+            if temporary_path is not None:
+                temporary_path.unlink(missing_ok=True)
+    else:
+        try:
+            with path.open("x", encoding="utf-8") as target:
+                os.chmod(path, 0o600)
+                target.write(content)
+        except FileExistsError as e:
+            raise CharacterAlreadyExists(
+                f"A character sheet named '{stem}' already exists."
+            ) from e
+
+    return stem, data
 
 
 def format_character(data: dict) -> str:

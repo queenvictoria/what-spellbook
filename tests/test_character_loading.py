@@ -31,6 +31,60 @@ def test_loads_yaml_and_renders_prompt_text(character_dir):
     )
 
 
+def test_import_creates_a_private_yaml_sheet(character_dir):
+    stem, data = characters.import_character(
+        "Mira.yaml", "Name: Mira\nClass: Wizard\nCurrent Level: 3\n",
+        characters_dir=character_dir,
+    )
+
+    path = character_dir / "Mira.yaml"
+    assert stem == "Mira"
+    assert data == {"Name": "Mira", "Class": "Wizard", "Current Level": 3}
+    assert characters.load_character_data(stem, character_dir) == data
+    assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_import_does_not_replace_an_existing_sheet_by_default(character_dir):
+    _write(character_dir, "mira", "Name: Mira\nClass: Wizard\n")
+
+    with pytest.raises(characters.CharacterAlreadyExists):
+        characters.import_character(
+            "mira.yaml", "Name: Other\nClass: Cleric\n",
+            characters_dir=character_dir,
+        )
+
+    assert characters.load_character_data("mira", character_dir)["Class"] == "Wizard"
+
+
+def test_import_can_explicitly_replace_a_sheet_atomically(character_dir):
+    _write(character_dir, "mira", "Name: Mira\nClass: Wizard\n")
+
+    stem, data = characters.import_character(
+        "mira.yaml", "Name: Mira\nClass: Cleric\n",
+        characters_dir=character_dir, overwrite=True,
+    )
+
+    assert stem == "mira"
+    assert data["Class"] == "Cleric"
+    assert characters.load_character_data("mira", character_dir)["Class"] == "Cleric"
+
+
+@pytest.mark.parametrize(
+    ("filename", "content"),
+    [
+        ("../outside.yaml", "Name: Mira\n"),
+        ("mira.yml", "Name: Mira\n"),
+        ("mira.yaml", "Class: [unclosed\n"),
+        ("mira.yaml", "- not a mapping\n"),
+    ],
+)
+def test_import_rejects_unsafe_or_invalid_sheets(character_dir, filename, content):
+    with pytest.raises(ValueError):
+        characters.import_character(filename, content, characters_dir=character_dir)
+
+    assert list(character_dir.iterdir()) == []
+
+
 def test_strips_yaml_mapping_syntax(character_dir):
     """Lists become comma text, never brackets or braces, inside the prompt."""
     _write(character_dir, "lois", "Party: [Barbarian, Fighter, Druid]\n")

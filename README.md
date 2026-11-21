@@ -141,6 +141,11 @@ answer is read verbatim from the character file and cannot be wrong, a `model` a
 generated and can be, and a `rules` answer is quoted from the 2024 SRD. Showing one as
 another would let a plausible guess look like a recorded fact.
 
+On the Character screen, a D&D Beyond PDF can be parsed by the configured model into a
+YAML preview. Review or edit it before saving; the PDF itself is not retained. The API
+extracts layout-preserving text with Poppler's `pdftotext`, so install `poppler-utils` on
+Debian/Ubuntu systems to enable PDF imports.
+
 A spell mentioned in a book opens in a pull-out drawer rather than navigating away, so the
 recommendation stays on screen while you compare. The link is still a real `<a href>` to
 `/rules?spell=…`: only an unmodified left click is intercepted, so Ctrl/Cmd/Shift-click and

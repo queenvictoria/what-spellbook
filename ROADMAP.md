@@ -27,6 +27,10 @@ one place.
       — **the data is now there**: 44 of the 97 stored book files carry a rating, so the
       "once enough books are rated" precondition is met. Nothing aggregates them yet; the
       only reader is `/history`, which prints a per-run score.
+- [x] Add a character importer and switcher — the Character screen lists YAML sheets from
+      `GET /api/characters`, imports validated sheets into `data/characters/`, and remembers
+      the selected filename stem in this browser so recommendations and history use it.
+      D&D Beyond PDFs are parsed into an editable YAML preview before the sheet is saved.
 - [ ] Add /character command to switch characters — `/character` exists but _asks about_ the
       loaded sheet (`/c perception`); nothing switches which sheet is loaded. The API already
       has `GET /api/characters` and `service_for(name)`, so the seam is there.

@@ -319,8 +319,42 @@ class RunSummary(BaseModel):
     timings: TimingsSchema = Field(default_factory=TimingsSchema)
 
 
+class CharacterEntrySchema(BaseModel):
+    """One sheet on disk, as a picker needs it."""
+
+    #: The filename stem - what ``?name=`` accepts and what a client remembers.
+    id: str
+    #: The sheet's own ``Name``, for display. Usually the stem in different case.
+    name: str
+
+
+class CharacterImportRequest(BaseModel):
+    """A YAML file selected in the browser, sent as UTF-8 text."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1, max_length=128)
+    content: str = Field(min_length=1, max_length=1_000_000)
+    overwrite: bool = False
+
+
+class CharacterParseSchema(BaseModel):
+    """A parsed PDF preview that has not yet been saved."""
+
+    suggested_filename: str
+    content: str
+
+
 class CharacterSchema(BaseModel):
     name: str
+    #: The sheet's filename stem, which is what a picker selects by.
+    #:
+    #: Distinct from ``name``, which is the sheet's own ``Name`` field. They are usually the
+    #: same word in different case (``lois`` vs ``Lois``) but need not be - the file is named
+    #: by its user and the sheet titles itself. A client that remembered a selection has to be
+    #: able to tell which entry in ``/api/characters`` it corresponds to, and matching on the
+    #: display name would silently fail to select anything the moment the two disagreed.
+    id: str
     sheet: dict
     text: str
 

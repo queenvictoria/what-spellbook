@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { api } from "@/api/client"
-import type { Answer, Character, Health } from "@/api/types"
+import type { Answer, Character, CharacterEntry, Health } from "@/api/types"
+import { CharacterImporter } from "@/components/CharacterImporter"
+import { CharacterPicker } from "@/components/CharacterPicker"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { Markdown } from "@/components/Markdown"
 import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
@@ -13,6 +15,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
 import { splitSpells, useSpellNames } from "@/lib/spellNames"
+import { useCharacterChoice } from "@/lib/useCharacterChoice"
 import { Loader2, WandSparkles } from "lucide-react"
 
 /**
@@ -31,6 +34,10 @@ import { Loader2, WandSparkles } from "lucide-react"
  * retyping the phrase into the box below.
  */
 export function CharacterScreen() {
+  // Which sheet to show. `selected` is null when this browser has never chosen, in which case
+  // the server applies its own `CHARACTER` default and the picker offers that as "server default".
+  const { entries: characters, selected, choose, refresh } = useCharacterChoice()
+
   const [character, setCharacter] = useState<Character | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
   const [keys, setKeys] = useState<string[]>([])
@@ -39,27 +46,45 @@ export function CharacterScreen() {
   const [error, setError] = useState<unknown>(null)
 
   const [question, setQuestion] = useState("")
-  const [answer, setAnswer] = useState<Answer | null>(null)
   const [asking, setAsking] = useState(false)
-  const [askError, setAskError] = useState<unknown>(null)
-  // The conversation this screen is in. Held so a follow-up is read in context, and so
-  // the exchange can be found again under History → Conversations.
-  const [threadId, setThreadId] = useState<string | null>(null)
+  // The exchange is stamped with the character it belongs to, and only the one matching the
+  // sheet on screen is displayed. That is what makes switching characters start a new line of
+  // questioning without a reset effect: an answer is a statement about *one* sheet, so an
+  // answer for the previous character is not context for the next one - and the thread id would
+  // have the backend append a follow-up about a different person to the old conversation.
+  //
+  // Deriving it rather than clearing it in an effect also means the two can never get out of
+  // order: a clear that runs before the new sheet has loaded would blank an answer that then
+  // reappears, and React's own guidance is that resetting state on a prop change is a render
+  // concern, not a subscription.
+  const [exchange, setExchange] = useState<Exchange | null>(null)
+  const current = exchange?.for === selected ? exchange : null
+  const answer = current?.answer ?? null
+  const askError = current?.error ?? null
 
   // The sheet's values, and the only place a selection may come from. Scoped to the values
   // rather than the whole card so a selection in the header - the character's name - cannot
   // raise the drawer, and so the ask box below is outside it.
   const sheet = useRef<HTMLDListElement>(null)
 
+  // Which ask is the newest, so a reply that lost a race cannot land on a newer question.
+  const askedRun = useRef(0)
+
+  // Depends on the chosen character, so switching re-fetches the sheet rather than leaving the
+  // previous one on screen under a header that now names a different character.
   const load = useCallback(() => {
-    Promise.all([api.character(), api.health(), api.sheetKeys()])
+    Promise.all([
+      api.character(selected ?? undefined),
+      api.health(),
+      api.sheetKeys(),
+    ])
       .then(([sheet, status, sheetKeys]) => {
         setCharacter(sheet)
         setHealth(status)
         setKeys(sheetKeys)
       })
       .catch(setError)
-  }, [])
+  }, [selected])
 
   useEffect(load, [load])
 
@@ -71,33 +96,117 @@ export function CharacterScreen() {
     load()
   }
 
+  function switchTo(name: string) {
+    // Choosing the sheet already on screen is a no-op. It has to be, because `selected` is the
+    // browser's *preference* while the picker shows the loaded sheet - so with nothing stored the
+    // two differ from the start, and changing the preference to the character already displayed
+    // would re-fetch the same sheet and drop the answer along with it.
+    if (name === character?.id) return
+    // Clear the failure first: an error from a sheet that failed to load must not outlive the
+    // switch to one that loads, and the loader only re-runs on a change of `selected`.
+    setError(null)
+    choose(name)
+  }
+
+  const imported = useCallback(async (entry: CharacterEntry) => {
+    await refresh()
+    setError(null)
+    choose(entry.id)
+    if (entry.id === selected && entry.id === character?.id) load()
+  }, [character?.id, choose, load, refresh, selected])
+
   async function ask(text = question) {
     if (!text.trim()) return
+    // Captured before the await, so an answer that arrives after the reader has switched sheets
+    // is filed under the character it was asked about rather than the one now on screen.
+    const asked = selected
+    const run = ++askedRun.current
     setAsking(true)
-    setAskError(null)
+    // The previous answer stays visible while a follow-up is in flight - it is still a true
+    // statement about this character, and blanking it makes the panel flicker. For a *different*
+    // character `current` is already null, so the panel starts empty by construction.
+    setExchange({
+      for: asked,
+      answer: current?.answer ?? null,
+      error: null,
+      threadId: current?.threadId ?? null,
+    })
     try {
       const result = await api.askCharacter(
         text,
-        undefined,
-        threadId ?? undefined,
+        // Follow the sheet on screen. Passing `undefined` here is what made this screen answer
+        // about the server's default character however it was displaying.
+        asked ?? undefined,
+        current?.threadId ?? undefined,
       )
-      setAnswer(result)
-      setThreadId(result.thread_id)
+      // A slower earlier request must not overwrite a newer answer: two asks in flight is
+      // possible by switching character and asking again, and last-write-wins here would show
+      // the wrong reply under the right header.
+      if (run === askedRun.current) {
+        setExchange({ for: asked, answer: result, error: null, threadId: result.thread_id })
+      }
     } catch (e) {
-      setAskError(e)
+      if (run === askedRun.current) {
+        setExchange({ for: asked, answer: null, error: e, threadId: current?.threadId ?? null })
+      }
     } finally {
-      setAsking(false)
+      if (run === askedRun.current) setAsking(false)
     }
   }
 
-  if (error != null) return <ErrorNotice error={error} onRetry={retry} />
-  if (!character) return <p className="text-sm text-parchment/60">Loading…</p>
+  if (error != null) {
+    // The picker is kept, because the commonest reason a sheet fails to load is that *this* sheet
+    // is broken - and replacing the whole screen with the failure would remove the only control
+    // that can switch to one that works.
+    return (
+      <Card>
+        <CardHeader className="flex-row items-center gap-2">
+          <CardTitle>Character</CardTitle>
+          <CharacterPicker
+            entries={characters}
+            value={selected}
+            onChange={switchTo}
+          />
+          <CharacterImporter onImported={imported} />
+        </CardHeader>
+        <CardContent>
+          <ErrorNotice error={error} onRetry={retry} />
+        </CardContent>
+      </Card>
+    )
+  }
+  if (!character || (selected !== null && character.id !== selected)) {
+    return (
+      <Card>
+        <CardHeader className="flex-row items-center gap-2">
+          <CardTitle>Character</CardTitle>
+          <CharacterPicker
+            entries={characters}
+            value={selected}
+            onChange={switchTo}
+          />
+          <CharacterImporter onImported={imported} />
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-parchment/60">Loading…</p>
+        </CardContent>
+      </Card>
+    )
+  }
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>{character.name}</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle>{character.name}</CardTitle>
+            <CharacterPicker
+              entries={characters}
+              value={character.id}
+              onChange={switchTo}
+            />
+            <CharacterImporter onImported={imported} />
+          </div>
           {health && <Badge tone="muted">index v{health.index_version}</Badge>}
         </CardHeader>
         <CardContent>
@@ -189,6 +298,20 @@ export function CharacterScreen() {
       </div>
     </div>
   )
+}
+
+/**
+ * One question and its answer, stamped with the character it was asked about.
+ *
+ * `for` is compared against the sheet on screen, so the pair is self-describing rather than
+ * relying on something else having remembered to clear it.
+ */
+interface Exchange {
+  for: string | null
+  answer: Answer | null
+  error: unknown
+  /** The conversation this exchange belongs to, so a follow-up is read in context. */
+  threadId: string | null
 }
 
 /** A sheet value is a string, number or list; a list reads better as a bullet run. */

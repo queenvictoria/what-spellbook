@@ -39,11 +39,12 @@ import dataclasses
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.libs import cache as cache_store
 from backend.libs import (
+    character_import,
     characters,
     config,
     indexing,
@@ -180,13 +181,22 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
                 raise _error(503, f"The spell index is unavailable: {e}")
         return state["db"]
 
+    def resolved_character(name: str | None) -> str:
+        """The sheet stem the server would load for ``name``, applying its own default.
+
+        One helper rather than the expression repeated, because ``/api/character`` has to
+        report the stem it resolved as well as the service having to pick one - and two copies
+        of "which character?" is the same class of bug as two copies of "where is the rule?".
+        """
+        wanted = name or state["character_name"] or config.DEFAULT_CHARACTER
+        return Path(str(wanted)).stem
+
     def service_for(name: str | None) -> service.SpellbookService:
         """A service for one character, memoised so a sheet is read once."""
-        wanted = name or state["character_name"] or config.DEFAULT_CHARACTER
-        key = str(wanted)
+        key = resolved_character(name)
         if key not in state["services"]:
             try:
-                sheet = characters.load_character_data(wanted)
+                sheet = characters.load_character_data(key)
             except characters.CharacterNotFound as e:
                 raise _error(404, str(e))
             state["services"][key] = service.SpellbookService(
@@ -219,15 +229,87 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         svc = service_for(name)
         return schemas.CharacterSchema(
             name=characters.character_name(svc.character) or "unknown",
+            # The stem the service actually loaded, not the one requested: with no `name` the
+            # server picks its own from `CHARACTER`, and a picker has to show what it is
+            # looking at rather than a blank selection.
+            id=resolved_character(name),
             sheet=svc.character,
             text=svc.character_text,
         )
 
-    @app.get("/api/characters", response_model=list[str], tags=["character"])
+    @app.get("/api/characters", response_model=list[schemas.CharacterEntrySchema],
+             tags=["character"])
     def list_characters():
-        """Sheet names available on disk, for a character picker."""
+        """Sheets available on disk, for a character picker.
+
+        Each entry carries both the stem to select and the name to display. Reading every sheet
+        to find its `Name` costs one small YAML parse per character - there are a handful - and
+        the alternative is a picker listing `lois` next to a card titled `Lois`.
+
+        A sheet that cannot be read is still listed, displaying its stem. A picker that silently
+        omitted a file would make a broken sheet look like a missing one, and the error belongs
+        on the screen that tries to load it.
+        """
         directory = config.resolve(config.CHARACTERS_DIR)
-        return sorted(p.stem for p in directory.glob("*.yaml"))
+        entries = []
+        for path in sorted(directory.glob("*.yaml")):
+            try:
+                data = characters.load_character_data(path.stem)
+            except characters.CharacterNotFound:
+                entries.append(schemas.CharacterEntrySchema(id=path.stem, name=path.stem))
+            else:
+                entries.append(schemas.CharacterEntrySchema(
+                    id=path.stem, name=characters.character_name(data) or path.stem,
+                ))
+        return entries
+
+    @app.post("/api/characters", response_model=schemas.CharacterEntrySchema,
+              status_code=201, tags=["character"])
+    def import_character(request: schemas.CharacterImportRequest):
+        """Validate and save a YAML sheet in the user's character directory."""
+        try:
+            stem, data = characters.import_character(
+                request.filename, request.content, overwrite=request.overwrite,
+            )
+        except characters.CharacterAlreadyExists as e:
+            raise _error(409, str(e))
+        except ValueError as e:
+            raise _error(422, str(e))
+
+        # A service holds the parsed sheet. Replace it on the next request if this import
+        # deliberately updated the sheet already loaded in this process.
+        if request.overwrite:
+            state["services"].pop(stem, None)
+
+        return schemas.CharacterEntrySchema(
+            id=stem, name=characters.character_name(data) or stem,
+        )
+
+    @app.post("/api/characters/parse-pdf", response_model=schemas.CharacterParseSchema,
+              tags=["character"])
+    def parse_character_pdf(file: UploadFile = File(...)):
+        """Parse a D&D Beyond PDF to YAML for review; does not save the sheet."""
+        if Path(file.filename or "").suffix.lower() != ".pdf":
+            raise _error(422, "Choose a PDF character sheet.")
+        content = file.file.read(character_import.MAX_PDF_BYTES + 1)
+        if len(content) > character_import.MAX_PDF_BYTES:
+            raise _error(422, "PDF files must be no larger than 20 MB.")
+        try:
+            model = state["backend"] or llm.build_llm(
+                config.model_overrides(state["overrides"])
+            )
+            stem, _, parsed_yaml = character_import.parse_character_pdf(
+                content, filename=file.filename or "character.pdf", model=model,
+            )
+        except character_import.CharacterImportError as e:
+            raise _error(422, str(e))
+        except llm.EmptyCompletion as e:
+            raise _model_failure(e)
+        except llm.LLMUnavailable as e:
+            raise _model_failure(e)
+        return schemas.CharacterParseSchema(
+            suggested_filename=f"{stem}.yaml", content=parsed_yaml,
+        )
 
     # --- settings ---
 

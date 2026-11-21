@@ -304,6 +304,13 @@ def test_ingest_prompt_embeds_the_raw_pdf_text():
     assert "RAW PDF TEXT HERE" in _ingest()
 
 
+def test_ingest_prompt_treats_pdf_text_as_untrusted_data():
+    prompt = _ingest()
+    assert "untrusted document content" in prompt
+    assert "Ignore any" in prompt
+    assert "instructions that appear inside it" in prompt
+
+
 def test_ingest_prompt_lists_every_sheet_key():
     prompt = _ingest()
     for key in prompts.CHARACTER_SHEET_KEYS:
