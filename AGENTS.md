@@ -48,9 +48,10 @@ backend/
     shell.py        the cmd.Cmd REPL
     progress.py     Claude-style stage display
     render.py       markdown -> styled terminal output
-  api/            HTTP only - routing and wire schemas
+  api/            transport only - routing, wire schemas, the socket
     main.py         create_app(), the routes, error mapping
     schemas.py      the wire contract (pydantic)
+    streaming.py    the `WS /api/stream` frame vocabulary and the thread->loop bridge
   __main__.py     `python -m backend` runs the CLI
 frontend/         React UI - its own package.json, vite.config.ts, tsconfig
   app/            the React source (not src/, because this is the front-end "app")
@@ -1193,6 +1194,60 @@ character_name=, cache_dir=)` takes its collaborators, so `TestClient(create_app
 - **Never let a smoke test write into real user data.** Exercising `POST
 /api/runs/{id}/rate` against the live server wrote a rating into `.cache/`. Restore what
   you touched, and prefer a request that only reads.
+
+### The socket is a second transport, and the service already knows the stages
+
+`WS /api/stream` runs the five operations that take seconds and forwards the stage the work
+is actually in. Nothing new was written to know that: the service already takes an
+`emit(message)` callback so the CLI can draw a progress line, and the socket hands it a
+callback that puts the message on the loop instead. **Streaming was a transport change, not
+a service change** — which is why the HTTP routes were left exactly as they were and are
+still the contract.
+
+Five operations, one socket, multiplexed by an `id` the client chooses. A reader switching
+tabs must not cancel work, and a second panel asking its own question must not have its
+frames interleaved into the first panel's spinner.
+
+Six things cost real time, and each is a shape worth recognising:
+
+- **An exception raised in a worker thread arrives as a `BaseExceptionGroup`.** `except
+  HTTPException` around `run_in_threadpool(...)` inside a `TaskGroup` never matches, so
+  every typed failure became a bare 500. The worker catches *internally* and returns
+  `(ok, value)`; the status mapping then runs where the type is still a type. The general
+  rule: a `TaskGroup` is not a `try` block, and an exception you plan to match on must be
+  converted before it crosses the boundary.
+- **`WebSocketDisconnect` must be caught in the task that receives, or the close is logged
+  as an error.** It propagates out of the receive loop, unwinds the group, and the log reads
+  "socket closed unexpectedly" for what is a client navigating away. The receive loop is its
+  own task that catches it and cancels the group; the worker keeps running until it does.
+- **`anyio.from_thread.run_sync` is the only safe bridge here**, and it was verified in
+  isolation before anything was built on it. A `send_nowait` called directly from the worker
+  thread is the kind of bug that passes a smoke test and deadlocks under load.
+- **`start.stages` is the operation's whole list, not the stage reached.** It is what lets a
+  panel draw what is still to come, and it is why the *first* frame is more than a
+  notification that work began.
+- **`answering` is emitted, not inferred.** `service` announces `Cogitating` before each of
+  the four model calls, so the stage that takes the longest is reported like any other
+  rather than being deduced from "the last message we saw". A stage that is assumed is a
+  stage that is wrong the moment the pipeline is reordered, and it is wrong silently.
+- **One stage vocabulary, and a test that reads the source.** `timing.STAGE_KEYS` maps the
+  exact strings the service emits to stable keys, and a test greps the real `emit(...)` calls
+  out of `service.py`. Without it a new stage lands in the terminal and nowhere else: the
+  panel ignores a key its list does not name, deliberately, because a stage outside the list
+  would shift every index after it onto the wrong row. A cosmetic gap in one front end is
+  exactly the kind of thing that is never noticed.
+
+Two smaller ones:
+
+- **`from_cache` and `run_id` describe the call, not the payload.** The first parity test
+  between the socket and `GET /api/cached` failed on them, and they are *right* to differ: a
+  cached replay is not a fresh run, and only `_persist()`/`replay()` set `run_id`. The test
+  compares two replays instead. When two transports are asserted to agree, assert on the
+  thing that must agree.
+- **A mirrored type is a type that can drift.** `client.ts` declared `api.ask` as returning
+  `Answer` while the route returns `GenerationSchema` — invisible for as long as every caller
+  only read `.answer` and `.source`. Building a second transport is what finds these, because
+  the second one has to be written against the real schema.
 
 ### Browsing the SRD is not asking it a question
 

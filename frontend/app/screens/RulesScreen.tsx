@@ -3,6 +3,7 @@ import { useLocation, useNavigate, useSearchParams } from "react-router-dom"
 import { BookOpenIcon, Loader2Icon, WandSparklesIcon } from "lucide-react"
 
 import { api, ApiError } from "@/api/client"
+import { streamed } from "@/api/stream"
 import type { Answer, SearchResult, Spell } from "@/api/types"
 import { AskBox } from "@/components/AskBox"
 import { ClassContextCard } from "@/components/ClassContextCard"
@@ -15,6 +16,9 @@ import { SrdCard } from "@/components/SrdCard"
 import { RulePathLink } from "@/components/RulePathLink"
 import { SrdTree } from "@/components/SrdTree"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { StageProgress } from "@/components/StageProgress"
+import { STREAM_STAGE_LABELS } from "@/api/types"
+import { useStreamStages } from "@/lib/useStreamStages"
 import { useDebouncedCallback } from "@/lib/useDebounced"
 import { TYPING_DEBOUNCE_MS } from "@/lib/timing"
 import { useSrdDocuments, useSrdSection, srdHref } from "@/lib/srd"
@@ -119,6 +123,9 @@ export function RulesScreen() {
   const [error, setError] = useState<unknown>(null)
   const [missing, setMissing] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  // The ask is the only lane that takes seconds, and its stages are reported by the server -
+  // a panel that only showed a spinner could not tell a slow model from a stuck one.
+  const askStages = useStreamStages()
   // The conversation this screen is in. Held so a follow-up is read in context, and so
   // the exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
@@ -316,8 +323,9 @@ export function RulesScreen() {
     setError(null)
     setAnswer(null)
     setMissing(null)
+    askStages.start("rules")
     try {
-      const result = await api.rules(text, threadId ?? undefined)
+      const result = await streamed.rules(text, threadId ?? undefined, askStages.handlers)
       if (run !== latestAsk.current) return
       setAnswer(result)
       setThreadId(result.thread_id)
@@ -329,7 +337,10 @@ export function RulesScreen() {
         setError(e)
       }
     } finally {
-      if (run === latestAsk.current) setLoading(false)
+      if (run === latestAsk.current) {
+        setLoading(false)
+        askStages.finish()
+      }
     }
   }
 
@@ -512,6 +523,17 @@ export function RulesScreen() {
                     {answer && <SourceBadge source={answer.source} />}
                   </CardHeader>
                   <CardContent className="space-y-3">
+                    {loading && (
+                      <StageProgress
+                        stage={askStages.stage}
+                        elapsed={askStages.elapsed}
+                        // No estimate: the rules lane never records a timing, so a number
+                        // here would be invented rather than learned.
+                        estimate={null}
+                        stages={askStages.stages}
+                        labels={STREAM_STAGE_LABELS}
+                      />
+                    )}
                     {answer && (
                       <Markdown text={answer.answer} className="prose-spell" />
                     )}

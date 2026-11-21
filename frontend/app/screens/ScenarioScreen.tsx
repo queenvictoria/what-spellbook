@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useState } from "react"
 import { useSearchParams } from "react-router-dom"
 
 import { api } from "@/api/client"
+import { streamed } from "@/api/stream"
 import type { Book, Generation } from "@/api/types"
 import { BookPanel } from "@/components/BookPanel"
 import { ErrorNotice } from "@/components/ErrorNotice"
@@ -13,6 +14,8 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Textarea } from "@/components/ui/textarea"
 import { median } from "@/lib/format"
+import { useStreamStages } from "@/lib/useStreamStages"
+import { STREAM_STAGE_LABELS } from "@/api/types"
 import { WandSparkles } from "lucide-react"
 
 type Phase = "idle" | "running" | "done" | "error"
@@ -36,26 +39,18 @@ export function ScenarioScreen() {
   const [storedAt, setStoredAt] = useState<string | null>(null)
   const [phase, setPhase] = useState<Phase>("idle")
   const [error, setError] = useState<unknown>(null)
-  const [elapsed, setElapsed] = useState(0)
   const [estimate, setEstimate] = useState<number | null>(null)
-  const [stage, setStage] = useState(0)
-  const started = useRef(0)
+  // The stage is reported by the server as the work moves, rather than derived from a
+  // stopwatch - the timer it replaces showed "Scribing" while the server was still
+  // embedding, which is the gap this closes.
+  const progress = useStreamStages()
+  // Destructured because the hook's object identity changes with the clock (it carries
+  // `elapsed`), while these three do not. Depending on `progress` would rebuild returning
+  // callbacks ten times a second.
+  const { start: startStages, finish: finishStages, handlers: stageHandlers } = progress
   // Derived rather than stored: it is a pure function of the generation, and recomputing it
   // on render keeps it correct when a stored run is loaded from history.
   const reasoning = generation ? preambleOf(generation) : ""
-
-  // A rough three-stage split, matching what the CLI records. The real per-stage
-  // timings only exist after the run, so this is a display heuristic: retrieval is
-  // quick and local, the model call dominates.
-  useEffect(() => {
-    if (phase !== "running") return
-    const timer = setInterval(() => {
-      const seconds = (performance.now() - started.current) / 1000
-      setElapsed(seconds)
-      setStage(seconds < 3 ? 0 : seconds < 5 ? 1 : 2)
-    }, 100)
-    return () => clearInterval(timer)
-  }, [phase])
 
   // Learn the estimate from the scenarios already run, so the first run is honest
   // about taking ~45s rather than showing a spinner with no scale.
@@ -131,18 +126,19 @@ export function ScenarioScreen() {
     setPhase("running")
     setError(null)
     setGeneration(null)
-    setElapsed(0)
-    started.current = performance.now()
+    startStages("scenario")
 
     try {
-      const result = await api.scenario(scenario)
+      const result = await streamed.scenario(scenario, undefined, stageHandlers)
       setGeneration(result)
       setPhase("done")
     } catch (e) {
       setError(e)
       setPhase("error")
+    } finally {
+      finishStages()
     }
-  }, [scenario])
+  }, [scenario, startStages, finishStages, stageHandlers])
 
   return (
     <div className="grid gap-6 lg:grid-cols-[22rem_1fr]">
@@ -185,9 +181,11 @@ export function ScenarioScreen() {
                 </p>
               ) : (
                 <StageProgress
-                  stage={stage}
-                  elapsed={elapsed}
+                  stage={progress.stage}
+                  elapsed={progress.elapsed}
                   estimate={estimate}
+                  stages={progress.stages}
+                  labels={STREAM_STAGE_LABELS}
                 />
               )}
             </CardContent>

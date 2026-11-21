@@ -33,6 +33,60 @@ PHASE_LABELS = {
     "books": "Scribing the Books of Shadows",
 }
 
+# Every stage the service can announce, keyed by the message it announces it with.
+#
+# The service emits human labels - it has no idea what a client does with them, and the CLI
+# prints them verbatim - while a streaming client switches on a stable key. This table is the
+# one place the two spellings are tied together, so the keys the browser receives cannot drift
+# from the words the terminal shows. A test asserts every message the service emits is in it.
+#
+# The last three are ask surfaces. They announce the work before the model call and nothing
+# during it, so a client that wants to show "the model is writing" has to know the final stage
+# from the operation, not from an event - see ``OPERATION_STAGES``.
+STAGE_KEYS: dict[str, str] = {
+    PHASE_LABELS["retrieval"]: "retrieval",
+    PHASE_LABELS["prompt"]: "prompt",
+    PHASE_LABELS["books"]: "books",
+    "Refining the current choices": "refine",
+    "Reading the character sheet": "character",
+    "Consulting the 2024 SRD": "consulting",
+    "Reading the rules": "reading",
+    "Cogitating": "answering",
+}
+
+# ``emit(f"Attached {names}")`` names the documents on the way in, so it cannot be a fixed
+# string. It is matched by prefix rather than by pattern because the key is the only part a
+# client acts on and the rest of the line is prose for a human.
+ATTACHED_PREFIX = "Attached "
+ATTACHED_KEY = "attaching"
+
+# The stages each streaming operation reports, in order - which is what lets a client show
+# what is still to come rather than only what has happened.
+#
+# ``answering`` is the model call itself, and it is a *reported* stage rather than one a
+# client infers from the last message it saw: the call is the longest part of every ask, and
+# a panel that stopped at "Reading the rules" would look finished while it was still waiting.
+OPERATION_STAGES: dict[str, tuple[str, ...]] = {
+    "scenario": PHASES,
+    "refine": ("refine", "answering"),
+    "character": ("character", "answering"),
+    "rules": ("consulting", "reading", "answering"),
+    "selection": ("attaching", "consulting", "reading", "answering"),
+}
+
+
+def stage_key(message: str) -> str:
+    """The stable key for a stage message, or the message itself when it is unknown.
+
+    An unrecognised message keeps its own text as the key rather than being dropped: a stage
+    added to the service but not to ``STAGE_KEYS`` then still reaches the browser, showing a
+    label instead of nothing. Losing it silently is the failure this avoids.
+    """
+    if message.startswith(ATTACHED_PREFIX):
+        return ATTACHED_KEY
+    return STAGE_KEYS.get(message, message)
+
+
 # Below this many samples a "typical" figure is noise, so no estimate is offered.
 MIN_SAMPLES = 2
 

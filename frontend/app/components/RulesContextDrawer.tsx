@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useRef, useState } from "react"
 import type { ReactNode } from "react"
 import { X } from "lucide-react"
 import {
@@ -17,15 +17,14 @@ import { SourceBadge } from "@/components/SourceBadge"
 import { RulePathLink } from "@/components/RulePathLink"
 import { StageProgress } from "@/components/StageProgress"
 import { api } from "@/api/client"
+import { streamed } from "@/api/stream"
 import type { Answer, SearchResult } from "@/api/types"
-import { CONTEXT_STAGES, CONTEXT_STAGE_LABELS } from "@/api/types"
+import { STREAM_STAGE_LABELS } from "@/api/types"
 import { RulesContext, useRulesContext } from "@/lib/rulesContext"
 import { extractSpellNames, useSpellNames } from "@/lib/spellNames"
 import { TYPING_DEBOUNCE_MS } from "@/lib/timing"
 import { useDebouncedCallback } from "@/lib/useDebounced"
-
-/** How long each stage is assumed to take, so the list advances on a run with no progress. */
-const STAGE_AFTER_MS = [400, 900, 1500]
+import { useStreamStages } from "@/lib/useStreamStages"
 
 /**
  * How many index hits the drawer lists.
@@ -64,8 +63,12 @@ export function RulesContextDrawerProvider({
   const [selectionContext, setSelectionContext] = useState("")
   const [attachments, setAttachments] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
-  const [stage, setStage] = useState(0)
-  const [elapsed, setElapsed] = useState(0)
+  // The stages are reported by the server for the selection's own work - attaching the named
+  // documents, consulting the SRD, reading the rule - rather than guessed from a stopwatch.
+  const progress = useStreamStages()
+  // Same reason as the scenario screen: this hook's object identity moves with the clock,
+  // and `ask` must not be rebuilt while an answer is in flight.
+  const { start: startStages, finish: finishStages, handlers: stageHandlers } = progress
   const [answer, setAnswer] = useState<Answer | null>(null)
   const [error, setError] = useState<unknown>(null)
   const [search, setSearch] = useState<SearchResult | null>(null)
@@ -74,7 +77,6 @@ export function RulesContextDrawerProvider({
   // The selection conversation. Held so a follow-up is read in context, and so the
   // exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
-  const started = useRef(0)
   // The text the current attachments were derived from. Without it, editing the question and
   // asking again reuses the previous answer's documents - which no longer match the words on
   // screen, and would attach a spell the new text never named.
@@ -89,20 +91,6 @@ export function RulesContextDrawerProvider({
   // the new hits and under a badge claiming provenance for words that are no longer there.
   const latestAsk = useRef(0)
   const names = useSpellNames()
-
-  // The stage list advances on a timer because the backend does not stream: the response
-  // carries no progress until it is finished. It is therefore a display heuristic, and it
-  // is honest about that - the elapsed readout is real, and the bar cannot run past full.
-  useEffect(() => {
-    if (!loading) return
-    const timer = setInterval(() => {
-      const ms = performance.now() - started.current
-      setElapsed(ms / 1000)
-      const index = STAGE_AFTER_MS.findIndex((threshold) => ms < threshold)
-      setStage(index === -1 ? CONTEXT_STAGES.length - 1 : index)
-    }, 100)
-    return () => clearInterval(timer)
-  }, [loading])
 
   /** The spells the prose names, found the way the renderer finds links. */
   const mentionsIn = useCallback(
@@ -220,18 +208,17 @@ export function RulesContextDrawerProvider({
       setAttachments(derived)
       setOpen(true)
       setLoading(true)
-      setStage(0)
-      setElapsed(0)
-      started.current = performance.now()
+      startStages("selection")
       setError(null)
       setAnswer(null)
       const run = ++latestAsk.current
       try {
-        const result = await api.rulesContextual(
+        const result = await streamed.selection(
           question,
           context,
           derived,
           threadId ?? undefined,
+          stageHandlers,
         )
         if (run !== latestAsk.current) return
         setAnswer(result)
@@ -243,11 +230,18 @@ export function RulesContextDrawerProvider({
         // A superseded run must not clear the newer one's spinner.
         if (run === latestAsk.current) {
           setLoading(false)
-          setStage(CONTEXT_STAGES.length)
+          finishStages()
         }
       }
     },
-    [attachments, mentionsIn, threadId],
+    [
+      attachments,
+      mentionsIn,
+      threadId,
+      startStages,
+      finishStages,
+      stageHandlers,
+    ],
   )
 
   const remove = useCallback((name: string) => {
@@ -327,16 +321,22 @@ export function RulesContextDrawerProvider({
       }}
     >
       {children}
-      <RulesContextDrawer stage={stage} elapsed={elapsed} />
+      <RulesContextDrawer
+        stage={progress.stage}
+        stages={progress.stages}
+        elapsed={progress.elapsed}
+      />
     </RulesContext.Provider>
   )
 }
 
 function RulesContextDrawer({
   stage,
+  stages,
   elapsed,
 }: {
   stage: number
+  stages: readonly string[]
   elapsed: number
 }) {
   const {
@@ -427,8 +427,8 @@ function RulesContextDrawer({
                 // No estimate: unlike a book, a contextual answer has no recorded runs to
                 // learn one from, and a made-up number would be worse than none.
                 estimate={null}
-                stages={CONTEXT_STAGES}
-                labels={CONTEXT_STAGE_LABELS}
+                stages={stages}
+                labels={STREAM_STAGE_LABELS}
               />
             </div>
           )}

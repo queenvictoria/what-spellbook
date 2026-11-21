@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { api } from "@/api/client"
+import { streamed } from "@/api/stream"
 import type { Answer, Character, CharacterEntry, Health } from "@/api/types"
 import { CharacterImporter } from "@/components/CharacterImporter"
 import { CharacterPicker } from "@/components/CharacterPicker"
@@ -13,10 +14,13 @@ import { SpellLink } from "@/components/SpellLink"
 import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { StageProgress } from "@/components/StageProgress"
+import { STREAM_STAGE_LABELS } from "@/api/types"
+import { useStreamStages } from "@/lib/useStreamStages"
 import { Badge } from "@/components/ui/badge"
 import { splitSpells, useSpellNames } from "@/lib/spellNames"
 import { useCharacterChoice } from "@/lib/useCharacterChoice"
-import { Loader2, WandSparkles } from "lucide-react"
+import { Loader2, WandSparkles, UsersRoundCollaboration } from "lucide-react"
 
 /**
  * The character sheet, plus a box to ask about it.
@@ -36,7 +40,12 @@ import { Loader2, WandSparkles } from "lucide-react"
 export function CharacterScreen() {
   // Which sheet to show. `selected` is null when this browser has never chosen, in which case
   // the server applies its own `CHARACTER` default and the picker offers that as "server default".
-  const { entries: characters, selected, choose, refresh } = useCharacterChoice()
+  const {
+    entries: characters,
+    selected,
+    choose,
+    refresh,
+  } = useCharacterChoice()
 
   const [character, setCharacter] = useState<Character | null>(null)
   const [health, setHealth] = useState<Health | null>(null)
@@ -47,6 +56,9 @@ export function CharacterScreen() {
 
   const [question, setQuestion] = useState("")
   const [asking, setAsking] = useState(false)
+  // A sheet lookup is instant and never shows this; the stages appear only when the question
+  // reached the model, which is the half that takes seconds.
+  const askStages = useStreamStages()
   // The exchange is stamped with the character it belongs to, and only the one matching the
   // sheet on screen is displayed. That is what makes switching characters start a new line of
   // questioning without a reset effect: an answer is a statement about *one* sheet, so an
@@ -108,12 +120,15 @@ export function CharacterScreen() {
     choose(name)
   }
 
-  const imported = useCallback(async (entry: CharacterEntry) => {
-    await refresh()
-    setError(null)
-    choose(entry.id)
-    if (entry.id === selected && entry.id === character?.id) load()
-  }, [character?.id, choose, load, refresh, selected])
+  const imported = useCallback(
+    async (entry: CharacterEntry) => {
+      await refresh()
+      setError(null)
+      choose(entry.id)
+      if (entry.id === selected && entry.id === character?.id) load()
+    },
+    [character?.id, choose, load, refresh, selected],
+  )
 
   async function ask(text = question) {
     if (!text.trim()) return
@@ -132,25 +147,40 @@ export function CharacterScreen() {
       threadId: current?.threadId ?? null,
     })
     try {
-      const result = await api.askCharacter(
+      askStages.start("character")
+      const result = await streamed.character(
         text,
         // Follow the sheet on screen. Passing `undefined` here is what made this screen answer
         // about the server's default character however it was displaying.
         asked ?? undefined,
         current?.threadId ?? undefined,
+        askStages.handlers,
       )
       // A slower earlier request must not overwrite a newer answer: two asks in flight is
       // possible by switching character and asking again, and last-write-wins here would show
       // the wrong reply under the right header.
       if (run === askedRun.current) {
-        setExchange({ for: asked, answer: result, error: null, threadId: result.thread_id })
+        setExchange({
+          for: asked,
+          answer: result,
+          error: null,
+          threadId: result.thread_id,
+        })
       }
     } catch (e) {
       if (run === askedRun.current) {
-        setExchange({ for: asked, answer: null, error: e, threadId: current?.threadId ?? null })
+        setExchange({
+          for: asked,
+          answer: null,
+          error: e,
+          threadId: current?.threadId ?? null,
+        })
       }
     } finally {
-      if (run === askedRun.current) setAsking(false)
+      if (run === askedRun.current) {
+        setAsking(false)
+        askStages.finish()
+      }
     }
   }
 
@@ -197,17 +227,27 @@ export function CharacterScreen() {
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
       <Card>
-        <CardHeader className="flex-row items-center justify-between">
-          <div className="flex items-center gap-2">
+        <CardHeader className="flex flex-col w-full">
+          <div className="w-full items-start flex flex-row gap-2 justify-between">
             <CardTitle>{character.name}</CardTitle>
-            <CharacterPicker
-              entries={characters}
-              value={character.id}
-              onChange={switchTo}
-            />
-            <CharacterImporter onImported={imported} />
+            {health && (
+              <Badge tone="muted">index v{health.index_version}</Badge>
+            )}
           </div>
-          {health && <Badge tone="muted">index v{health.index_version}</Badge>}
+          <details className="flex flex-row-reverse items-start gap-2">
+            <summary className="text-sm flex gap-2 text-parchment/60">
+              <UsersRoundCollaboration width={24} height={24} />
+              <span className="sr-only">Character picker</span>
+            </summary>
+            <div className="flex flex-col gap-2 justify-between">
+              <CharacterPicker
+                entries={characters}
+                value={character.id}
+                onChange={switchTo}
+              />
+              <CharacterImporter onImported={imported} />
+            </div>{" "}
+          </details>
         </CardHeader>
         <CardContent>
           {/* The provider wraps the sheet and the watcher together, because the watcher needs
@@ -272,6 +312,18 @@ export function CharacterScreen() {
                   </button>
                 ))}
               </div>
+            )}
+
+            {asking && (
+              <StageProgress
+                stage={askStages.stage}
+                elapsed={askStages.elapsed}
+                // Only shown once work actually started: a sheet lookup answers in
+                // milliseconds and would flash a progress list nobody can read.
+                estimate={null}
+                stages={askStages.stages}
+                labels={STREAM_STAGE_LABELS}
+              />
             )}
 
             {askError != null && (

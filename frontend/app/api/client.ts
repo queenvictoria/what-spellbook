@@ -169,8 +169,17 @@ export const api = {
       character: character ?? readCharacter() ?? undefined,
     })}`),
 
+  /**
+   * Refine a previous answer.
+   *
+   * Answers with a `Generation`, not an `Answer`: a refinement re-scribes the books, and the
+   * route declares `response_model=GenerationSchema`. This mirror said `Answer` while the
+   * route said otherwise, which read as fine only because `Generation` happens to carry an
+   * `answer` field - so a caller rendering the prose worked and nobody noticed the badge had
+   * no `source` to show.
+   */
   ask: (scenario: string, question: string, character?: string, threadId?: string) =>
-    request<Answer>(`/api/ask${query({
+    request<Generation>(`/api/ask${query({
       scenario,
       character: character ?? readCharacter() ?? undefined,
     })}`, {

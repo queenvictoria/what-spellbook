@@ -21,7 +21,10 @@ export function CharacterImporter({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [message, setMessage] = useState("")
-  const [draft, setDraft] = useState<{ filename: string; content: string } | null>(null)
+  const [draft, setDraft] = useState<{
+    filename: string
+    content: string
+  } | null>(null)
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0]
@@ -35,7 +38,11 @@ export function CharacterImporter({
     const extension = file.name.split(".").pop()?.toLowerCase()
     const maxBytes = extension === "pdf" ? MAX_PDF_BYTES : MAX_YAML_BYTES
     if (file.size > maxBytes) {
-      setError(new Error(`Files must be no larger than ${extension === "pdf" ? "20 MB" : "1 MB"}.`))
+      setError(
+        new Error(
+          `Files must be no larger than ${extension === "pdf" ? "20 MB" : "1 MB"}.`,
+        ),
+      )
       return
     }
 
@@ -56,7 +63,11 @@ export function CharacterImporter({
         await onImported(entry)
         setMessage(`Imported ${entry.name}.`)
       } else {
-        setError(new Error("Choose a .yaml character sheet or a D&D Beyond .pdf export."))
+        setError(
+          new Error(
+            "Choose a .yaml character sheet or a D&D Beyond .pdf export.",
+          ),
+        )
       }
     } catch (reason) {
       setError(reason)
@@ -83,9 +94,14 @@ export function CharacterImporter({
   }
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-void-700 px-3 text-xs text-parchment/80 hover:bg-void-800">
-        {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Upload className="h-3.5 w-3.5" />}
+    <div className="flex flex-wrap items-center gap-2 border border-parchment/20 rounded p-2">
+      <div className="text-parchment/60 text-sm">New</div>
+      <label className="inline-flex h-8 cursor-pointer items-center gap-2 rounded-md border border-void-700 px-3 text-sm text-parchment/80 hover:bg-void-800">
+        {busy ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        ) : (
+          <Upload className="h-3.5 w-3.5" />
+        )}
         {busy ? "Importing…" : "Import sheet"}
         <input
           type="file"
@@ -104,21 +120,32 @@ export function CharacterImporter({
         />
         Replace an existing sheet
       </label>
-      {message && <span role="status" className="text-xs text-verdant-300">{message}</span>}
+      {message && (
+        <span role="status" className="text-xs text-verdant-300">
+          {message}
+        </span>
+      )}
       <p className="w-full text-xs text-parchment/45">
-        PDF text is sent to the configured model for extraction. Review the YAML before saving;
-        the PDF itself is not stored.
+        PDF text is sent to the configured model for extraction. Review the YAML
+        before saving; the PDF itself is not stored.
       </p>
-      {error != null && <ErrorNotice error={error} compact className="w-full" />}
+      {error != null && (
+        <ErrorNotice error={error} compact className="w-full" />
+      )}
       {draft && (
         <div className="w-full space-y-2 rounded-md border border-void-700 p-3">
-          <p className="text-xs text-parchment/65">Review and correct the extracted values before saving.</p>
+          <p className="text-xs text-parchment/65">
+            Review and correct the extracted values before saving.
+          </p>
           <label className="block space-y-1 text-xs text-parchment/65">
             Filename
             <Input
               value={draft.filename}
               onChange={(event) =>
-                setDraft((current) => current && { ...current, filename: event.target.value })
+                setDraft(
+                  (current) =>
+                    current && { ...current, filename: event.target.value },
+                )
               }
               disabled={busy}
             />
@@ -129,18 +156,30 @@ export function CharacterImporter({
               rows={12}
               value={draft.content}
               onChange={(event) =>
-                setDraft((current) => current && { ...current, content: event.target.value })
+                setDraft(
+                  (current) =>
+                    current && { ...current, content: event.target.value },
+                )
               }
               disabled={busy}
               spellCheck={false}
             />
           </label>
           <div className="flex gap-2">
-            <Button size="sm" onClick={saveDraft} disabled={busy || !draft.filename.trim()}>
+            <Button
+              size="sm"
+              onClick={saveDraft}
+              disabled={busy || !draft.filename.trim()}
+            >
               {busy && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
               Save character
             </Button>
-            <Button size="sm" variant="outline" onClick={() => setDraft(null)} disabled={busy}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setDraft(null)}
+              disabled={busy}
+            >
               Discard
             </Button>
           </div>

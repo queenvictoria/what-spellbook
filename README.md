@@ -201,6 +201,7 @@ typed error to a status code. That is what keeps the CLI and the API from drifti
 | `GET /api/licensing`               | Every third-party source and the attribution it requires                  |
 | `GET /api/search`                  | Search the vector index directly, for inspection                          |
 | `GET /api/search/facets`           | Every class, school, level and document type the index holds, with counts |
+| `WS /api/stream`                   | The long operations above, reporting their stages as they run             |
 
 Errors are mapped deliberately, because the distinction a client acts on is whether
 retrying could help:
@@ -213,6 +214,47 @@ retrying could help:
 | `NoEligibleSpells`                      | 422 — the rules allow no picks; retrying is pointless |
 | `EmptyCompletion`                       | 502 — the model returned nothing; retrying may help   |
 | `LLMUnavailable`                        | 503                                                   |
+
+### Streaming: one socket, and the stages are reported rather than guessed
+
+Every endpoint above returns the whole answer, so a client only knows a stage has changed
+by watching a clock. `WS /api/stream` runs the five operations that take seconds —
+`scenario`, `refine`, `character`, `rules` and `selection` — and forwards the stage the
+service is actually in, because the service already announces them for the CLI.
+
+```jsonc
+{"id": "op-1", "op": "scenario", "scenario": "A rust monster eats the armour."}
+
+{"type": "start",  "id": "op-1", "op": "scenario",
+ "stages": ["retrieval", "prompt", "books"]}
+{"type": "stage",  "id": "op-1", "key": "retrieval",
+ "label": "Fetching spells from the grimoire"}
+{"type": "result", "id": "op-1", "op": "scenario", "data": { /* GenerationSchema */ }}
+```
+
+Four properties are deliberate, and each replaced a heuristic:
+
+- **The stage is reported.** The browser used to advance a three-stage bar from elapsed
+  time, which showed "Scribing" while the server was still embedding. The label is the
+  service's own wording; `key` is the stable identifier to switch on, from
+  `timing.STAGE_KEYS` — one table, so the letters on the terminal and the rows in the panel
+  cannot drift.
+- **Progress and result travel on one channel.** A client that had to poll a second
+  endpoint for the result would still be guessing when to stop.
+- **A message is a request, not a connection.** The socket stays open for the panel, so a
+  follow-up costs no handshake, and requests are multiplexed by `id` — a recommendation and
+  a rules question can be in flight at once, which is what makes switching tabs not cancel
+  the work.
+- **An error is a message, not a close.** The statuses are the HTTP ones from the table
+  below, produced by the same mapping, so one client handler covers both transports.
+
+`start.stages` is the operation's full stage list, so a panel draws what is still to come.
+`answering` is the model call itself and is announced like any other stage, rather than
+being inferred from the last message seen.
+
+The HTTP routes remain the contract: the socket is a second transport over the same service
+methods and the same schemas, and the front end falls back to the route when the upgrade
+cannot be made (a proxy that drops it is the common case). Only the progress is lost.
 
 A run is identified by an opaque `id` (the cache directory name), never by a filesystem
 path: a browser cannot use a server path, and publishing the cache layout leaks

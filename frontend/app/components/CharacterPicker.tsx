@@ -38,26 +38,33 @@ export function CharacterPicker({
   // could not load. Either way the title alone says everything this control would.
   if (entries.length < 2) return null
 
-  const options = value && !entries.some((entry) => entry.id === value)
-    ? [...entries, { id: value, name: value }]
-    : entries
+  const options =
+    value && !entries.some((entry) => entry.id === value)
+      ? [...entries, { id: value, name: value }]
+      : entries
 
   return (
-    <Select
-      aria-label="Character sheet"
-      className="h-7 w-auto max-w-40 px-1.5 py-0 text-xs"
-      value={value ?? ""}
-      onChange={(e) => onChange(e.target.value)}
-    >
-      {/* Shown only while the sheet is unknown - during load, or after the load failed. There is
+    <div className="flex flex-row gap-2 border rounded border-parchment/20 p-2 text-sm">
+      <label htmlFor="picker" className="text-parchment/60">
+        Existing
+      </label>
+      <Select
+        name="picker"
+        aria-label="Character sheet"
+        className="h-7 w-auto max-w-40 px-1.5 py-0 text-base"
+        value={value ?? ""}
+        onChange={(e) => onChange(e.target.value)}
+      >
+        {/* Shown only while the sheet is unknown - during load, or after the load failed. There is
           nothing to choose yet, but a `Select` with no matching value displays its first option
           instead, and naming the wrong character is worse than naming none. */}
-      {value === null && <option value="">unknown</option>}
-      {options.map((entry) => (
-        <option key={entry.id} value={entry.id}>
-          {entry.name}
-        </option>
-      ))}
-    </Select>
+        {value === null && <option value="">unknown</option>}
+        {options.map((entry) => (
+          <option key={entry.id} value={entry.id}>
+            {entry.name}
+          </option>
+        ))}
+      </Select>
+    </div>
   )
 }

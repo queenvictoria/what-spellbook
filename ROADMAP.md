@@ -127,7 +127,21 @@ one place.
       them; `api.characters()` is defined in the client and unused. Sheets are YAML in
       `data/characters/`, which is gitignored, so an importer writes to user data.
 - [ ] Add another class that could use a loadout worker
-- [ ] Switch to websockets
+- [x] Switch to websockets
+      — `WS /api/stream` carries the five long operations (`scenario`, `refine`,
+      `character`, `rules`, `selection`), multiplexed by request `id` on one shared socket.
+      The HTTP routes are unchanged and remain the contract: the socket is a second
+      transport over the same service methods and the same schemas, and the front end falls
+      back to the route when the upgrade cannot be made.
+      **The payoff is the progress.** The browser used to derive the stage from elapsed
+      time, which showed "Scribing" while the server was still embedding; the stage is now
+      the service's own `emit` message, bridged from the worker thread onto the event loop
+      with `anyio.from_thread.run_sync`. `timing.STAGE_KEYS` / `OPERATION_STAGES` is the one
+      table tying the message the CLI prints to the key a browser switches on, and two tests
+      pin it — one reading the real `emit(...)` calls out of `service.py`, one asserting no
+      operation reports a stage it did not promise.
+      `answering` (the model call) is now a reported stage in all four ask paths, so a panel
+      cannot look finished while it is still waiting.
 - [ ] Stream LLM responses
 - [ ] Test with fine tuned DND model like https://huggingface.co/ostamand/RollMind-v1-gemma3-12b ollama run hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M
 

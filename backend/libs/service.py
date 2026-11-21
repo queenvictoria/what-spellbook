@@ -583,6 +583,7 @@ class SpellbookService:
                 character=self.character,
             ) if previous.pool else "",
         )
+        emit("Cogitating")
         answer = llm.invoke(self.llm, prompt)
         books, preamble, pairings = self._split_books(answer)
         generation = Generation(
@@ -686,6 +687,7 @@ class SpellbookService:
             rule_context=self.rule_context,
             history=history,
         )
+        emit("Cogitating")
         answer = Answer(question=question, answer=llm.invoke(self.llm, prompt),
                         source="model")
         answer.thread_id = self._record("character", question, answer, thread_id=thread_id)
@@ -763,6 +765,7 @@ class SpellbookService:
             question=question, rule_text=retrieved["text"], rule_context=self.rule_context,
             history=history,
         )
+        emit("Cogitating")
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(question, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
@@ -937,6 +940,7 @@ class SpellbookService:
             rule_context=self.rule_context, selection_context=context,
             attachments=documents, history=history,
         )
+        emit("Cogitating")
         answer = llm.invoke(self.llm, prompt)
         rules.save_cached(selected_text, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,

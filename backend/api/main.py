@@ -39,7 +39,16 @@ import dataclasses
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+import anyio
+from fastapi import (
+    FastAPI,
+    File,
+    HTTPException,
+    Query,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.libs import cache as cache_store
@@ -59,11 +68,47 @@ from backend.libs import (
     srd,
 )
 
-from . import schemas
+from . import schemas, streaming
 
 
 def _error(status: int, message: str) -> HTTPException:
     return HTTPException(status_code=status, detail=message)
+
+
+def _status_for(error: BaseException) -> tuple[int, str] | None:
+    """The status and message a *typed* failure should reach a client as, or ``None``.
+
+    Shared by both transports, because a status code is a contract and the two must not be
+    able to disagree about one. ``None`` means "not a failure this layer knows", which the
+    caller decides about: the HTTP routes re-raise it so a traceback names the handler that
+    was widened without this being taught about it, and the websocket reports it as a 500
+    rather than pretending to know better.
+
+    ``ValueError`` is checked last of the builtins because several typed errors subclass it
+    (``CharacterImportError`` is one), so a broader check first would flatten the specific
+    code into 400.
+    """
+    if isinstance(error, characters.CharacterNotFound):
+        return 404, str(error)
+    if isinstance(error, rules.RulesUnavailable):
+        return 404, str(error)
+    if isinstance(error, service.CharacterNotLoaded):
+        return 409, str(error)
+    if isinstance(error, service.NoEligibleSpells):
+        return 422, str(error)
+    if isinstance(error, character_import.CharacterImportError):
+        return 422, str(error)
+    if isinstance(error, llm.EmptyCompletion):
+        return 502, str(error)
+    if isinstance(error, llm.LLMUnavailable):
+        # Includes ``EmbeddingUnavailable``: embeddings go to the same Ollama, so the same
+        # advice applies and the same retry is honest.
+        return 503, str(error)
+    if isinstance(error, indexing.IndexUnavailable):
+        return 503, str(error)
+    if isinstance(error, ValueError):
+        return 400, str(error)
+    return None
 
 
 def _model_failure(error) -> HTTPException:
@@ -84,11 +129,10 @@ def _model_failure(error) -> HTTPException:
     these two types, so a third arriving here means a handler was widened without this
     being taught about it, and a traceback in the log is more use than a plausible status.
     """
-    if isinstance(error, llm.EmptyCompletion):
-        return _error(502, str(error))
-    if isinstance(error, llm.LLMUnavailable):
-        return _error(503, str(error))
-    raise error
+    mapped = _status_for(error)
+    if mapped is None:
+        raise error
+    return _error(*mapped)
 
 
 def _run_id(directory) -> str:
@@ -464,6 +508,134 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             raise _model_failure(e)
         except ValueError as e:
             raise _error(400, str(e))
+
+    # --- streaming (websocket) ---
+
+    # The one shape a ws request takes. Modelled on the two request bodies the HTTP routes
+    # already take, with `op` naming which one this is - so a socket can carry a scenario, a
+    # refinement, a rules question or a selection explanation without four endpoints.
+    #
+    #   {"op": "scenario", "scenario": "...", "character": "lois"}
+    #   {"op": "refine", "question": "...", "scenario": "...", "thread_id": "..."}
+    #   {"op": "character", "question": "...", "character": "lois"}
+    #   {"op": "rules", "question": "...", "thread_id": "..."}
+    #   {"op": "selection", "selected_text": "...", "context": "...", "document": [...]}
+
+    def _stream_sync(op: str, request: dict, emit):
+        """Run one operation, returning the wire payload. Blocking; runs off the loop.
+
+        Kept as a plain function so the work is testable without a socket, and so the
+        conversion to the schema - the one thing the HTTP routes already do - happens in
+        exactly one place per type rather than in a dict comprehension here.
+        """
+        svc = service_for(request.get("character"))
+        thread_id = request.get("thread_id")
+
+        if op == "scenario":
+            generation = svc.scenario(request["scenario"], progress=emit)
+            return schemas.GenerationSchema.from_generation(generation).model_dump()
+
+        if op == "refine":
+            previous = svc.find_cached(request["scenario"])
+            if previous is None:
+                raise _error(404, "No books are cached for that scenario; generate it first.")
+            generation = svc.refine(request["question"], previous, progress=emit,
+                                    thread_id=thread_id)
+            return schemas.GenerationSchema.from_generation(generation).model_dump()
+
+        if op == "character":
+            answer = svc.ask_character(request["question"], progress=emit,
+                                      thread_id=thread_id)
+            return schemas.AnswerSchema.from_answer(answer).model_dump()
+
+        if op == "rules":
+            answer = svc.ask_rules(request["question"], progress=emit, thread_id=thread_id)
+            return schemas.AnswerSchema.from_answer(answer).model_dump()
+
+        if op == "selection":
+            answer = svc.ask_rules_contextual(
+                request["selected_text"], context=request.get("context") or "",
+                attachments=request.get("document"), progress=emit,
+                thread_id=thread_id,
+            )
+            return schemas.AnswerSchema.from_answer(answer).model_dump()
+
+        raise _error(400, f"Unknown streaming operation '{op}'.")
+
+    @app.websocket("/api/stream")
+    async def stream(websocket: WebSocket):
+        """Run long operations, reporting their stages as they happen.
+
+        A message is a request, not a connection: the socket stays open for the panel that
+        opened it, so a follow-up reuses it and its frames keep their order with the answer
+        before them. Each request gets exactly one ``result`` or one ``error``, and both are
+        terminal for that request alone - the socket stays open afterwards.
+
+        **Requests run concurrently and are told apart by their ``id``.** One socket is
+        shared by every panel in the app, so a recommendation and a rules question can be in
+        flight at once - which is what makes switching tabs not cancel the work. Echoing the
+        caller's ``id`` is the only way each panel can tell its own frames from the other's.
+
+        The status codes are the HTTP ones, produced by the same ``_status_for`` the routes
+        use, so a client's error handling does not depend on which transport a request took.
+        """
+        await websocket.accept()
+        # One socket, many writers: every operation's frames go through this lock so two
+        # concurrent runs cannot interleave halfway through a JSON document.
+        lock = anyio.Lock()
+
+        async def send(event) -> None:
+            async with lock:
+                await websocket.send_json(event.as_dict())
+
+        async def run(op: str, ident: str | None, message: dict) -> None:
+            await send(streaming.start(op, ident))
+
+            def work(emit, op=op, message=message):
+                # The failure is caught *inside* the worker rather than around
+                # ``with_progress``: a raising worker tears down the task group, and anyio
+                # reports that as a ``BaseExceptionGroup`` - so ``except HTTPException``
+                # outside it never matches and every typed failure arrived as a 500. Handing
+                # the exception back as a value keeps the group clean and the mapping exact.
+                try:
+                    return True, _stream_sync(op, message, emit)
+                except Exception as e:  # noqa: BLE001 - reported, not swallowed
+                    return False, e
+
+            ok, value = await streaming.with_progress(send, work, id=ident)
+            if ok:
+                await send(streaming.result(op, value, ident))
+                return
+
+            if isinstance(value, HTTPException):
+                await send(streaming.error(op, value.status_code, str(value.detail), ident))
+                return
+            mapped = _status_for(value)
+            if mapped is None:
+                logging.exception("Streaming operation failed", exc_info=value)
+                mapped = (500, "The server failed to complete that request.")
+            await send(streaming.error(op, mapped[0], mapped[1], ident))
+
+        try:
+            async with anyio.create_task_group() as group:
+
+                async def receive_loop() -> None:
+                    # The socket's only job is to keep reading requests; each one runs in its
+                    # own task so a long generation does not block the next question.
+                    try:
+                        while True:
+                            message = await websocket.receive_json()
+                            group.start_soon(
+                                run, str(message.get("op")), message.get("id"), message
+                            )
+                    except WebSocketDisconnect:
+                        # A closed tab is how a panel says "I am done". Cancelling the group
+                        # is what stops everything in flight - nobody is left to read it.
+                        group.cancel_scope.cancel()
+
+                group.start_soon(receive_loop)
+        except Exception:  # noqa: BLE001 - log the loop breaking, not a peer leaving
+            logging.exception("Streaming socket closed unexpectedly")
 
     @app.get("/api/cached", response_model=schemas.GenerationSchema | None,
              tags=["generation"])

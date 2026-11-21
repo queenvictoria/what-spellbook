@@ -1429,3 +1429,170 @@ def test_the_source_endpoints_report_absence_rather_than_failing(api, tmp_path, 
         assert "not installed" in missing.json()["detail"]
     finally:
         ionas.clear_cache()
+
+
+# --- streaming over the websocket ---
+
+def _collect(ws, until_id: str) -> list[dict]:
+    """Read frames until the one that ends ``until_id``, returning them all.
+
+    A terminal frame is per *request*, so this stops on that request's `result`/`error`
+    rather than on any - two operations can be in flight on one socket.
+    """
+    frames = []
+    while True:
+        frame = ws.receive_json()
+        frames.append(frame)
+        if frame.get("id") == until_id and frame["type"] in ("result", "error"):
+            return frames
+
+
+def test_the_socket_reports_the_stages_the_work_is_actually_in(api):
+    """The reason this transport exists: the stage is reported, not inferred.
+
+    The HTTP route answers with the same payload, so the only thing the socket buys is
+    knowing *where* a 45-second run is. That is asserted here against the service's own
+    messages, which are the ones the CLI prints.
+    """
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "one", "op": "scenario", "scenario": SCENARIO})
+        frames = _collect(ws, "one")
+
+    assert frames[0]["type"] == "start"
+    assert frames[0]["stages"] == ["retrieval", "prompt", "books"]
+    keys = [f["key"] for f in frames if f["type"] == "stage"]
+    # In order, and matching what `timing.PHASE_LABELS` says the phases are called.
+    assert keys == ["retrieval", "prompt", "books"]
+    assert frames[-1]["type"] == "result"
+    assert frames[-1]["data"]["books"]
+
+
+def test_a_socket_request_answers_with_the_same_payload_as_the_route(api):
+    """The two transports must not disagree about the wire format.
+
+    A second conversion would be a second place for a field to be forgotten, so the socket
+    reuses the schema's own ``from_*``. Compared against ``GET /api/cached`` rather than
+    against a fresh ``POST /api/scenario``, because both of those are *replays* of the same
+    stored run - a fresh generation legitimately differs (``from_cache``, ``run_id``, and a
+    book's ``rating``, which is null until the run has been read back).
+    """
+    api.post("/api/scenario", json={"scenario": SCENARIO})
+    over_http = api.get("/api/cached", params={"scenario": SCENARIO}).json()
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "same", "op": "scenario", "scenario": SCENARIO})
+        streamed = _collect(ws, "same")[-1]["data"]
+
+    # One field cannot match and is not about the format: `find_cached` returns no `run_id`
+    # (see its note), so the socket's replay carries `None` where the route's carries the id.
+    assert {**streamed, "run_id": None} == {**over_http, "run_id": None}
+
+
+def test_one_socket_carries_several_requests_at_once(api):
+    """Panels do not take turns, so the socket must not make them.
+
+    Two operations on one connection, told apart by the ``id`` they were sent with - which
+    is what lets a recommendation keep running while a rules question is asked.
+    """
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "books", "op": "scenario", "scenario": SCENARIO})
+        ws.send_json({"id": "sheet", "op": "character", "question": "perception"})
+
+        ends = {}
+        while len(ends) < 2:
+            frame = ws.receive_json()
+            if frame["type"] in ("result", "error"):
+                ends[frame["id"]] = frame
+
+    assert ends["books"]["type"] == "result"
+    assert ends["books"]["data"]["books"]
+    assert ends["sheet"]["type"] == "result"
+    assert ends["sheet"]["data"]["source"] == "sheet"
+
+
+def test_a_request_can_share_a_socket_with_the_one_before_it(api):
+    """A message is a request, not a connection.
+
+    A panel asks a follow-up without a new handshake, which is the point of a socket that
+    outlives one call.
+    """
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "first", "op": "character", "question": "perception"})
+        assert _collect(ws, "first")[-1]["type"] == "result"
+
+        ws.send_json({"id": "second", "op": "character", "question": "armor class"})
+        second = _collect(ws, "second")
+    assert second[-1]["type"] == "result"
+    assert second[-1]["id"] == "second"
+
+
+def test_a_failure_on_the_socket_carries_the_http_status(api, monkeypatch):
+    """An error is a message in the same vocabulary, so one client handler covers both.
+
+    A refused request must not close the socket either: the panel that asked is one of
+    several sharing it.
+    """
+    monkeypatch.setattr(
+        "backend.libs.llm.invoke",
+        lambda *a, **k: (_ for _ in ()).throw(llm.LLMUnavailable("Ollama is not running.")),
+    )
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "bad", "op": "scenario", "scenario": SCENARIO})
+        failed = _collect(ws, "bad")[-1]
+
+        # The socket still works, which is what "an error is a message" means.
+        ws.send_json({"id": "after", "op": "character", "question": "perception"})
+        after = _collect(ws, "after")[-1]
+
+    assert failed["type"] == "error"
+    assert failed["status"] == 503
+    assert "Ollama is not running" in failed["detail"]
+    assert after["type"] == "result"
+
+
+def test_an_unknown_streaming_operation_is_a_400_not_a_crash(api):
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({"id": "nope", "op": "teleport"})
+        frame = _collect(ws, "nope")[-1]
+    assert frame["type"] == "error"
+    assert frame["status"] == 400
+    assert "teleport" in frame["detail"]
+
+
+def test_a_refinement_over_the_socket_still_needs_a_stored_run(api):
+    """The typed errors the routes map apply unchanged: a 404 is still a 404."""
+    with api.websocket_connect("/api/stream") as ws:
+        ws.send_json({
+            "id": "refine", "op": "refine", "scenario": SCENARIO,
+            "question": "what about fire resistance?",
+        })
+        frame = _collect(ws, "refine")[-1]
+    assert frame["type"] == "error"
+    assert frame["status"] == 404
+
+
+def test_every_streamed_operation_announces_the_stages_it_promised(api):
+    """The `start` frame is a promise, and the frames that follow must keep it.
+
+    A stage outside the promised list is dropped by the client - the drawer switches on the
+    index in that list - so a stage that was never promised would render as no progress at
+    all. This walks every op and asserts the reported keys are a subset of what it announced.
+    """
+    cases = {
+        "scenario": {"scenario": SCENARIO},
+        "character": {"question": "perception"},
+        "rules": {"question": "how does cover work"},
+        "selection": {"selected_text": "2 beams", "context": "Eldritch Blast fires 2 beams."},
+    }
+    with api.websocket_connect("/api/stream") as ws:
+        for index, (op, body) in enumerate(cases.items()):
+            ident = f"op-{index}"
+            ws.send_json({"id": ident, "op": op, **body})
+            frames = _collect(ws, ident)
+
+            promised = frames[0]["stages"]
+            assert promised, f"{op} promised no stages"
+            reported = [f["key"] for f in frames if f["type"] == "stage"]
+            assert set(reported) <= set(promised), (op, reported, promised)
+            # Every stage but the last is followed by another, so a reported stage the list
+            # does not order it against would be an index error on the client.
+            assert frames[-1]["type"] == "result", (op, frames[-1])

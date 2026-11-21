@@ -9,10 +9,20 @@ import {
 } from "lucide-react"
 
 import { api } from "@/api/client"
+import { streamed } from "@/api/stream"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { RulesContextDrawerProvider } from "@/components/RulesContextDrawer"
 import { SelectionWatcher } from "@/components/SelectionWatcher"
 import type { Answer, Book } from "@/api/types"
+
+/**
+ * What a refinement renders as: the answer's prose under a provenance badge.
+ *
+ * The route answers with a whole `Generation` rather than an `Answer`, because the
+ * refinement can re-scribe the books - and the panel shows the prose of it. Naming the
+ * narrow shape it actually reads is what keeps this from asserting the two are the same.
+ */
+type PublishedAnswer = Pick<Answer, "answer" | "source" | "field_name">
 import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
 import { SpellLink } from "@/components/SpellLink"
@@ -20,8 +30,11 @@ import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { StageProgress } from "@/components/StageProgress"
+import { STREAM_STAGE_LABELS } from "@/api/types"
 import { withoutBookHeader } from "@/lib/bookText"
 import { cn } from "@/lib/utils"
+import { useStreamStages } from "@/lib/useStreamStages"
 
 const OUTCOMES = ["won", "lost", "unused", "partial"] as const
 
@@ -52,8 +65,14 @@ export function BookPanel({
   const [error, setError] = useState<unknown>(null)
 
   const [question, setQuestion] = useState("")
-  const [answer, setAnswer] = useState<Answer | null>(null)
+  // The refinement is a `Generation` - a whole re-scribbled answer - which is what the route
+  // returns. Only its prose is rendered here, because this panel is about *this* book and the
+  // alternative is three more book cards nested inside the one that asked.
+  const [answer, setAnswer] = useState<PublishedAnswer | null>(null)
   const [loading, setLoading] = useState(false)
+  // A refinement is a model call, so it reports its stages; the same panel shows the
+  // spinner it always did when the answer is cached, and the stage list when it is not.
+  const refineStages = useStreamStages()
   // The refinement conversation for this book. Held so a follow-up is read in context,
   // and so the exchange can be found again under History → Conversations.
   const [threadId, setThreadId] = useState<string | null>(null)
@@ -92,19 +111,21 @@ export function BookPanel({
     if (!question.trim()) return
     setLoading(true)
     setError(null)
+    refineStages.start("refine")
     try {
-      const result = await api.ask(
+      const refined = await streamed.refine(
         scenario,
         question,
-        undefined,
         threadId ?? undefined,
+        refineStages.handlers,
       )
-      setAnswer(result)
-      setThreadId(result.thread_id)
+      setAnswer({ answer: refined.answer, source: "model", field_name: null })
+      setThreadId(refined.thread_id)
     } catch (e) {
       setError(e)
     } finally {
       setLoading(false)
+      refineStages.finish()
     }
   }
 
@@ -233,6 +254,17 @@ export function BookPanel({
                 </span>
               </Button>
             </div>
+            {loading && (
+              <StageProgress
+                stage={refineStages.stage}
+                elapsed={refineStages.elapsed}
+                // No estimate: refinements are not recorded with timings, so a number here
+                // would be invented rather than learned from this machine.
+                estimate={null}
+                stages={refineStages.stages}
+                labels={STREAM_STAGE_LABELS}
+              />
+            )}
             {answer && (
               <div className="space-y-2">
                 <SourceBadge source={answer.source} field={answer.field_name} />

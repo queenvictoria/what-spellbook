@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -245,6 +246,119 @@ def test_phase_names_match_the_service_and_the_labels():
     """A renamed phase would silently yield an empty breakdown, not an error."""
     assert set(timing.PHASES) <= set(timing.PHASE_LABELS)
     assert len(timing.PHASE_LABELS) == len(timing.PHASES)
+
+
+def test_every_stage_the_service_emits_has_a_key():
+    """The streaming client switches on a key, and a missing one degrades silently.
+
+    The service emits human labels; a browser cannot switch on a sentence. ``STAGE_KEYS`` is
+    the one table tying the two spellings together, so a message added to the service without
+    an entry here reaches a panel as an unlabelled stage rather than as an error.
+
+    This reads the actual ``emit(...)`` calls out of the source instead of listing them, so a
+    stage added later fails here rather than being noticed only in a browser.
+    """
+    source = Path(__file__).resolve().parent.parent / "backend" / "libs" / "service.py"
+    messages = set()
+    for line in source.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("emit("):
+            continue
+        argument = stripped[len("emit("):].rstrip(")")
+        # Skip the interpolated one, which is matched by prefix instead.
+        if argument.startswith("f\""):
+            continue
+        messages.add(argument.strip().strip('"'))
+
+    missing = messages - set(timing.STAGE_KEYS)
+    assert not missing, f"stage messages with no streaming key: {sorted(missing)}"
+
+
+def test_the_attached_stage_is_matched_by_prefix():
+    """``emit(f"Attached {names}")`` names documents, so it cannot be a fixed string."""
+    assert timing.stage_key(f"{timing.ATTACHED_PREFIX}Thorn Whip") == timing.ATTACHED_KEY
+
+
+def test_an_unknown_stage_keeps_its_own_text_as_the_key():
+    """A stage the table has not learned yet still reaches the browser, as a label.
+
+    Dropping it would leave a panel showing nothing while the work was in progress, which is
+    the failure this shape avoids.
+    """
+    assert timing.stage_key("Something new") == "Something new"
+
+
+def test_every_operation_names_the_stages_it_reports():
+    """A client draws `start.stages` to show what is still to come."""
+    from backend.libs import service
+
+    with_stages = {"scenario", "refine", "character", "rules", "selection"}
+    assert with_stages == set(timing.OPERATION_STAGES)
+    # `attaching` comes from the interpolated `Attached ...` message, so it is its own
+    # constant rather than an entry in the table.
+    known = set(timing.STAGE_KEYS.values()) | {timing.ATTACHED_KEY}
+    for op, stages in timing.OPERATION_STAGES.items():
+        assert stages, f"{op} reports no stages at all"
+        assert set(stages) <= known, op
+
+
+
+def _frontend_types() -> Path:
+    """`frontend/app/api/types.ts`, the hand-written mirror of the wire contract."""
+    return config.ROOT / "frontend" / "app" / "api" / "types.ts"
+
+
+def test_the_front_end_mirrors_the_operations_and_their_stages():
+    """The stage lists exist twice, so assert they say the same thing.
+
+    The browser cannot derive them - it has no Python - so the mirror is unavoidable. What is
+    avoidable is the mirror *drifting*: a stage added here and not there is a row the panel
+    silently skips past, because a key its list does not name is ignored on purpose.
+    """
+    source = _frontend_types().read_text()
+
+    body = _ts_block(source, "STREAM_STAGES")
+    mirrored: dict[str, tuple[str, ...]] = {}
+    for op, value in re.findall(r"(\w+):\s*(\[[^\]]*\]|PHASES)", body):
+        names = (
+            timing.PHASES
+            if value == "PHASES"
+            else tuple(re.findall(r"'([^']+)'", value))
+        )
+        mirrored[op] = tuple(names)
+
+    assert mirrored == {op: tuple(v) for op, v in timing.OPERATION_STAGES.items()}
+
+
+def test_the_front_end_mirrors_the_stage_labels():
+    """Both transports speak the same words, because one table decides them."""
+    source = _frontend_types().read_text()
+
+    labels = re.findall(r"(\w+):\s*'([^']+)'", _ts_block(source, "STREAM_STAGE_LABELS"))
+    mirrored = dict(labels)
+
+    # `labels` spreads `PHASE_LABELS`, so only the additions appear literally.
+    assert {"refine", "character", "consulting", "reading", "attaching", "answering"} <= set(
+        mirrored
+    )
+    for message, key in timing.STAGE_KEYS.items():
+        if key in mirrored:
+            assert mirrored[key] == message, key
+
+
+def _ts_block(source: str, name: str) -> str:
+    """The `{...}` body of a top-level object constant in a TypeScript file."""
+    start = source.index(f"export const {name}")
+    start = source.index("{", start)
+    depth = 0
+    for index in range(start, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[start + 1 : index]
+    raise AssertionError(f"{name} is not closed")
 
 
 # --- the prompt follows the configured count ---

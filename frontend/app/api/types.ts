@@ -654,25 +654,67 @@ export interface SearchParams {
 /** A stage of a run, in the order the CLI reports them. */
 export const PHASES = ['retrieval', 'prompt', 'books'] as const
 
+/**
+ * The service's own wording for each phase, copied from `timing.PHASE_LABELS`.
+ *
+ * Only used until the first frame arrives - the socket sends the label it emitted, so the
+ * rows a reader sees are the service's words and not this copy. Keeping them identical means
+ * the list does not visibly re-word itself when the real frames land.
+ */
 export const PHASE_LABELS: Record<string, string> = {
-  retrieval: 'Fetching spells from Grimoire',
-  prompt: 'Crafting prompt',
-  books: 'Scribing Books of Shadow',
+  retrieval: 'Fetching spells from the grimoire',
+  prompt: 'Crafting the prompt',
+  books: 'Scribing the Books of Shadows',
 }
 
 /**
- * The contextual menu's own stages.
+ * The operations the websocket can run.
  *
- * A separate list from `PHASES` rather than a reuse of it, because the work is different
- * work: nothing is ranked, nothing is filtered by class, and the spell texts that answer
- * the question are *attached* rather than retrieved - which is the stage a reader most
- * wants to see, since a missing attachment is invisible in the answer text.
+ * They exist because each one takes seconds and the service already knows which stage it is
+ * in - the HTTP route returns the same payload, so this is a second transport for the same
+ * work rather than a second implementation of it.
  */
-export const CONTEXT_STAGES = ['analyse', 'gather', 'prompt', 'answer'] as const
+export type StreamOp = 'scenario' | 'refine' | 'character' | 'rules' | 'selection'
 
-export const CONTEXT_STAGE_LABELS: Record<string, string> = {
-  analyse: 'Analysing the selection',
-  gather: 'Retrieving context',
-  prompt: 'Crafting prompt',
-  answer: 'Cogitating',
+/** One request on the shared socket. `id` is added by the client, not by a caller. */
+export type StreamRequest = {
+  op: StreamOp
+  character?: string
+  thread_id?: string
+  /** `scenario` and `refine`. */
+  scenario?: string
+  /** `refine`, `character`, `rules`. */
+  question?: string
+  /** `selection`. */
+  selected_text?: string
+  /** The sentence the selection came from, for `selection` only. */
+  context?: string
+  /** Documents attached to a selection, by name. */
+  document?: string[]
+}
+
+/**
+ * The stages each streaming operation reports, keyed by the op.
+ *
+ * Mirrors `timing.OPERATION_STAGES`. The backend sends this on every `start` frame, so this
+ * copy is only a fallback for a client that wants to draw the list before the first frame
+ * lands; a drift here cannot change what is *reported*, only what is shown while connecting.
+ */
+export const STREAM_STAGES: Record<StreamOp, readonly string[]> = {
+  scenario: PHASES,
+  refine: ['refine', 'answering'],
+  character: ['character', 'answering'],
+  rules: ['consulting', 'reading', 'answering'],
+  selection: ['attaching', 'consulting', 'reading', 'answering'],
+}
+
+/** Human labels for the stage keys on a stream, including the ones `PHASES` does not name. */
+export const STREAM_STAGE_LABELS: Record<string, string> = {
+  ...PHASE_LABELS,
+  refine: 'Refining the current choices',
+  character: 'Reading the character sheet',
+  consulting: 'Consulting the 2024 SRD',
+  reading: 'Reading the rules',
+  attaching: 'Attaching documents',
+  answering: 'Cogitating',
 }
