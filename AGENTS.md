@@ -1207,6 +1207,12 @@ Five operations, one socket, multiplexed by an `id` the client chooses. A reader
 tabs must not cancel work, and a second panel asking its own question must not have its
 frames interleaved into the first panel's spinner.
 
+The scenario, rules and character screens stay mounted after their first visit and are hidden
+when another route is active. This keeps their stream listeners and local result state alive,
+so returning to the route shows the ongoing draft or completed answer rather than an empty
+screen. Keep this limited to operation-owning screens: mounting history, search and settings
+in the background would change when their data refreshes.
+
 Six things cost real time, and each is a shape worth recognising:
 
 - **An exception raised in a worker thread arrives as a `BaseExceptionGroup`.** `except

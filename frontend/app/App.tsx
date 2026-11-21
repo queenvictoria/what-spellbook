@@ -1,4 +1,6 @@
-import { NavLink, Navigate, Route, Routes } from "react-router-dom"
+import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom"
+import { useState } from "react"
+import type { ReactNode } from "react"
 
 import { LicensingNotice } from "@/components/LicensingNotice"
 import { CharacterScreen } from "@/screens/CharacterScreen"
@@ -18,7 +20,18 @@ const NAV = [
   // { to: '/search', label: 'Search' },
 ]
 
+const LONG_OPERATION_SCREENS = [
+  { path: "/scenario", element: <ScenarioScreen /> },
+  { path: "/rules", element: <RulesScreen /> },
+  { path: "/character", element: <CharacterScreen /> },
+] as const
+
 export function App() {
+  const location = useLocation()
+  const persistentPath = LONG_OPERATION_SCREENS.some(
+    ({ path }) => path === location.pathname,
+  )
+
   return (
     <div className="min-h-screen flex flex-col pb-10 sm:pb-0 sm:pt-10">
       {/* Sticky rather than fixed: the header keeps its place in the flow, so the main
@@ -85,21 +98,27 @@ export function App() {
       </header>
 
       <main className="mx-auto max-w-6xl px-6 py-8 grow">
-        <Routes>
-          <Route path="/" element={<Navigate to="/scenario" replace />} />
-          <Route path="/scenario" element={<ScenarioScreen />} />
-          <Route path="/history" element={<HistoryScreen />} />
-          {/* The Chats tab was folded into History as a subtab; keep old links working. */}
-          <Route
-            path="/chats"
-            element={<Navigate to="/history?tab=conversations" replace />}
-          />
-          <Route path="/character" element={<CharacterScreen />} />
-          <Route path="/rules" element={<RulesScreen />} />
-          <Route path="/search" element={<SearchScreen />} />
-          <Route path="/settings" element={<SettingsScreen />} />
-          <Route path="*" element={<Navigate to="/scenario" replace />} />
-        </Routes>
+        {/* Keep the operation-owning screens mounted after first visit. A route change
+            hides them instead of discarding their stream handlers, draft, or final result. */}
+        {LONG_OPERATION_SCREENS.map(({ path, element }) => (
+          <PersistedScreen key={path} active={location.pathname === path}>
+            {element}
+          </PersistedScreen>
+        ))}
+        {!persistentPath && (
+          <Routes>
+            <Route path="/" element={<Navigate to="/scenario" replace />} />
+            <Route path="/history" element={<HistoryScreen />} />
+            {/* The Chats tab was folded into History as a subtab; keep old links working. */}
+            <Route
+              path="/chats"
+              element={<Navigate to="/history?tab=conversations" replace />}
+            />
+            <Route path="/search" element={<SearchScreen />} />
+            <Route path="/settings" element={<SettingsScreen />} />
+            <Route path="*" element={<Navigate to="/scenario" replace />} />
+          </Routes>
+        )}
       </main>
 
       {/* The third-party attributions, below the routed screen. CC-BY-4.0 requires the
@@ -108,4 +127,17 @@ export function App() {
       <LicensingNotice />
     </div>
   )
+}
+
+function PersistedScreen({
+  active,
+  children,
+}: {
+  active: boolean
+  children: ReactNode
+}) {
+  const [visited, setVisited] = useState(active)
+  if (active && !visited) setVisited(true)
+  if (!active && !visited) return null
+  return <div hidden={!active}>{children}</div>
 }

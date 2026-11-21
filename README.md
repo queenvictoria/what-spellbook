@@ -264,8 +264,10 @@ being inferred from the last message seen.
 
 The HTTP routes remain the contract: the socket is a second transport over the same service
 methods and the same schemas, and the front end falls back to the route when the upgrade
-cannot be made (a proxy that drops it is the common case). Only live progress and the draft
-are lost.
+cannot be made (a proxy that drops it is the common case). The scenario, rules and character
+screens stay mounted after first visit and are hidden on navigation, so switching routes
+preserves live progress, the draft and the completed result. This lasts for the current app
+session; a full page reload is not a persisted background task.
 
 A run is identified by an opaque `id` (the cache directory name), never by a filesystem
 path: a browser cannot use a server path, and publishing the cache layout leaks
