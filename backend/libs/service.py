@@ -267,6 +267,16 @@ class SpellbookService:
             self._fast_llm = llm.build_fast_llm(self.model_env)
         return self._fast_llm
 
+    def _invoke(self, prompt: str, on_token=None) -> str:
+        """Use the ordinary call unless a transport asked for incremental text.
+
+        Omitting the keyword when there is no callback preserves the long-standing
+        ``llm.invoke(client, prompt)`` call shape used by CLI code and test doubles.
+        """
+        if on_token is None:
+            return llm.invoke(self.llm, prompt)
+        return llm.invoke(self.llm, prompt, on_token=on_token)
+
     # --- conversations ---
 
     def _thread(self, kind: str, opening: str, thread_id: str | None = None):
@@ -446,7 +456,7 @@ class SpellbookService:
                 run.get("context") or {})),
         )
 
-    def scenario(self, scenario: str, progress=None) -> Generation:
+    def scenario(self, scenario: str, progress=None, *, on_token=None) -> Generation:
         """Build three books for ``scenario``, or replay a cached run.
 
         Raises NoEligibleSpells when the character's rules allow no book picks, and
@@ -508,7 +518,7 @@ class SpellbookService:
 
         emit("Scribing the Books of Shadows")
         with timer.phase("books"):
-            answer = llm.invoke(self.llm, full_prompt)
+            answer = self._invoke(full_prompt, on_token)
 
         books, preamble, pairings = self._split_books(answer)
         generation = Generation(
@@ -527,7 +537,7 @@ class SpellbookService:
         return generation
 
     def refine(self, question: str, previous: Generation | None, progress=None, *,
-               thread_id: str | None = None) -> Generation:
+               thread_id: str | None = None, on_token=None) -> Generation:
         """Answer a follow-up question about a previous answer.
 
         The exchange is recorded in a conversation keyed on the scenario, so a follow-up
@@ -584,7 +594,7 @@ class SpellbookService:
             ) if previous.pool else "",
         )
         emit("Cogitating")
-        answer = llm.invoke(self.llm, prompt)
+        answer = self._invoke(prompt, on_token)
         books, preamble, pairings = self._split_books(answer)
         generation = Generation(
             scenario=previous.scenario,
@@ -614,7 +624,7 @@ class SpellbookService:
         return generation
 
     def ask_character(self, question: str, progress=None, *,
-                      thread_id: str | None = None) -> Answer:
+                      thread_id: str | None = None, on_token=None) -> Answer:
         """Answer a question about the character sheet: ``/c <question>``.
 
         Two-stage on purpose. A question whose answer is already a field on the sheet
@@ -688,13 +698,13 @@ class SpellbookService:
             history=history,
         )
         emit("Cogitating")
-        answer = Answer(question=question, answer=llm.invoke(self.llm, prompt),
+        answer = Answer(question=question, answer=self._invoke(prompt, on_token),
                         source="model")
         answer.thread_id = self._record("character", question, answer, thread_id=thread_id)
         return answer
 
     def ask_rules(self, question: str, progress=None, *,
-                  thread_id: str | None = None) -> Answer:
+                  thread_id: str | None = None, on_token=None) -> Answer:
         """Answer a rules question from the 2024 SRD: ``/? <question>``.
 
         Grounded in fetched text rather than model recall, because a rules answer is
@@ -766,7 +776,7 @@ class SpellbookService:
             history=history,
         )
         emit("Cogitating")
-        answer = llm.invoke(self.llm, prompt)
+        answer = self._invoke(prompt, on_token)
         rules.save_cached(question, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
                           cache_dir=self.cache_dir)
@@ -837,7 +847,7 @@ class SpellbookService:
 
     def ask_rules_contextual(self, selected_text: str, context: str = "",
                              attachments=None, progress=None, *,
-                             thread_id: str | None = None) -> Answer:
+                             thread_id: str | None = None, on_token=None) -> Answer:
         """Explain a phrase selected out of a book's prose, grounded in the 2024 SRD.
 
         A selection is a fragment, not a question, so the answer is assembled rather than
@@ -941,7 +951,7 @@ class SpellbookService:
             attachments=documents, history=history,
         )
         emit("Cogitating")
-        answer = llm.invoke(self.llm, prompt)
+        answer = self._invoke(prompt, on_token)
         rules.save_cached(selected_text, answer, passages=retrieved["passages"],
                           url=retrieved["url"], answer_source=source,
                           cache_dir=self.cache_dir,

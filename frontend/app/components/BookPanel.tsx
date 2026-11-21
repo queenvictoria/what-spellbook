@@ -31,6 +31,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { StageProgress } from "@/components/StageProgress"
+import { StreamingPreview } from "@/components/StreamingPreview"
 import { STREAM_STAGE_LABELS } from "@/api/types"
 import { withoutBookHeader } from "@/lib/bookText"
 import { cn } from "@/lib/utils"
@@ -255,15 +256,18 @@ export function BookPanel({
               </Button>
             </div>
             {loading && (
-              <StageProgress
-                stage={refineStages.stage}
-                elapsed={refineStages.elapsed}
-                // No estimate: refinements are not recorded with timings, so a number here
-                // would be invented rather than learned from this machine.
-                estimate={null}
-                stages={refineStages.stages}
-                labels={STREAM_STAGE_LABELS}
-              />
+              <div className="space-y-3">
+                <StageProgress
+                  stage={refineStages.stage}
+                  elapsed={refineStages.elapsed}
+                  // No estimate: refinements are not recorded with timings, so a number here
+                  // would be invented rather than learned from this machine.
+                  estimate={null}
+                  stages={refineStages.stages}
+                  labels={STREAM_STAGE_LABELS}
+                />
+                <StreamingPreview text={refineStages.output} />
+              </div>
             )}
             {answer && (
               <div className="space-y-2">

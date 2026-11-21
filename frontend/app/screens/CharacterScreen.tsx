@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageProgress } from "@/components/StageProgress"
+import { StreamingPreview } from "@/components/StreamingPreview"
 import { STREAM_STAGE_LABELS } from "@/api/types"
 import { useStreamStages } from "@/lib/useStreamStages"
 import { Badge } from "@/components/ui/badge"
@@ -325,15 +326,18 @@ export function CharacterScreen() {
             )}
 
             {asking && (
-              <StageProgress
-                stage={askStages.stage}
-                elapsed={askStages.elapsed}
-                // Only shown once work actually started: a sheet lookup answers in
-                // milliseconds and would flash a progress list nobody can read.
-                estimate={null}
-                stages={askStages.stages}
-                labels={STREAM_STAGE_LABELS}
-              />
+              <div className="space-y-3">
+                <StageProgress
+                  stage={askStages.stage}
+                  elapsed={askStages.elapsed}
+                  // Only shown once work actually started: a sheet lookup answers in
+                  // milliseconds and would flash a progress list nobody can read.
+                  estimate={null}
+                  stages={askStages.stages}
+                  labels={STREAM_STAGE_LABELS}
+                />
+                <StreamingPreview text={askStages.output} />
+              </div>
             )}
 
             {askError != null && (

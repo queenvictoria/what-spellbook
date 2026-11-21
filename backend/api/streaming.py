@@ -40,9 +40,9 @@ class Event:
     """One frame on the wire.
 
     ``type`` is the discriminant: ``start`` (what this operation will run through),
-    ``stage`` (where it is now), ``result`` (the answer, terminal) and ``error`` (the
-    failure, terminal). ``stages`` is only on ``start`` and is what lets a panel draw the
-    whole list up front instead of appending as events arrive.
+    ``stage`` (where it is now), ``token`` (generated text), ``result`` (the answer,
+    terminal) and ``error`` (the failure, terminal). ``stages`` is only on ``start`` and is
+    what lets a panel draw the whole list up front instead of appending as events arrive.
     """
 
     type: str
@@ -51,6 +51,7 @@ class Event:
     key: str | None = None
     label: str | None = None
     stages: list[str] | None = None
+    text: str | None = None
     data: Any = None
     status: int | None = None
     detail: str | None = None
@@ -76,6 +77,10 @@ def stage(message: str, id: str | None = None) -> Event:
     return Event(type="stage", id=id, key=timing.stage_key(message), label=message)
 
 
+def token(text: str, id: str | None = None) -> Event:
+    return Event(type="token", id=id, text=text)
+
+
 def result(op: str, data: Any, id: str | None = None) -> Event:
     return Event(type="result", id=id, op=op, data=data)
 
@@ -88,12 +93,10 @@ async def with_progress(send: Callable[[Event], Any], work: Callable[..., Any],
                         *, id: str | None = None) -> Any:
     """Run blocking ``work`` off the loop, forwarding its progress as it happens.
 
-    ``work`` is handed an ``emit(message)`` callback, which is the same callable shape the
-    CLI passes to the service. The service runs in a worker thread - it does blocking
-    embedding and model calls - so the callback has to travel back to the event loop
-    without blocking the thread it is on. ``anyio.from_thread.run_sync`` does exactly
-    that, and ``send_nowait`` keeps the ordering that ``await`` would lose anyway once the
-    thread's only job is to keep working.
+    ``work`` is handed ``emit(message)`` and ``emit_token(text)`` callbacks. The service runs
+    in a worker thread - it does blocking embedding and model calls - so callbacks travel
+    back to the event loop with backpressure. Without it, a fast model can fill a bounded
+    event queue faster than the socket can send and lose response text.
 
     ``id`` is echoed on every frame so one socket can carry several operations at once -
     two panels, or a tab that started something and navigated away. Without it, frames from
@@ -103,7 +106,10 @@ async def with_progress(send: Callable[[Event], Any], work: Callable[..., Any],
     events, receiver = anyio.create_memory_object_stream[Event](16)
 
     def emit(message: str) -> None:
-        anyio.from_thread.run_sync(events.send_nowait, stage(message, id))
+        anyio.from_thread.run(events.send, stage(message, id))
+
+    def emit_token(text: str) -> None:
+        anyio.from_thread.run(events.send, token(text, id))
 
     async def pump() -> None:
         async with receiver:
@@ -113,7 +119,7 @@ async def with_progress(send: Callable[[Event], Any], work: Callable[..., Any],
     async with anyio.create_task_group() as group:
         group.start_soon(pump)
         try:
-            return await run_in_threadpool(work, emit)
+            return await run_in_threadpool(work, emit, emit_token)
         finally:
             # Closing before the group exits is what terminates the pump; without it the
             # group would wait for a stream that nothing is going to write to.
@@ -124,6 +130,7 @@ __all__ = [
     "Event",
     "start",
     "stage",
+    "token",
     "result",
     "error",
     "with_progress",

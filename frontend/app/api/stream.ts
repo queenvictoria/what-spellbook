@@ -21,13 +21,14 @@ import type { Answer, Generation, StreamOp, StreamRequest } from './types'
  *   session whose `run()` resolves with the payload; a panel that unmounts simply stops
  *   listening, and the backend cancels when the *socket* closes. That is the intended
  *   bargain: leaving a tab is saying "I no longer need this".
- * - **The frames are typed by `type`, not by shape.** `start` is the first date, `stage`
- *   arrives zero or more times, and exactly one of `result`/`error` ends the request.
+ * - **The frames are typed by `type`, not by shape.** `start` is the first frame, `stage`
+ *   and `token` arrive zero or more times, and exactly one of `result`/`error` ends the
+ *   request.
  */
 
 /** How the wire speaks: the event as the backend sends it. */
 interface Frame {
-  type: 'start' | 'stage' | 'result' | 'error'
+  type: 'start' | 'stage' | 'token' | 'result' | 'error'
   /** Echoed back so one socket can carry several operations. */
   id?: string
   op?: StreamOp
@@ -37,6 +38,8 @@ interface Frame {
   label?: string
   /** The full stage list for the operation, on `start` only. */
   stages?: string[]
+  /** One chunk of generated model text. */
+  text?: string
   data?: unknown
   status?: number
   detail?: string
@@ -47,9 +50,19 @@ export interface StreamHandlers {
   onStages?: (stages: string[]) => void
   /** One stage is now running. */
   onStage?: (key: string, label: string) => void
+  /** A chunk of generated model text. */
+  onToken?: (text: string) => void
 }
 
 type Listener = (frame: Frame) => void
+
+/** The socket could not be established, so the HTTP fallback is safe to try. */
+class StreamUnavailable extends ApiError {
+  constructor(message: string) {
+    super(0, message)
+    this.name = 'StreamUnavailable'
+  }
+}
 
 /**
  * The shared connection, with the reconnect logic no caller should have to think about.
@@ -77,15 +90,15 @@ class StreamConnection {
     }
     if (this.opening) return this.opening
 
-    this.opening = new Promise<WebSocket>((resolve, reject) => {
+    const opening = new Promise<WebSocket>((resolve, reject) => {
       let socket: WebSocket
       try {
         socket = new WebSocket(this.url())
       } catch {
-        reject(new ApiError(0, `Could not reach the API at ${apiBase()}. Is it running?`))
+        reject(new StreamUnavailable(`Could not reach the API at ${apiBase()}. Is it running?`))
         return
       }
-      socket.onopen = () => resolve(socket)
+      let opened = false
       socket.onmessage = (event) => {
         let frame: Frame
         try {
@@ -104,6 +117,10 @@ class StreamConnection {
       socket.onclose = () => {
         this.socket = null
         this.opening = null
+        if (!opened) {
+          reject(new StreamUnavailable(`Could not open a websocket to the API at ${apiBase()}.`))
+          return
+        }
         // Everything in flight died with the connection. Resolving them as *errors* rather
         // than leaving their promises pending is what keeps a panel from spinning forever
         // when the server restarts - the alternative is a spinner with no way out.
@@ -114,12 +131,17 @@ class StreamConnection {
       }
 
       socket.onopen = () => {
+        opened = true
         this.socket = socket
         resolve(socket)
       }
     })
 
-    return this.opening
+    this.opening = opening
+    void opening.catch(() => {
+      if (this.opening === opening) this.opening = null
+    })
+    return opening
   }
 
   /**
@@ -146,6 +168,10 @@ class StreamConnection {
           if (frame.key) handlers.onStage?.(frame.key, frame.label ?? frame.key)
           return
         }
+        if (frame.type === 'token') {
+          if (frame.text) handlers.onToken?.(frame.text)
+          return
+        }
         // Terminal: the request is done either way, so the listener goes before the caller
         // runs - a handler that immediately asks something else must not be fed this reply.
         this.listeners.delete(id)
@@ -161,8 +187,7 @@ class StreamConnection {
       } catch (e) {
         this.listeners.delete(id)
         reject(
-          new ApiError(
-            0,
+          new StreamUnavailable(
             e instanceof Error ? e.message : 'Could not send the request.',
           ),
         )
@@ -276,10 +301,9 @@ export const streamed = {
  *
  * The HTTP route is the contract and the socket is the improvement, so a proxy that does
  * not forward an upgrade (which is common), an older deployment, or a browser with
- * websockets blocked must degrade to the answer rather than to an error. Only the
- * *connection* falling back is retried: a 502 from a model that returned nothing is a real
- * answer about the model, and replaying it over HTTP would spend a second model call to
- * learn the same thing.
+ * websockets blocked must degrade to the answer rather than to an error. Only a connection
+ * that could not be established falls back. If it closes after accepting a request, retrying
+ * over HTTP could spend a second model call and duplicate streamed output.
  */
 async function withFallback<T>(
   streamed: () => Promise<T>,
@@ -288,7 +312,7 @@ async function withFallback<T>(
   try {
     return await streamed()
   } catch (e) {
-    if (e instanceof ApiError && e.status === 0) return http()
+    if (e instanceof StreamUnavailable) return http()
     throw e
   }
 }

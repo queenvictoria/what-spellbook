@@ -16,6 +16,7 @@ import { Markdown } from "@/components/Markdown"
 import { SourceBadge } from "@/components/SourceBadge"
 import { RulePathLink } from "@/components/RulePathLink"
 import { StageProgress } from "@/components/StageProgress"
+import { StreamingPreview } from "@/components/StreamingPreview"
 import { api } from "@/api/client"
 import { streamed } from "@/api/stream"
 import type { Answer, SearchResult } from "@/api/types"
@@ -325,6 +326,7 @@ export function RulesContextDrawerProvider({
         stage={progress.stage}
         stages={progress.stages}
         elapsed={progress.elapsed}
+        output={progress.output}
       />
     </RulesContext.Provider>
   )
@@ -334,10 +336,12 @@ function RulesContextDrawer({
   stage,
   stages,
   elapsed,
+  output,
 }: {
   stage: number
   stages: readonly string[]
   elapsed: number
+  output: string
 }) {
   const {
     open,
@@ -430,6 +434,7 @@ function RulesContextDrawer({
                 stages={stages}
                 labels={STREAM_STAGE_LABELS}
               />
+              <StreamingPreview text={output} />
             </div>
           )}
 

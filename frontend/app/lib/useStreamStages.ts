@@ -12,11 +12,10 @@ import { STREAM_STAGES, type StreamOp } from '@/api/types'
  * every caller used to have one, and it showed "Scribing" while the server was still
  * embedding.
  *
- * Everything returned except `stages`/`stage`/`elapsed` is stable across renders, so a
- * caller may put `start`, `finish` and `handlers` in a dependency array without recreating
- * the callback that runs the request on every tick of the clock. That matters: `elapsed`
- * changes ten times a second, and a request callback that changed with it would restart
- * whatever it was attached to.
+ * `start`, `finish` and `handlers` are stable across renders, so a caller may put them in a
+ * dependency array without recreating the callback that runs the request on every tick of
+ * the clock. That matters: `elapsed` changes ten times a second and `output` is flushed as
+ * chunks arrive, so depending on the whole state object would restart the request callback.
  */
 export interface StageState {
   /** The stage keys this operation runs through, in order. */
@@ -25,6 +24,8 @@ export interface StageState {
   stage: number
   /** Real seconds since the operation started. */
   elapsed: number
+  /** The streamed response so far, flushed to React at most every 50ms. */
+  output: string
   /** Call once before starting a request. */
   start: (op: StreamOp) => void
   /** Mark the work done, so the spinner stops even when the answer came from cache. */
@@ -36,8 +37,11 @@ export function useStreamStages(): StageState {
   const [stages, setStages] = useState<readonly string[]>([])
   const [stage, setStage] = useState(0)
   const [elapsed, setElapsed] = useState(0)
+  const [output, setOutput] = useState('')
   const started = useRef(0)
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
+  const outputTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const outputBuffer = useRef('')
   // The list the stage keys are resolved against, read from the listener rather than
   // captured - otherwise every `onStages` reply would rebuild `handlers` and, through it,
   // the caller's request callback.
@@ -50,9 +54,33 @@ export function useStreamStages(): StageState {
     }
   }, [])
 
+  const flushOutput = useCallback(() => {
+    if (outputTimer.current !== null) {
+      clearTimeout(outputTimer.current)
+      outputTimer.current = null
+    }
+    setOutput(outputBuffer.current)
+  }, [])
+
+  const appendToken = useCallback((text: string) => {
+    outputBuffer.current += text
+    if (outputTimer.current === null) {
+      outputTimer.current = setTimeout(() => {
+        outputTimer.current = null
+        setOutput(outputBuffer.current)
+      }, 50)
+    }
+  }, [])
+
   const start = useCallback(
     (op: StreamOp) => {
       stopTimer()
+      if (outputTimer.current !== null) {
+        clearTimeout(outputTimer.current)
+        outputTimer.current = null
+      }
+      outputBuffer.current = ''
+      setOutput('')
       // The operation's own list from the mirror, so the panel can draw the whole sequence
       // before the server's `start` frame lands. That frame replaces it a moment later with
       // the server's own copy, which is authoritative.
@@ -73,8 +101,9 @@ export function useStreamStages(): StageState {
 
   const finish = useCallback(() => {
     stopTimer()
+    flushOutput()
     setStage(order.current.length)
-  }, [stopTimer])
+  }, [flushOutput, stopTimer])
 
   const handlers: StreamHandlers = useMemo(
     () => ({
@@ -91,14 +120,24 @@ export function useStreamStages(): StageState {
         const index = order.current.indexOf(key)
         if (index >= 0) setStage(index)
       },
+      onToken: appendToken,
     }),
-    [],
+    [appendToken],
   )
 
   // A timer that outlived the component would be a leak and, worse, a `setState` on an
   // unmounted panel every 100ms. The operation may still be running - sharing the socket is
   // the point - but this panel has stopped caring.
-  useEffect(() => stopTimer, [stopTimer])
+  useEffect(
+    () => () => {
+      stopTimer()
+      if (outputTimer.current !== null) {
+        clearTimeout(outputTimer.current)
+        outputTimer.current = null
+      }
+    },
+    [stopTimer],
+  )
 
-  return { stages, stage, elapsed, start, finish, handlers }
+  return { stages, stage, elapsed, output, start, finish, handlers }
 }

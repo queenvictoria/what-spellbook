@@ -521,7 +521,7 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
     #   {"op": "rules", "question": "...", "thread_id": "..."}
     #   {"op": "selection", "selected_text": "...", "context": "...", "document": [...]}
 
-    def _stream_sync(op: str, request: dict, emit):
+    def _stream_sync(op: str, request: dict, emit, on_token):
         """Run one operation, returning the wire payload. Blocking; runs off the loop.
 
         Kept as a plain function so the work is testable without a socket, and so the
@@ -532,7 +532,8 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         thread_id = request.get("thread_id")
 
         if op == "scenario":
-            generation = svc.scenario(request["scenario"], progress=emit)
+            generation = svc.scenario(request["scenario"], progress=emit,
+                                      on_token=on_token)
             return schemas.GenerationSchema.from_generation(generation).model_dump()
 
         if op == "refine":
@@ -540,23 +541,24 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
             if previous is None:
                 raise _error(404, "No books are cached for that scenario; generate it first.")
             generation = svc.refine(request["question"], previous, progress=emit,
-                                    thread_id=thread_id)
+                                    thread_id=thread_id, on_token=on_token)
             return schemas.GenerationSchema.from_generation(generation).model_dump()
 
         if op == "character":
             answer = svc.ask_character(request["question"], progress=emit,
-                                      thread_id=thread_id)
+                                      thread_id=thread_id, on_token=on_token)
             return schemas.AnswerSchema.from_answer(answer).model_dump()
 
         if op == "rules":
-            answer = svc.ask_rules(request["question"], progress=emit, thread_id=thread_id)
+            answer = svc.ask_rules(request["question"], progress=emit, thread_id=thread_id,
+                                   on_token=on_token)
             return schemas.AnswerSchema.from_answer(answer).model_dump()
 
         if op == "selection":
             answer = svc.ask_rules_contextual(
                 request["selected_text"], context=request.get("context") or "",
                 attachments=request.get("document"), progress=emit,
-                thread_id=thread_id,
+                thread_id=thread_id, on_token=on_token,
             )
             return schemas.AnswerSchema.from_answer(answer).model_dump()
 
@@ -591,14 +593,14 @@ def create_app(*, vector_db=None, backend=None, character_name=None,
         async def run(op: str, ident: str | None, message: dict) -> None:
             await send(streaming.start(op, ident))
 
-            def work(emit, op=op, message=message):
+            def work(emit, emit_token, op=op, message=message):
                 # The failure is caught *inside* the worker rather than around
                 # ``with_progress``: a raising worker tears down the task group, and anyio
                 # reports that as a ``BaseExceptionGroup`` - so ``except HTTPException``
                 # outside it never matches and every typed failure arrived as a 500. Handing
                 # the exception back as a value keeps the group clean and the mapping exact.
                 try:
-                    return True, _stream_sync(op, message, emit)
+                    return True, _stream_sync(op, message, emit, emit_token)
                 except Exception as e:  # noqa: BLE001 - reported, not swallowed
                     return False, e
 

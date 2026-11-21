@@ -136,13 +136,19 @@ one place.
       **The payoff is the progress.** The browser used to derive the stage from elapsed
       time, which showed "Scribing" while the server was still embedding; the stage is now
       the service's own `emit` message, bridged from the worker thread onto the event loop
-      with `anyio.from_thread.run_sync`. `timing.STAGE_KEYS` / `OPERATION_STAGES` is the one
+      with `anyio.from_thread.run`. `timing.STAGE_KEYS` / `OPERATION_STAGES` is the one
       table tying the message the CLI prints to the key a browser switches on, and two tests
       pin it — one reading the real `emit(...)` calls out of `service.py`, one asserting no
       operation reports a stage it did not promise.
       `answering` (the model call) is now a reported stage in all four ask paths, so a panel
       cannot look finished while it is still waiting.
-- [ ] Stream LLM responses
+- [x] Stream LLM responses
+      — the existing websocket now forwards provider chunks as `token` frames and the five
+      long-operation panels render a throttled live Markdown draft. The service still
+      assembles, parses and validates the complete response before the terminal `result`;
+      cached replies and deterministic sheet lookups emit no tokens. A failed websocket
+      handshake falls back to HTTP, but a mid-stream disconnect does not retry and spend a
+      second model call.
 - [ ] Test with fine tuned DND model like https://huggingface.co/ostamand/RollMind-v1-gemma3-12b ollama run hf.co/mradermacher/RollMind-v1-gemma3-12b-GGUF:Q4_K_M
 
 ## Technology Stack (as built)

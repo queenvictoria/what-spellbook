@@ -17,6 +17,7 @@ import { RulePathLink } from "@/components/RulePathLink"
 import { SrdTree } from "@/components/SrdTree"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { StageProgress } from "@/components/StageProgress"
+import { StreamingPreview } from "@/components/StreamingPreview"
 import { STREAM_STAGE_LABELS } from "@/api/types"
 import { useStreamStages } from "@/lib/useStreamStages"
 import { useDebouncedCallback } from "@/lib/useDebounced"
@@ -534,6 +535,7 @@ export function RulesScreen() {
                         labels={STREAM_STAGE_LABELS}
                       />
                     )}
+                    {loading && <StreamingPreview text={askStages.output} />}
                     {answer && (
                       <Markdown text={answer.answer} className="prose-spell" />
                     )}

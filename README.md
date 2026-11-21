@@ -220,7 +220,8 @@ retrying could help:
 Every endpoint above returns the whole answer, so a client only knows a stage has changed
 by watching a clock. `WS /api/stream` runs the five operations that take seconds —
 `scenario`, `refine`, `character`, `rules` and `selection` — and forwards the stage the
-service is actually in, because the service already announces them for the CLI.
+service is actually in, because the service already announces them for the CLI. During a
+model call it also forwards text chunks as they arrive.
 
 ```jsonc
 {"id": "op-1", "op": "scenario", "scenario": "A rust monster eats the armour."}
@@ -229,10 +230,16 @@ service is actually in, because the service already announces them for the CLI.
  "stages": ["retrieval", "prompt", "books"]}
 {"type": "stage",  "id": "op-1", "key": "retrieval",
  "label": "Fetching spells from the grimoire"}
+{"type": "token",  "id": "op-1", "text": "=== PREAMBLE ===\n"}
 {"type": "result", "id": "op-1", "op": "scenario", "data": { /* GenerationSchema */ }}
 ```
 
-Four properties are deliberate, and each replaced a heuristic:
+The `token` frames carry the model's text as it is generated; their concatenation is the
+answer in the terminal `result` frame. The UI shows that draft while waiting, then replaces
+it with the final parsed answer. Cached replies and deterministic sheet lookups have no token
+frames because they do not call the model.
+
+Five properties are deliberate, and each replaced a heuristic:
 
 - **The stage is reported.** The browser used to advance a three-stage bar from elapsed
   time, which showed "Scribing" while the server was still embedding. The label is the
@@ -241,6 +248,9 @@ Four properties are deliberate, and each replaced a heuristic:
   cannot drift.
 - **Progress and result travel on one channel.** A client that had to poll a second
   endpoint for the result would still be guessing when to stop.
+- **The final response remains authoritative.** Token boundaries are transport chunks, not
+  words or Markdown blocks; the service still validates/parses the complete response before
+  returning it.
 - **A message is a request, not a connection.** The socket stays open for the panel, so a
   follow-up costs no handshake, and requests are multiplexed by `id` — a recommendation and
   a rules question can be in flight at once, which is what makes switching tabs not cancel
@@ -254,7 +264,8 @@ being inferred from the last message seen.
 
 The HTTP routes remain the contract: the socket is a second transport over the same service
 methods and the same schemas, and the front end falls back to the route when the upgrade
-cannot be made (a proxy that drops it is the common case). Only the progress is lost.
+cannot be made (a proxy that drops it is the common case). Only live progress and the draft
+are lost.
 
 A run is identified by an opaque `id` (the cache directory name), never by a filesystem
 path: a browser cannot use a server path, and publishing the cache layout leaks

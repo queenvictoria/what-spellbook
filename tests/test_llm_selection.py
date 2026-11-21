@@ -347,3 +347,43 @@ def test_invoke_explains_what_it_could_not_reach():
         llm.invoke(dead, "hello")
     assert "ollama serve" in str(caught.value)
     assert "qwen3.5:4b" in str(caught.value)
+
+
+def test_invoke_forwards_streamed_chunks_and_returns_the_complete_text():
+    class OllamaLLM:
+        model = "qwen3:4b"
+
+        def stream(self, prompt):
+            yield "The "
+            yield type("MessageChunk", (), {"content": "answer."})()
+
+    received = []
+    answer = llm.invoke(OllamaLLM(), "hello", on_token=received.append)
+
+    assert answer == "The answer."
+    assert received == ["The ", "answer."]
+
+
+def test_streaming_invoke_reports_backend_errors_as_unavailable():
+    class OllamaLLM:
+        model = "qwen3:4b"
+
+        def stream(self, prompt):
+            yield "partial"
+            raise ConnectionError("Failed to connect to Ollama.")
+
+    received = []
+    with pytest.raises(llm.LLMUnavailable, match="ollama serve"):
+        llm.invoke(OllamaLLM(), "hello", on_token=received.append)
+    assert received == ["partial"]
+
+
+def test_streaming_invoke_rejects_an_empty_completion():
+    class OllamaLLM:
+        model = "qwen3:4b"
+
+        def stream(self, prompt):
+            yield ""
+
+    with pytest.raises(llm.EmptyCompletion):
+        llm.invoke(OllamaLLM(), "hello", on_token=lambda _text: None)

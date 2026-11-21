@@ -279,13 +279,28 @@ def _local_fallback(label: str, model: str, source, error):
 
 
 def extract_text(response) -> str:
-    """Normalise Ollama's string output and ChatOpenAI's AIMessage to plain text."""
+    """Normalise model strings and LangChain messages/chunks to plain text."""
     if isinstance(response, str):
         return response
     text = getattr(response, "text", None)
     if callable(text):
         text = text()
-    return text if text else str(getattr(response, "content", response))
+    if isinstance(text, str) and text:
+        return text
+    content = getattr(response, "content", response)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for part in content:
+            if isinstance(part, str):
+                parts.append(part)
+                continue
+            value = part.get("text") if isinstance(part, dict) else getattr(part, "text", None)
+            if isinstance(value, str):
+                parts.append(value)
+        return "".join(parts)
+    return str(content)
 
 
 def model_name(llm) -> str:
@@ -362,16 +377,45 @@ def embedding_failure(error) -> "EmbeddingUnavailable | None":
     )
 
 
-def invoke(llm, prompt: str) -> str:
-    """Call the backend once, raising ``EmptyCompletion`` on a blank answer."""
-    try:
-        text = extract_text(llm.invoke(prompt))
-    except Exception as e:
-        raise LLMUnavailable(
-            explain_failure(e, model=model_name(llm), purpose="the model",
-                            local=is_local(llm),
-                            provider=client_provider(llm))
-        ) from e
+def invoke(llm, prompt: str, *, on_token=None) -> str:
+    """Call the backend once, optionally forwarding generated text as it arrives."""
+    if on_token is None:
+        try:
+            text = extract_text(llm.invoke(prompt))
+        except Exception as e:
+            raise LLMUnavailable(
+                explain_failure(e, model=model_name(llm), purpose="the model",
+                                local=is_local(llm),
+                                provider=client_provider(llm))
+            ) from e
+    else:
+        try:
+            chunks = iter(llm.stream(prompt))
+        except Exception as e:
+            raise LLMUnavailable(
+                explain_failure(e, model=model_name(llm), purpose="the model",
+                                local=is_local(llm),
+                                provider=client_provider(llm))
+            ) from e
+
+        parts = []
+        while True:
+            try:
+                chunk = next(chunks)
+            except StopIteration:
+                break
+            except Exception as e:
+                raise LLMUnavailable(
+                    explain_failure(e, model=model_name(llm), purpose="the model",
+                                    local=is_local(llm),
+                                    provider=client_provider(llm))
+                ) from e
+            piece = extract_text(chunk)
+            if piece:
+                parts.append(piece)
+                on_token(piece)
+        text = "".join(parts)
+
     if not text.strip():
         raise EmptyCompletion(
             "The model returned an empty response. This usually means it used its "

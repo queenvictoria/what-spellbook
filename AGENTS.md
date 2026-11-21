@@ -1197,12 +1197,11 @@ character_name=, cache_dir=)` takes its collaborators, so `TestClient(create_app
 
 ### The socket is a second transport, and the service already knows the stages
 
-`WS /api/stream` runs the five operations that take seconds and forwards the stage the work
-is actually in. Nothing new was written to know that: the service already takes an
-`emit(message)` callback so the CLI can draw a progress line, and the socket hands it a
-callback that puts the message on the loop instead. **Streaming was a transport change, not
-a service change** — which is why the HTTP routes were left exactly as they were and are
-still the contract.
+`WS /api/stream` runs the five operations that take seconds, forwards the stage the work is
+actually in, and now sends model text as it is generated. The service already takes an
+`emit(message)` callback so the CLI can draw a progress line; the socket bridges both that
+callback and the model's `on_token(text)` callback back onto the event loop. **The HTTP
+routes remain the contract** — the socket is a second transport, not a second service.
 
 Five operations, one socket, multiplexed by an `id` the client chooses. A reader switching
 tabs must not cancel work, and a second panel asking its own question must not have its
@@ -1220,9 +1219,11 @@ Six things cost real time, and each is a shape worth recognising:
   as an error.** It propagates out of the receive loop, unwinds the group, and the log reads
   "socket closed unexpectedly" for what is a client navigating away. The receive loop is its
   own task that catches it and cancels the group; the worker keeps running until it does.
-- **`anyio.from_thread.run_sync` is the only safe bridge here**, and it was verified in
-  isolation before anything was built on it. A `send_nowait` called directly from the worker
-  thread is the kind of bug that passes a smoke test and deadlocks under load.
+- **A token producer needs backpressure.** Stage messages are rare; a model can produce
+  chunks faster than a websocket sends them. The thread-to-loop bridge awaits the memory
+  stream's `send` rather than using `send_nowait`, or a bounded queue can overflow and drop
+  text. The browser coalesces updates before rendering Markdown, rather than rerendering a
+  growing document once per provider chunk.
 - **`start.stages` is the operation's whole list, not the stage reached.** It is what lets a
   panel draw what is still to come, and it is why the *first* frame is more than a
   notification that work began.
@@ -1236,6 +1237,15 @@ Six things cost real time, and each is a shape worth recognising:
   panel ignores a key its list does not name, deliberately, because a stage outside the list
   would shift every index after it onto the wrong row. A cosmetic gap in one front end is
   exactly the kind of thing that is never noticed.
+- **The complete answer is still authoritative.** Token boundaries are transport chunks, not
+  words or Markdown blocks. `llm.invoke(..., on_token=...)` uses the provider's streaming
+  interface only when a caller asks for it, accumulates the same final string, and lets the
+  service parse/validate that string exactly as before. Cached answers and deterministic
+  sheet lookups emit no tokens because they did not call a model.
+- **Only a failed socket handshake is safe to retry over HTTP.** Once a request has been
+  accepted, replaying it after a mid-stream disconnect can spend a second model call and
+  produce a different answer. `StreamUnavailable` is distinct from an operation error, so
+  only connection setup falls back.
 
 Two smaller ones:
 

@@ -42,6 +42,10 @@ class FakeServiceLLM(FakeLLM):
     def invoke(self, prompt):
         return self.response
 
+    def stream(self, prompt):
+        for start in range(0, len(self.response), 80):
+            yield self.response[start : start + 80]
+
 
 @pytest.fixture
 def api(tmp_path, monkeypatch):
@@ -1465,6 +1469,9 @@ def test_the_socket_reports_the_stages_the_work_is_actually_in(api):
     assert keys == ["retrieval", "prompt", "books"]
     assert frames[-1]["type"] == "result"
     assert frames[-1]["data"]["books"]
+    chunks = [frame["text"] for frame in frames if frame["type"] == "token"]
+    assert chunks
+    assert "".join(chunks) == frames[-1]["data"]["answer"]
 
 
 def test_a_socket_request_answers_with_the_same_payload_as_the_route(api):

@@ -8,6 +8,7 @@ import { BookPanel } from "@/components/BookPanel"
 import { ErrorNotice } from "@/components/ErrorNotice"
 import { Markdown } from "@/components/Markdown"
 import { StageProgress } from "@/components/StageProgress"
+import { StreamingPreview } from "@/components/StreamingPreview"
 import { preambleOf } from "@/lib/bookText"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -180,13 +181,16 @@ export function ScenarioScreen() {
                   Opening the stored run…
                 </p>
               ) : (
-                <StageProgress
-                  stage={progress.stage}
-                  elapsed={progress.elapsed}
-                  estimate={estimate}
-                  stages={progress.stages}
-                  labels={STREAM_STAGE_LABELS}
-                />
+                <div className="space-y-3">
+                  <StageProgress
+                    stage={progress.stage}
+                    elapsed={progress.elapsed}
+                    estimate={estimate}
+                    stages={progress.stages}
+                    labels={STREAM_STAGE_LABELS}
+                  />
+                  <StreamingPreview text={progress.output} />
+                </div>
               )}
             </CardContent>
           </Card>
