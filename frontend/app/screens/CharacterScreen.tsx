@@ -20,7 +20,12 @@ import { useStreamStages } from "@/lib/useStreamStages"
 import { Badge } from "@/components/ui/badge"
 import { splitSpells, useSpellNames } from "@/lib/spellNames"
 import { useCharacterChoice } from "@/lib/useCharacterChoice"
-import { Loader2, WandSparkles, UsersRoundCollaboration } from "lucide-react"
+import {
+  Loader2,
+  WandSparkles,
+  UsersRoundCollaboration,
+  UserRound,
+} from "lucide-react"
 
 /**
  * The character sheet, plus a box to ask about it.
@@ -227,16 +232,21 @@ export function CharacterScreen() {
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_22rem]">
       <Card>
-        <CardHeader className="flex flex-col w-full">
+        <CardHeader className="flex flex-col w-full gap-2">
           <div className="w-full items-start flex flex-row gap-2 justify-between">
-            <CardTitle>{character.name}</CardTitle>
+            <CardTitle>
+              <div className="border border-void-700 bg-void-800/70 rounded-full w-10 h-10 items-center flex justify-center text-parchment/60">
+                <UserRound />
+              </div>
+              {character.name}
+            </CardTitle>
             {health && (
               <Badge tone="muted">index v{health.index_version}</Badge>
             )}
           </div>
           <details className="flex flex-row-reverse items-start gap-2">
-            <summary className="text-sm flex gap-2 text-parchment/60">
-              <UsersRoundCollaboration width={24} height={24} />
+            <summary className="text-sm flex gap-2 text-parchment/60 hover:text-parchment">
+              <UsersRoundCollaboration width={20} height={20} />
               <span className="sr-only">Character picker</span>
             </summary>
             <div className="flex flex-col gap-2 justify-between">

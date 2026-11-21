@@ -44,14 +44,14 @@ export function CharacterPicker({
       : entries
 
   return (
-    <div className="flex flex-row gap-2 border rounded border-parchment/20 p-2 text-sm">
+    <div className="flex flex-row gap-2 border rounded border-parchment/20 p-2 text-sm items-center">
       <label htmlFor="picker" className="text-parchment/60">
         Existing
       </label>
       <Select
         name="picker"
         aria-label="Character sheet"
-        className="h-7 w-auto max-w-40 px-1.5 py-0 text-base"
+        className="h-7 w-auto max-w-40 px-1.5 py-0 text-sm"
         value={value ?? ""}
         onChange={(e) => onChange(e.target.value)}
       >
